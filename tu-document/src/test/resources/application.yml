@@ -1,0 +1,4 @@
+# 打印mysql执行语句
+logging:
+  level:
+    org.zhitui.tu.mapper: DEBUG

@@ -4,7 +4,7 @@ target/
 !**/src/main/**
 !**/src/test/**
 
-/src/main/resources/application-dev.yml
+/tu-document/src/main/resources/application-dev.yml
 
 ### STS ###
 .apt_generated

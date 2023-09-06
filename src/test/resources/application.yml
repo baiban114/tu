@@ -1,4 +1,0 @@
-# 打印mysql执行语句
-logging:
-  level:
-    com.run.tu.mapper: DEBUG

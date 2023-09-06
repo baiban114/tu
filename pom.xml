@@ -2,19 +2,14 @@
 <project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
-    <parent>
-        <groupId>org.springframework.boot</groupId>
-        <artifactId>spring-boot-starter-parent</artifactId>
-        <version>2.7.13</version>
-        <relativePath/> <!-- lookup parent from repository -->
-    </parent>
-    <groupId>com.run</groupId>
+
+    <groupId>org.zhitui</groupId>
     <artifactId>tu</artifactId>
-    <version>0.0.2</version>
-    <packaging>war</packaging>
+    <version>0.0.2.SNAPSHOT</version>
+    <packaging>pom</packaging>
     <name>tu</name>
     <description>
-        tu 一款现代化的知识社区后台项目，使用 SpringBoot + Shiro + MyBatis + JWT + Redis 实现。
+        tu 一款现代化的知识社区后台项目，使用 SpringBoot+ MyBatis + Redis 实现。
     </description>
 
     <properties>
@@ -22,25 +17,21 @@
         <lucene.version>8.11.2</lucene.version>
     </properties>
 
+    <modules>
+        <module>tu-document</module>
+        <module>tu-common</module>
+    </modules>
+
+    <dependencyManagement>
     <dependencies>
         <dependency>
             <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-data-redis</artifactId>
-            <exclusions>
-                <exclusion>
-                    <groupId>org.apache.logging.log4j</groupId>
-                    <artifactId>log4j-to-slf4j</artifactId>
-                </exclusion>
-                <exclusion>
-                    <groupId>io.netty</groupId>
-                    <artifactId>netty-codec</artifactId>
-                </exclusion>
-                <exclusion>
-                    <groupId>org.yaml</groupId>
-                    <artifactId>snakeyaml</artifactId>
-                </exclusion>
-            </exclusions>
+            <artifactId>spring-boot-dependencies</artifactId>
+            <version>2.7.13</version>
+            <type>pom</type>
+            <scope>import</scope>
         </dependency>
+
         <dependency>
             <groupId>io.netty</groupId>
             <artifactId>netty-codec</artifactId>
@@ -51,21 +42,7 @@
             <artifactId>snakeyaml</artifactId>
             <version>1.33</version>
         </dependency>
-        <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-mail</artifactId>
-        </dependency>
 
-        <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-web</artifactId>
-            <exclusions>
-                <exclusion>
-                    <groupId>com.fasterxml.jackson.core</groupId>
-                    <artifactId>jackson-databind</artifactId>
-                </exclusion>
-            </exclusions>
-        </dependency>
         <!-- https://mvnrepository.com/artifact/com.fasterxml.jackson.core/jackson-databind -->
         <dependency>
             <groupId>com.fasterxml.jackson.core</groupId>
@@ -86,46 +63,13 @@
             <version>8.0.30</version>
             <scope>runtime</scope>
         </dependency>
-        <dependency>
-            <groupId>org.projectlombok</groupId>
-            <artifactId>lombok</artifactId>
-            <optional>true</optional>
-        </dependency>
-        <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-tomcat</artifactId>
-            <scope>provided</scope>
-            <exclusions>
-                <exclusion>
-                    <groupId>org.apache.tomcat.embed</groupId>
-                    <artifactId>tomcat-embed-core</artifactId>
-                </exclusion>
-            </exclusions>
-        </dependency>
+
         <dependency>
             <groupId>org.apache.tomcat.embed</groupId>
             <artifactId>tomcat-embed-core</artifactId>
             <version>9.0.73</version>
         </dependency>
-        <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-test</artifactId>
-            <scope>test</scope>
-            <exclusions>
-                <exclusion>
-                    <groupId>org.junit.vintage</groupId>
-                    <artifactId>junit-vintage-engine</artifactId>
-                </exclusion>
-                <exclusion>
-                    <groupId>com.vaadin.external.google</groupId>
-                    <artifactId>android-json</artifactId>
-                </exclusion>
-                <exclusion>
-                    <groupId>net.minidev</groupId>
-                    <artifactId>json-smart</artifactId>
-                </exclusion>
-            </exclusions>
-        </dependency>
+
         <!-- https://mvnrepository.com/artifact/net.minidev/json-smart -->
         <dependency>
             <groupId>net.minidev</groupId>
@@ -133,10 +77,6 @@
             <version>2.4.9</version>
         </dependency>
 
-        <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-aop</artifactId>
-        </dependency>
         <!-- 通用Mapper插件 -->
         <dependency>
             <groupId>tk.mybatis</groupId>
@@ -239,33 +179,8 @@
             <artifactId>log4j-api</artifactId>
             <version>2.19.0</version>
         </dependency>
-        <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-configuration-processor</artifactId>
-            <optional>true</optional>
-        </dependency>
-        <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-thymeleaf</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-websocket</artifactId>
-            <exclusions>
-                <exclusion>
-                    <groupId>com.fasterxml.jackson.core</groupId>
-                    <artifactId>jackson-databind</artifactId>
-                </exclusion>
-                <exclusion>
-                    <groupId>org.springframework</groupId>
-                    <artifactId>spring-web</artifactId>
-                </exclusion>
-                <exclusion>
-                    <groupId>org.springframework</groupId>
-                    <artifactId>spring-webmvc</artifactId>
-                </exclusion>
-            </exclusions>
-        </dependency>
+
+
         <dependency>
             <groupId>org.jodd</groupId>
             <artifactId>jodd-http</artifactId>
@@ -354,29 +269,12 @@
         </dependency>
 
         <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-actuator</artifactId>
-            <exclusions>
-                <exclusion>
-                    <groupId>com.fasterxml.jackson.core</groupId>
-                    <artifactId>jackson-databind</artifactId>
-                </exclusion>
-            </exclusions>
-        </dependency>
-        <dependency>
-            <groupId>io.micrometer</groupId>
-            <artifactId>micrometer-registry-prometheus</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>javax.validation</groupId>
-            <artifactId>validation-api</artifactId>
-        </dependency>
-        <dependency>
             <groupId>com.baomidou</groupId>
             <artifactId>mybatis-plus-boot-starter</artifactId>
             <version>3.5.3.2</version>
         </dependency>
     </dependencies>
+    </dependencyManagement>
 
     <build>
         <!-- 程序编译时默认不会把 src/main/java 目录下文件添加到 jar 包中，需手动添加 -->
@@ -419,6 +317,13 @@
                 <configuration>
                     <fork>true</fork>
                 </configuration>
+                <executions>
+                    <execution>
+                        <goals>
+                            <goal>repackage</goal>
+                        </goals>
+                    </execution>
+                </executions>
             </plugin>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
