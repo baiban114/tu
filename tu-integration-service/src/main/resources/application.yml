@@ -1,0 +1,15 @@
+spring:
+  application:
+    name: tu-integration-service
+  cloud:
+    nacos:
+      discovery:
+        server-addr: ${NACOS_SERVER_ADDR:localhost:8848}
+
+server:
+  port: ${SERVER_PORT:18100}
+
+kaneo:
+  base-url: ${KANEO_BASE_URL:http://localhost:11337}
+  api-key: ${KANEO_API_KEY:}
+  workspace-id: ${KANEO_WORKSPACE_ID:}

@@ -1,0 +1,38 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: postgres
+    environment:
+      POSTGRES_DB: tu_db
+      POSTGRES_USER: tu
+      POSTGRES_PASSWORD: tu123456
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tu -d tu_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  tu-backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: tu-backend
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      SPRING_PROFILES_ACTIVE: postgresql
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/tu_db
+      SPRING_DATASOURCE_USERNAME: tu
+      SPRING_DATASOURCE_PASSWORD: tu123456
+      SPRING_JPA_HIBERNATE_DDL_AUTO: update
+      TU_SECRET_ENCRYPTION_KEY: ${TU_SECRET_ENCRYPTION_KEY:-MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=}
+    ports:
+      - "18080:8080"
+
+volumes:
+  postgres-data:

@@ -1,0 +1,58 @@
+services:
+  tu-backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: tu-backend
+    environment:
+      NACOS_SERVER_ADDR: ${NACOS_SERVER_ADDR}
+      SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE:-mysql}
+      SPRING_DATASOURCE_URL: ${SPRING_DATASOURCE_URL}
+      SPRING_DATASOURCE_USERNAME: ${SPRING_DATASOURCE_USERNAME}
+      SPRING_DATASOURCE_PASSWORD: ${SPRING_DATASOURCE_PASSWORD}
+      SPRING_JPA_HIBERNATE_DDL_AUTO: ${SPRING_JPA_HIBERNATE_DDL_AUTO:-update}
+      TU_SECRET_ENCRYPTION_KEY: ${TU_SECRET_ENCRYPTION_KEY:-MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=}
+      RAG_SERVICE_URL: ${RAG_SERVICE_URL}
+      RAG_ENABLED: ${RAG_ENABLED:-true}
+      INTEGRATION_SERVICE_URL: ${INTEGRATION_SERVICE_URL:-http://tu-integration-service:18100}
+      SEARCH_ENABLED: ${SEARCH_ENABLED:-true}
+      ELASTICSEARCH_URIS: ${ELASTICSEARCH_URIS:-http://elasticsearch:9200}
+      SEARCH_INDEX: ${SEARCH_INDEX:-tu_pages}
+    ports:
+      - "${TU_BACKEND_PORT:-18081}:8080"
+
+  tu-gateway:
+    build:
+      context: ../tu-gateway
+      dockerfile: Dockerfile
+    container_name: tu-gateway
+    environment:
+      NACOS_SERVER_ADDR: ${NACOS_SERVER_ADDR}
+      TU_BACKEND_URI: ${TU_BACKEND_URI:-http://tu-backend:8080}
+    ports:
+      - "${TU_GATEWAY_PORT:-18080}:8080"
+
+  tu-integration-service:
+    build:
+      context: ../tu-integration-service
+      dockerfile: Dockerfile
+    container_name: tu-integration-service
+    environment:
+      NACOS_SERVER_ADDR: ${NACOS_SERVER_ADDR}
+      KANEO_BASE_URL: ${KANEO_BASE_URL:-}
+      KANEO_API_KEY: ${KANEO_API_KEY:-}
+      KANEO_WORKSPACE_ID: ${KANEO_WORKSPACE_ID:-}
+    ports:
+      - "${TU_INTEGRATION_PORT:-18100}:18100"
+
+  tu-rag-service:
+    build:
+      context: ../tu-rag-service
+      dockerfile: Dockerfile
+    container_name: tu-rag-service
+    environment:
+      QDRANT_URL: ${QDRANT_URL}
+      QDRANT_COLLECTION: ${QDRANT_COLLECTION:-tu_rag_chunks}
+      RAG_VECTOR_SIZE: ${RAG_VECTOR_SIZE:-256}
+    ports:
+      - "${TU_RAG_PORT:-19080}:19080"

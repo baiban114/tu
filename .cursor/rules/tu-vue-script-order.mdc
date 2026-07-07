@@ -1,0 +1,40 @@
+---
+description: Vue script setup 声明顺序，避免 TDZ 运行时错误
+globs: tu-web-ts/**/*.vue
+alwaysApply: false
+---
+
+# Vue `<script setup>` 声明顺序
+
+在 `tu-web-ts` 的 Vue SFC 中，`const` / `let` / `ref` / `computed` 按源码顺序初始化，**不存在变量提升**。`computed`、`watch`（尤其 `immediate: true`）若在定义时读取尚未声明的变量，会在运行时抛出 `ReferenceError: Cannot access 'X' before initialization`。
+
+## 必须遵守
+
+1. **先声明依赖，再声明使用者**：`computed` / `watch` 引用的每个 `ref`、`reactive`、其他 `computed`，必须出现在它们**之前**。
+2. **`watch(..., { immediate: true })` 会在注册时立刻执行一次**——比「首次渲染」更早；不能把依赖写在后面再指望懒执行。
+3. **跨区块搬代码时重排顺序**：新增「抑制/互斥」类 `computed`（如 `xxxSuppressed`）时，确认其依赖的 `noteEditorVisible`、`showXxxDialog` 等状态已先定义。
+4. **改完后跑 `npm run type-check`**；此类错误 TypeScript 通常抓不到，需靠声明顺序自检。
+
+## 反例（会炸）
+
+```ts
+const toolbarSuppressed = computed(() => noteEditorVisible.value) // ❌ noteEditorVisible 尚未声明
+
+watch(toolbarSuppressed, handler, { immediate: true }) // ❌ 注册时立即读 computed → 读未初始化变量
+
+const noteEditorVisible = ref(false)
+```
+
+## 正例
+
+```ts
+const noteEditorVisible = ref(false)
+
+const toolbarSuppressed = computed(() => noteEditorVisible.value) // ✅
+
+watch(toolbarSuppressed, handler, { immediate: true }) // ✅
+```
+
+## 相关案例
+
+`TuEditorPage.vue`：`urlHoverToolbarSuppressed` 曾写在 `noteEditorVisible` 之前，导致页面加载即报错。修复方式：将 `computed` + `watch` 整块移到 `noteEditorVisible` 声明之后。

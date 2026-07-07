@@ -1,0 +1,18 @@
+spring:
+  application:
+    name: tu-gateway
+  cloud:
+    nacos:
+      discovery:
+        server-addr: ${NACOS_SERVER_ADDR:localhost:8848}
+    gateway:
+      server:
+        webflux:
+          routes:
+            - id: tu-backend-api
+              uri: ${TU_BACKEND_URI:http://localhost:8080}
+              predicates:
+                - Path=/api/**
+
+server:
+  port: ${SERVER_PORT:18080}

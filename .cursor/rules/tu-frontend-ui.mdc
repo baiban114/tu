@@ -1,0 +1,15 @@
+---
+description: tu-web-ts 弹窗视口与列表分页约定
+globs: tu-web-ts/**/*
+alwaysApply: false
+---
+
+# 前端 UI（tu-web-ts）
+
+1. 弹出面板 UI height 不能超过浏览器内容窗口，避免滚动出现。对话框使用 `tu-dialog-viewport`（见 `src/assets/dialog-viewport.css`），内部区域滚动而非整页滚动。
+2. 列表显示的元素需要分页查询，默认每页 10 条。使用 `DEFAULT_PAGE_SIZE`（`src/constants/pagination.ts`）与后端 `PageResponse`。
+3. **悬浮派生 UI**：由 hover 触发的工具栏/菜单与触发源属同一会话；移入派生 UI 不得关闭；`mouseleave` 用延迟 dismiss；浮层贴在触发内容区域上方；滚动时须跟贴触发源（实时锚点 + scroll 监听，见技能 §3）。
+4. **弹出派生 UI**：由点击/右键触发的菜单、气泡等（尤其 `Teleport to="body"`）须在可见时于 `document` 监听点击外部与 `Escape` 以关闭；菜单根 `@mousedown.stop` / `@click.stop`；隐藏与卸载时移除监听（见技能 §4）。
+5. **视口内完整显示**：弹出/衍生的固定定位面板（右键菜单、列头菜单等）须完整出现在浏览器内容窗口内，不被屏幕边缘截断；可滚动区域（如左侧页面树）在内容不足时不应撑破布局，内容超出时内部滚动（见技能 §7）。
+
+详细步骤见项目技能 `.cursor/skills/tu-frontend-ui/SKILL.md`。

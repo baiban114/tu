@@ -1,0 +1,51 @@
+/**
+ * Viewport-bound dialogs: dialog fits in the visual viewport; only inner regions scroll.
+ * See .cursor/skills/tu-frontend-ui/SKILL.md
+ */
+.el-dialog.tu-dialog-viewport {
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100dvh - 32px);
+  margin: 16px auto !important;
+}
+
+.el-dialog.tu-dialog-viewport .el-dialog__header {
+  flex-shrink: 0;
+}
+
+.el-dialog.tu-dialog-viewport .el-dialog__body {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.el-dialog.tu-dialog-viewport .el-dialog__footer {
+  flex-shrink: 0;
+}
+
+/* Custom Teleport panels (NoteEditor, tag pickers) — same flex contract as el-dialog. */
+.tu-dialog-viewport-panel {
+  display: flex;
+  flex-direction: column;
+  max-height: min(560px, calc(100dvh - 48px));
+  overflow: hidden;
+  box-sizing: border-box;
+}
+
+.tu-dialog-viewport-panel__body {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.tu-dialog-viewport-panel__footer {
+  flex-shrink: 0;
+}
+
+.tu-dialog-viewport-panel__scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}

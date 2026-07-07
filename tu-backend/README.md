@@ -1,0 +1,276 @@
+# tu-backend
+
+Java + Spring Boot backend for `tu-web-ts`.
+
+## Stack
+
+- Java 25
+- Spring Boot 4
+- Maven（多模块：`tu-platform-api` + `tu-backend-app`）
+- MySQL 8.4
+- Docker Compose
+
+## Run with Docker
+
+MySQL mode:
+
+```bash
+docker compose up -d --build
+```
+
+PostgreSQL mode:
+
+```bash
+docker compose -f docker-compose.postgresql.yml up -d --build
+```
+
+Backend:
+
+- `http://localhost:18080`
+
+RAG service:
+
+- Java entrypoint: `POST http://localhost:18080/api/rag/query`
+- FastAPI internal service: `http://localhost:19080`
+- Qdrant: `http://localhost:6333`
+
+Elasticsearch (page full-text search):
+
+- `http://localhost:9200`
+- Backend: `GET /api/search?q=&limit=`, `POST /api/search/reindex`
+- Env: `SEARCH_ENABLED=true`, `ELASTICSEARCH_URIS=http://elasticsearch:9200`, `SEARCH_INDEX=tu_pages`
+- Start infra only: `docker compose -f docker-compose.infra.yml up -d elasticsearch`
+
+MySQL:
+
+- `localhost:3306`
+
+PostgreSQL:
+
+- `localhost:5432`
+
+## Data source switching
+
+Default profile is `mysql`. Switch by setting `SPRING_PROFILES_ACTIVE`.
+
+PowerShell local MySQL:
+
+```powershell
+$env:SPRING_PROFILES_ACTIVE='mysql'
+$env:SPRING_DATASOURCE_URL='jdbc:mysql://localhost:3306/tu_db?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai'
+$env:SPRING_DATASOURCE_USERNAME='tu'
+$env:SPRING_DATASOURCE_PASSWORD='tu123456'
+mvn spring-boot:run -pl tu-backend-app
+```
+
+PowerShell local PostgreSQL:
+
+```powershell
+$env:SPRING_PROFILES_ACTIVE='postgresql'
+$env:SPRING_DATASOURCE_URL='jdbc:postgresql://localhost:5432/tu_db'
+$env:SPRING_DATASOURCE_USERNAME='tu'
+$env:SPRING_DATASOURCE_PASSWORD='tu123456'
+mvn spring-boot:run -pl tu-backend-app
+```
+
+No data synchronization is performed between MySQL and PostgreSQL.
+
+## System secret key
+
+AI Agent API Keys saved in the system configuration page are encrypted before they are written to the database. Local development uses the development fallback key in `application.yml`; real deployments should override it with `TU_SECRET_ENCRYPTION_KEY`, a base64-encoded 32-byte key.
+
+Development-only example:
+
+```powershell
+$env:TU_SECRET_ENCRYPTION_KEY='MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY='
+```
+
+Generate a new key for real deployments:
+
+```powershell
+[Convert]::ToBase64String((1..32 | ForEach-Object { Get-Random -Maximum 256 }))
+```
+
+## AI Agent records
+
+AI Agent model calls use Spring AI's OpenAI-compatible starter. Runtime `baseUrl`, `model`, and API Key still come from the system configuration page, not from `application.yml`.
+
+Business AI generation calls, such as learning-plan generation, are recorded in `ai_agent_run_log`. Each record stores the full system/user prompts, request body, raw response, parsed output, duration, status, and provider-returned token usage. Connection tests under `/api/ai/settings/test` are intentionally not recorded.
+
+Read records:
+
+- `GET /api/ai/runs?page=0&pageSize=50&taskType=&status=`
+- `GET /api/ai/runs/{id}`
+
+## Local development
+
+Build the service:
+
+```bash
+mvn -q -DskipTests package
+```
+
+## Auth API
+
+Spring Security is enabled for password hashing and login verification, but every endpoint is still allowed by default. There is no user state restriction, session requirement, or token gate on existing features.
+
+Register:
+
+```bash
+curl -X POST http://localhost:18080/api/auth/register \
+  -H "Content-Type: application/json" \
+  -d "{\"username\":\"demo\",\"email\":\"demo@example.com\",\"password\":\"demo123456\",\"displayName\":\"Demo\"}"
+```
+
+Login:
+
+```bash
+curl -X POST http://localhost:18080/api/auth/login \
+  -H "Content-Type: application/json" \
+  -d "{\"account\":\"demo\",\"password\":\"demo123456\"}"
+```
+
+Main application source remains under:
+
+- `src/main/java`
+- `src/main/resources`
+
+## RAG Integration
+
+The backend exposes RAG through Java and delegates retrieval/indexing to the standalone Python service in `../tu-rag-service`.
+
+Frontend-facing endpoints:
+
+- `POST /api/rag/query`
+- `POST /api/rag/reindex/page/{pageId}`
+- `POST /api/rag/reindex/kb/{kbId}`
+
+Java calls the FastAPI service configured by:
+
+- `RAG_ENABLED`, default `true`
+- `RAG_SERVICE_URL`, default `http://localhost:19080`
+
+Page content saves, block updates, and block sync trigger best-effort page reindexing. Page and knowledge-base deletion trigger best-effort vector cleanup. If the RAG service is unavailable, ordinary editing and deletion continue; explicit RAG API calls return an API error.
+
+## External Resource Management
+
+The project includes a lightweight self-developed external resource metadata system. It does not introduce Zotero, ResourceSpace, or another standalone open-source resource manager.
+
+The module manages:
+
+- Resource types: configurable categories such as books, images, and videos, each with a primary identity field such as ISBN or source URL.
+- Resource works: abstract groupings for the same resource across editions, releases, or sources.
+- Resource items: concrete external resource entities with a type-scoped unique identity value.
+
+Main endpoints:
+
+- `GET/POST/PATCH/DELETE /api/resource-types`
+- `GET/POST/PATCH/DELETE /api/resource-works`
+- `GET/POST/PATCH/DELETE /api/resource-items`
+
+First-version behavior:
+
+- Only metadata is stored. The service does not download, cache, or host external files.
+- `ResourceItem.identityValue` is unique within the same resource type.
+- Resource types and works cannot be deleted while referenced by works or items.
+
+
+# 运行笔记
+docker compose down
+
+如果只想停服务但保留容器：
+
+docker compose stop
+之后再启动可用：
+
+docker compose start
+暂时停下开发
+建议用：
+
+docker compose stop
+下次继续时用：
+
+docker compose start
+这适合：
+
+你没有改 Dockerfile
+你没有改 docker-compose.yml
+你只是暂停一下，之后还想继续用原来的容器
+新机器第一次启动
+不能直接用 start。
+
+因为 docker compose start 的前提是：
+
+这些容器之前已经被 up 创建过
+新机器上第一次没有现成容器，所以必须先：
+
+docker compose up -d --build
+或者如果镜像已经有了，也至少要：
+
+docker compose up -d
+start 只能启动“已经存在但当前停止的容器”，不能负责：
+
+创建容器
+创建网络
+构建镜像
+首次拉镜像
+你可以这样记：
+
+第一次启动：docker compose up -d --build
+暂停：docker compose stop
+恢复：docker compose start
+完全收掉：docker compose down
+什么时候还要再用 up -d --build
+如果你改了这些内容之一，就不要只用 start：
+
+Dockerfile
+docker-compose.yml
+后端 Java 代码
+pom.xml
+只有 docker compose down -v 才会把这个卷一起删掉
+
+
+## kaneo
+› 我该怎么启动Kaneo？我docker compose build之后没有见到有这个image
+
+
+• docker compose build 看不到 Kaneo image 是正常的。
+
+原因：kaneo 在 compose 里是这种：
+
+kaneo:                                                                                                                              
+image: ghcr.io/usekaneo/kaneo:latest
+
+它不是 build: 服务，所以 docker compose build 不会构建它，只会在 pull 或 up 时拉取。
+
+启动方式：
+
+cd D:\project\tu\tu-backend
+
+docker compose pull kaneo                                                                                                           
+docker compose up -d kaneo-postgres kaneo   
+
+或者启动整套：
+
+cd D:\project\tu\tu-backend
+
+docker compose up -d --build   
+
+
+浏览器访问：
+
+http://localhost:11337
+
+然后在 Kaneo 里注册/登录，去账号设置里创建 API Key。
+
+在 tu 的 /tasks 集成配置里，注意地址要按运行环境填：
+
+- 如果 tu-integration-service 也跑在 Docker Compose 里，填：
+
+  http://kaneo:1337
+
+- 如果你本机直接运行 tu-backend/tu-integration-service，填：
+
+  http://localhost:11337
+
+因为 Docker 容器里的 localhost 指容器自己，不是你的宿主机。    

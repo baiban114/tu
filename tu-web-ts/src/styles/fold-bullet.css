@@ -1,0 +1,47 @@
+.tu-fold-bullet {
+  flex: 0 0 auto;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font-weight: 700;
+  line-height: 1;
+  color: #1677ff;
+  cursor: pointer;
+  user-select: none;
+}
+
+.tu-fold-bullet:hover {
+  color: #0958d9;
+}
+
+.tu-fold-bullet--group {
+  color: #7c3aed;
+  font-size: 10px;
+  min-width: 20px;
+}
+
+.tu-fold-bullet--group:hover {
+  color: #6d28d9;
+}
+
+.tu-fold-chevron {
+  display: block;
+  flex-shrink: 0;
+  transition: transform 0.15s ease;
+}
+
+.tu-fold-chevron--collapsed {
+  transform: rotate(-90deg);
+}
+
+.heading-section-fold-gutter__btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  min-width: 28px;
+  font-size: 14px;
+  font-family: inherit;
+  text-align: center;
+}

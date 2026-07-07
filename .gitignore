@@ -1,0 +1,53 @@
+# IDE / local tooling
+.idea/
+.vscode/
+.tools/
+.opencode/
+.claude/
+.codebuddy/
+*.iml
+
+# OS / JVM crash dumps
+.DS_Store
+hs_err_pid*.log
+replay_pid*.log
+
+# Accidental build artifacts at repo root
+/org/
+/main/
+
+# Independent products (not part of tu platform monorepo)
+/studyflow/
+/studyflow-service/
+/tu-backend-go/
+
+# Java (all modules)
+**/target/
+**/.mvn/wrapper/maven-wrapper.jar
+**/*.class
+
+# Node (tu-web-ts)
+**/node_modules/
+**/dist/
+**/dist-ssr/
+**/coverage/
+**/test-results/
+**/playwright-report/
+**/*.tsbuildinfo
+**/*.local
+
+# Python (tu-rag-service)
+**/.venv/
+**/__pycache__/
+**/*.pyc
+**/.pytest_cache/
+
+# Secrets / env
+**/.env
+**/.env.*
+!**/.env.*.example
+!**/.env.development.example
+
+# Logs
+**/*.log
+**/logs/

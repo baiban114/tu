@@ -1,0 +1,84 @@
+/* Scoped highlight.js theme for TuEditor fenced code blocks (lowlight decorations). */
+
+/* ProseMirror editing hacks must not occupy a visual line inside code blocks. */
+.tu-code-block-view__pre .ProseMirror-trailingBreak,
+.tu-code-block-view__pre .ProseMirror-separator {
+  position: absolute !important;
+  width: 0 !important;
+  height: 0 !important;
+  overflow: hidden !important;
+  clip: rect(0, 0, 0, 0) !important;
+  pointer-events: none !important;
+  line-height: 0 !important;
+  font-size: 0 !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+}
+
+.tu-code-block-view__pre {
+  position: relative;
+}
+
+.tu-code-block-view__pre .hljs-comment,
+.tu-code-block-view__pre .hljs-quote {
+  color: #6a737d;
+  font-style: italic;
+}
+
+.tu-code-block-view__pre .hljs-keyword,
+.tu-code-block-view__pre .hljs-selector-tag,
+.tu-code-block-view__pre .hljs-subst {
+  color: #d73a49;
+}
+
+.tu-code-block-view__pre .hljs-number,
+.tu-code-block-view__pre .hljs-literal,
+.tu-code-block-view__pre .hljs-variable,
+.tu-code-block-view__pre .hljs-template-variable,
+.tu-code-block-view__pre .hljs-tag .hljs-attr {
+  color: #005cc5;
+}
+
+.tu-code-block-view__pre .hljs-string,
+.tu-code-block-view__pre .hljs-doctag,
+.tu-code-block-view__pre .hljs-title,
+.tu-code-block-view__pre .hljs-section,
+.tu-code-block-view__pre .hljs-selector-id {
+  color: #032f62;
+}
+
+.tu-code-block-view__pre .hljs-type,
+.tu-code-block-view__pre .hljs-class .hljs-title,
+.tu-code-block-view__pre .hljs-built_in {
+  color: #6f42c1;
+}
+
+.tu-code-block-view__pre .hljs-meta,
+.tu-code-block-view__pre .hljs-meta .hljs-keyword {
+  color: #22863a;
+}
+
+.tu-code-block-view__pre .hljs-regexp,
+.tu-code-block-view__pre .hljs-symbol,
+.tu-code-block-view__pre .hljs-link {
+  color: #e36209;
+}
+
+.tu-code-block-view__pre .hljs-name,
+.tu-code-block-view__pre .hljs-attribute {
+  color: #22863a;
+}
+
+.tu-code-block-view__pre .hljs-params {
+  color: #24292e;
+}
+
+.tu-code-block-view__pre .hljs-bullet,
+.tu-code-block-view__pre .hljs-addition {
+  color: #22863a;
+}
+
+.tu-code-block-view__pre .hljs-deletion {
+  color: #b31d28;
+}
