@@ -11,7 +11,7 @@ import SelectionToolbar from './SelectionToolbar.vue'
 import UrlHoverToolbar from './UrlHoverToolbar.vue'
 import BlockPicker from './BlockPicker.vue'
 import ExternalResourcePicker from './ExternalResourcePicker.vue'
-import PdfExcerptPicker, { type PdfExcerptSelection } from './PdfExcerptPicker.vue'
+import PdfExcerptPicker, { type PdfExcerptPickerMode, type PdfExcerptSelection } from './PdfExcerptPicker.vue'
 import BlockMetadataTagEditor from './BlockMetadataTagEditor.vue'
 import PageTagsBar from './PageTagsBar.vue'
 import TagFilterBar from './TagFilterBar.vue'
@@ -93,10 +93,10 @@ import {
 import type { GraphData } from '@/api/types'
 import type { UrlHoverTarget } from '@/editor/urlHoverTarget'
 import type { UrlDisplayMode } from '@/utils/urlDisplay'
-import { PDF_EXCERPT_SCROLL_EVENT } from '@/utils/pdfExcerpt'
+import { PDF_EXCERPT_SCROLL_EVENT, PDF_EXCERPT_DEFAULT_HEIGHT, parsePdfExcerptViewMode } from '@/utils/pdfExcerpt'
 
 type TocItem = TocTreeItem
-const NODEVIEW_TYPES = ['x6Block', 'tableBlock', 'multiTableBlock', 'timelineBlock', 'spacerBlock', 'refBlock', 'externalResourceBlock']
+const NODEVIEW_TYPES = ['x6Block', 'tableBlock', 'multiTableBlock', 'timelineBlock', 'spacerBlock', 'refBlock', 'externalResourceBlock', 'pdfExcerptBlock']
 
 const nodeViewToolbar = reactive({
   visible: false,
@@ -375,6 +375,21 @@ const tuEditorRef = ref<InstanceType<typeof TuEditor> | null>(null)
 const showBlockPicker = ref(false)
 const showResourcePicker = ref(false)
 const showPdfExcerptPicker = ref(false)
+const pdfExcerptPickerMode = ref<PdfExcerptPickerMode>('insert')
+const pdfExcerptEditBlockId = ref('')
+const pdfExcerptPickerInitial = ref<PdfExcerptSelection | null>(null)
+
+function findPdfExcerptAttrsByBlockId(editor: import('@tiptap/core').Editor, blockId: string) {
+  let attrs: Record<string, unknown> | undefined
+  editor.state.doc.descendants((node) => {
+    if (node.type.name === 'pdfExcerptBlock' && node.attrs.blockId === blockId) {
+      attrs = node.attrs as Record<string, unknown>
+      return false
+    }
+    return true
+  })
+  return attrs
+}
 const resourcePickerMode = ref<'insert' | 'markExcerpt' | 'bindSource' | 'setBasis'>('insert')
 const pendingResourceExcerptText = ref('')
 const pendingResourceExcerptTitle = ref('')
@@ -796,14 +811,50 @@ const handleOpenResourcePicker = () => {
 }
 
 const handleOpenPdfExcerptPicker = () => {
+  pdfExcerptPickerMode.value = 'insert'
+  pdfExcerptEditBlockId.value = ''
+  pdfExcerptPickerInitial.value = null
+  showPdfExcerptPicker.value = true
+}
+
+const handleEditPdfExcerptSource = (blockId: string) => {
+  const editor = tuEditorRef.value?.editor
+  if (!editor || !blockId) return
+
+  const foundAttrs = findPdfExcerptAttrsByBlockId(editor, blockId)
+  if (!foundAttrs) return
+
+  pdfExcerptPickerMode.value = 'edit'
+  pdfExcerptEditBlockId.value = blockId
+  pdfExcerptPickerInitial.value = {
+    fileId: String(foundAttrs.fileId || ''),
+    fileName: String(foundAttrs.fileName || 'PDF'),
+    viewMode: parsePdfExcerptViewMode(String(foundAttrs.viewMode || 'excerpt')),
+    startPage: Number(foundAttrs.startPage) || 1,
+    endPage: Number(foundAttrs.endPage) || 1,
+    height: Number(foundAttrs.height) || PDF_EXCERPT_DEFAULT_HEIGHT,
+  }
+  hideNodeViewToolbar()
   showPdfExcerptPicker.value = true
 }
 
 const handlePdfExcerptPickerConfirm = (selection: PdfExcerptSelection) => {
-  const inserted = tuEditorRef.value?.insertPdfExcerptBlock?.(selection)
-  if (!inserted) return
+  if (pdfExcerptPickerMode.value === 'edit' && pdfExcerptEditBlockId.value) {
+    const updated = tuEditorRef.value?.updatePdfExcerptBlock?.(pdfExcerptEditBlockId.value, selection)
+    if (!updated) return
+    const rangeLabel = selection.viewMode === 'full'
+      ? '全文'
+      : `第 ${selection.startPage}–${selection.endPage} 页`
+    showToast(`已更新 PDF 来源：${selection.fileName}（${rangeLabel}）`)
+  } else {
+    const inserted = tuEditorRef.value?.insertPdfExcerptBlock?.(selection)
+    if (!inserted) return
+    showToast(`已插入 PDF 摘页：${selection.fileName} 第 ${selection.startPage}–${selection.endPage} 页`)
+  }
   showPdfExcerptPicker.value = false
-  showToast(`已插入 PDF 摘页：${selection.fileName} 第 ${selection.startPage}–${selection.endPage} 页`)
+  pdfExcerptPickerMode.value = 'insert'
+  pdfExcerptEditBlockId.value = ''
+  pdfExcerptPickerInitial.value = null
 }
 
 const getSelectionAnnotationPayload = (from: number, to: number) => {
@@ -2634,6 +2685,7 @@ onBeforeUnmount(() => {
           @open-block-picker="handleOpenBlockPicker"
           @open-resource-picker="handleOpenResourcePicker"
           @open-pdf-excerpt-picker="handleOpenPdfExcerptPicker"
+          @edit-pdf-excerpt-source="handleEditPdfExcerptSource"
           @open-tag-editor="handleOpenTagEditor"
           @block-click="handleBlockClick"
           @mark-block-excerpt="handleMarkBlockExcerpt"
@@ -2708,6 +2760,11 @@ onBeforeUnmount(() => {
         @mousedown.stop
         @click.stop
       >
+        <button
+          v-if="nodeViewToolbar.sourceType === 'pdfExcerptBlock'"
+          class="nodeview-toolbar__btn"
+          @click="handleEditPdfExcerptSource(nodeViewToolbar.blockId)"
+        >更改来源</button>
         <button
           v-if="nodeViewToolbar.canPromoteToPage"
           class="nodeview-toolbar__btn"
@@ -2830,6 +2887,8 @@ onBeforeUnmount(() => {
 
     <PdfExcerptPicker
       :visible="showPdfExcerptPicker"
+      :mode="pdfExcerptPickerMode"
+      :initial="pdfExcerptPickerInitial"
       @update:visible="showPdfExcerptPicker = $event"
       @confirm="handlePdfExcerptPickerConfirm"
     />

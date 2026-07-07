@@ -25,6 +25,7 @@ export class PdfPageRenderManager {
   private rangeStart = 1
   private rangeEnd = 1
   private zoomScale = DEFAULT_ZOOM_SCALE
+  private lastLayoutWidth = 0
   private readonly lastHostWidths = new Map<number, number>()
   private suppressResize = false
   private disposed = false
@@ -84,25 +85,30 @@ export class PdfPageRenderManager {
   handleResize(pageNumber: number) {
     if (this.suppressResize) return
 
-    const host = this.callbacks.getHost(pageNumber)
-    if (!host) return
-
-    const width = host.clientWidth || this.callbacks.getScrollRoot()?.clientWidth || 0
+    const width = this.resolveRenderWidth(pageNumber)
     if (width <= 0) return
 
-    const lastWidth = this.lastHostWidths.get(pageNumber)
-    if (lastWidth != null && Math.abs(width - lastWidth) < 2) {
+    if (this.lastLayoutWidth > 0 && Math.abs(width - this.lastLayoutWidth) < 2) {
       return
     }
-    this.lastHostWidths.set(pageNumber, width)
 
-    if (this.renderedPages.has(pageNumber)) {
-      const task = this.renderTasks.get(pageNumber)
-      task?.cancel?.()
-      this.renderTasks.delete(pageNumber)
-      this.renderedPages.delete(pageNumber)
+    const pagesToUpdate = this.lastLayoutWidth > 0
+      ? [...new Set([...this.renderedPages, ...this.visiblePages, pageNumber])]
+      : [pageNumber]
+
+    this.lastLayoutWidth = width
+
+    for (const page of pagesToUpdate) {
+      if (page < this.rangeStart || page > this.rangeEnd) continue
+      this.lastHostWidths.set(page, width)
+      if (this.renderedPages.has(page)) {
+        const task = this.renderTasks.get(page)
+        task?.cancel?.()
+        this.renderTasks.delete(page)
+        this.renderedPages.delete(page)
+      }
+      this.enqueueRender(page)
     }
-    this.enqueueRender(pageNumber)
   }
 
   requestRender(pageNumber: number) {
@@ -164,6 +170,28 @@ export class PdfPageRenderManager {
     }
   }
 
+  private resolveRenderWidth(pageNumber: number): number {
+    const root = this.callbacks.getScrollRoot()
+    if (root) {
+      const style = getComputedStyle(root)
+      const paddingX = (parseFloat(style.paddingLeft) || 0) + (parseFloat(style.paddingRight) || 0)
+      const contentWidth = root.clientWidth - paddingX
+      if (contentWidth > 0) {
+        const host = this.callbacks.getHost(pageNumber)
+        const pageShell = host?.parentElement
+        if (pageShell) {
+          const pageStyle = getComputedStyle(pageShell)
+          const pagePaddingX = (parseFloat(pageStyle.paddingLeft) || 0) + (parseFloat(pageStyle.paddingRight) || 0)
+          return Math.floor(contentWidth - pagePaddingX)
+        }
+        return Math.floor(contentWidth)
+      }
+    }
+
+    const host = this.callbacks.getHost(pageNumber)
+    return host?.clientWidth || 0
+  }
+
   private async renderPage(pageNumber: number) {
     const doc = this.callbacks.getDoc()
     if (!doc || this.disposed || this.renderedPages.has(pageNumber)) return
@@ -171,7 +199,7 @@ export class PdfPageRenderManager {
     const host = this.callbacks.getHost(pageNumber)
     if (!host) return
 
-    const hostWidth = host.clientWidth || this.callbacks.getScrollRoot()?.clientWidth || 0
+    const hostWidth = this.resolveRenderWidth(pageNumber)
     if (hostWidth <= 0) return
 
     try {
@@ -208,6 +236,7 @@ export class PdfPageRenderManager {
       currentHost.replaceChildren(canvas)
       this.renderedPages.add(pageNumber)
       this.pageProxies.set(pageNumber, page)
+      this.lastLayoutWidth = hostWidth
       this.lastHostWidths.set(pageNumber, hostWidth)
       const height = canvasHeight
       this.placeholderHeights.set(pageNumber, height)

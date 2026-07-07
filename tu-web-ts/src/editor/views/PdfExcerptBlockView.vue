@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, markRaw, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
+import { computed, inject, markRaw, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import { nodeViewProps, NodeViewWrapper } from '@tiptap/vue-3'
 import { buildFileUrl } from '@/api/fileStorage'
 import ResizableBlockWrapper from '../components/ResizableBlockWrapper.vue'
@@ -12,6 +12,9 @@ import {
   PDF_EXCERPT_ZOOM_MAX,
   PDF_EXCERPT_ZOOM_MIN,
   PDF_EXCERPT_ZOOM_STEP,
+  PDF_EXCERPT_SIDEBAR_DEFAULT_WIDTH,
+  PDF_EXCERPT_SIDEBAR_MIN_WIDTH,
+  PDF_EXCERPT_SIDEBAR_MAX_WIDTH,
   formatPdfExcerptMetaLabel,
   parsePdfExcerptViewMode,
   resolvePageRange,
@@ -27,6 +30,8 @@ import { PdfPageRenderManager } from '@/utils/pdfPageRender'
 import PdfExcerptSidebar from './PdfExcerptSidebar.vue'
 
 const props = defineProps(nodeViewProps)
+
+const onEditPdfExcerptSource = inject<(blockId: string) => void>('onEditPdfExcerptSource', () => {})
 
 const blockId = computed(() => props.node.attrs.blockId || '')
 const fileId = computed(() => String(props.node.attrs.fileId || ''))
@@ -45,7 +50,9 @@ const docRef = shallowRef<PdfDocumentProxy | null>(null)
 const sidebarNodes = ref<PdfSidebarNode[]>([])
 const sidebarSource = ref<PdfSidebarSource>('pages')
 const sidebarOpen = ref(true)
-const activePage = ref<number | null>(null)
+const sidebarWidth = ref(PDF_EXCERPT_SIDEBAR_DEFAULT_WIDTH)
+const savedSidebarWidth = ref(PDF_EXCERPT_SIDEBAR_DEFAULT_WIDTH)
+const activeNodeId = ref<string | null>(null)
 const pagesScrollRef = ref<HTMLElement | null>(null)
 const pdfBlockRef = ref<HTMLElement | null>(null)
 const isPdfBlockHovered = ref(false)
@@ -64,6 +71,10 @@ let boundUrl = ''
 let loadGeneration = 0
 let resolvedStartPage = 1
 let resolvedEndPage = 1
+let sidebarResizeLayoutRafId = 0
+let sidebarDragging = false
+let sidebarResizeStartX = 0
+let sidebarResizeStartWidth = 0
 
 const metaLabel = computed(() => formatPdfExcerptMetaLabel(
   fileName.value,
@@ -107,20 +118,78 @@ function getPlaceholderHeight(pageNumber: number): number {
 }
 
 function toggleSidebar() {
-  sidebarOpen.value = !sidebarOpen.value
+  if (sidebarOpen.value) {
+    savedSidebarWidth.value = sidebarWidth.value
+    sidebarOpen.value = false
+    return
+  }
+  sidebarOpen.value = true
+  sidebarWidth.value = savedSidebarWidth.value
+  void nextTick().then(() => schedulePdfLayoutAfterSidebarResize())
 }
 
-function scrollToPage(pageNumber: number) {
+function clampSidebarWidth(width: number): number {
+  return Math.min(
+    PDF_EXCERPT_SIDEBAR_MAX_WIDTH,
+    Math.max(PDF_EXCERPT_SIDEBAR_MIN_WIDTH, Math.round(width)),
+  )
+}
+
+function schedulePdfLayoutAfterSidebarResize() {
+  if (sidebarResizeLayoutRafId) return
+  sidebarResizeLayoutRafId = requestAnimationFrame(() => {
+    sidebarResizeLayoutRafId = 0
+    const firstPage = pageCanvases.value[0]?.pageNumber
+    if (firstPage != null) {
+      renderManager?.handleResize(firstPage)
+    }
+  })
+}
+
+function onSidebarResizeMouseMove(event: MouseEvent) {
+  if (!sidebarDragging) return
+  const delta = event.clientX - sidebarResizeStartX
+  sidebarWidth.value = clampSidebarWidth(sidebarResizeStartWidth + delta)
+  schedulePdfLayoutAfterSidebarResize()
+}
+
+function onSidebarResizeMouseUp() {
+  sidebarDragging = false
+  document.removeEventListener('mousemove', onSidebarResizeMouseMove)
+  document.removeEventListener('mouseup', onSidebarResizeMouseUp)
+  schedulePdfLayoutAfterSidebarResize()
+}
+
+function onSidebarResizeMouseDown(event: MouseEvent) {
+  event.preventDefault()
+  event.stopPropagation()
+  sidebarDragging = true
+  sidebarResizeStartX = event.clientX
+  sidebarResizeStartWidth = sidebarWidth.value
+  document.addEventListener('mousemove', onSidebarResizeMouseMove)
+  document.addEventListener('mouseup', onSidebarResizeMouseUp)
+}
+
+function scrollToPage(pageNumber: number, nodeId: string | null = null) {
   if (pageNumber < resolvedStartPage || pageNumber > resolvedEndPage) return
-  activePage.value = pageNumber
+  activeNodeId.value = nodeId
   const el = pageRefs.get(pageNumber)
   el?.scrollIntoView({ behavior: 'smooth', block: 'start' })
   renderManager?.requestRender(pageNumber)
 }
 
+function navigateSidebar(payload: { nodeId: string; pageNumber: number }) {
+  scrollToPage(payload.pageNumber, payload.nodeId)
+}
+
 function openInNewTab() {
   if (!fileUrl.value) return
   window.open(fileUrl.value, '_blank', 'noopener,noreferrer')
+}
+
+function handleEditSource() {
+  if (!blockId.value) return
+  onEditPdfExcerptSource(blockId.value)
 }
 
 function onResize(_width: number | null, nextHeight: number | null) {
@@ -173,7 +242,8 @@ function flushZoomDelta() {
 }
 
 function onPdfBlockWheel(event: WheelEvent) {
-  if (!isPdfBlockHovered.value || !event.ctrlKey) return
+  if (!event.ctrlKey) return
+  if (!isPdfBlockHovered.value) return
   event.preventDefault()
   event.stopPropagation()
   if (loading.value || loadError.value || pageCanvases.value.length === 0) return
@@ -214,19 +284,20 @@ function setupObserver() {
     })
   }, { root, threshold: 0.05, rootMargin: '120px 0px' })
 
-  resizeObserver = new ResizeObserver((entries) => {
-    entries.forEach((entry) => {
-      const pageNumber = Number((entry.target as HTMLElement).dataset.pageNumber)
-      if (!Number.isFinite(pageNumber)) return
-      renderManager?.handleResize(pageNumber)
-    })
+  resizeObserver = new ResizeObserver(() => {
+    const firstPage = pageCanvases.value[0]?.pageNumber
+    if (firstPage != null) {
+      renderManager?.handleResize(firstPage)
+    }
   })
 
   pageRefs.forEach((el, pageNumber) => {
     el.dataset.pageNumber = String(pageNumber)
-    observer?.observe(el)
-    resizeObserver?.observe(el)
+    observer?.observe(el.closest('.pdf-excerpt-block__page') ?? el)
   })
+  if (root) {
+    resizeObserver.observe(root)
+  }
 }
 
 async function schedulePageRendering() {
@@ -257,7 +328,7 @@ async function loadDocument() {
   pageCanvases.value = []
   sidebarNodes.value = []
   sidebarSource.value = 'pages'
-  activePage.value = null
+  activeNodeId.value = null
   pageRefs.clear()
 
   try {
@@ -309,9 +380,6 @@ async function loadDocument() {
     if (generation !== loadGeneration) return
     sidebarNodes.value = sidebar.nodes
     sidebarSource.value = sidebar.source
-    if (pages.length > 0) {
-      activePage.value = pages[0].pageNumber
-    }
   } catch (error) {
     loadError.value = error instanceof Error ? error.message : 'PDF 加载失败'
     pageCanvases.value = []
@@ -361,6 +429,12 @@ async function bindPdfScrollListener() {
 }
 
 onBeforeUnmount(() => {
+  if (sidebarResizeLayoutRafId) {
+    cancelAnimationFrame(sidebarResizeLayoutRafId)
+    sidebarResizeLayoutRafId = 0
+  }
+  document.removeEventListener('mousemove', onSidebarResizeMouseMove)
+  document.removeEventListener('mouseup', onSidebarResizeMouseUp)
   if (zoomRafId) {
     cancelAnimationFrame(zoomRafId)
     zoomRafId = 0
@@ -383,6 +457,8 @@ onBeforeUnmount(() => {
   <node-view-wrapper class="pdf-excerpt-block-nv" :data-block-id="blockId">
     <ResizableBlockWrapper
       :selected="selected"
+      :content-hover-chrome="false"
+      :resize-on-hover="false"
       :resizable-axes="{ width: false, height: true }"
       :height="height"
       :min-height="PDF_EXCERPT_MIN_HEIGHT"
@@ -396,6 +472,15 @@ onBeforeUnmount(() => {
         <span class="pdf-excerpt-block__meta" :title="metaLabel">
           {{ metaLabel }}
         </span>
+        <button
+          type="button"
+          class="pdf-excerpt-block__edit-source"
+          data-node-view-no-drag
+          @mousedown.stop
+          @click.stop="handleEditSource"
+        >
+          更改来源
+        </button>
       </template>
 
       <div
@@ -412,49 +497,71 @@ onBeforeUnmount(() => {
           </button>
         </div>
         <div v-else class="pdf-excerpt-block__content">
-          <aside
-            v-if="showSidebar && sidebarOpen"
-            class="pdf-excerpt-block__sidebar"
-            @mousedown.stop
+          <div
+            v-if="showSidebar"
+            class="pdf-excerpt-block__sidebar-column"
+            :class="{ 'pdf-excerpt-block__sidebar-column--collapsed': !sidebarOpen }"
           >
-            <div class="pdf-excerpt-block__sidebar-header">
-              <span class="pdf-excerpt-block__sidebar-title">{{ sidebarTitle }}</span>
+            <aside
+              v-show="sidebarOpen"
+              class="pdf-excerpt-block__sidebar"
+              :style="{ width: `${sidebarWidth}px` }"
+              @mousedown.stop
+            >
+              <div class="pdf-excerpt-block__sidebar-header">
+                <span class="pdf-excerpt-block__sidebar-title">{{ sidebarTitle }}</span>
+              </div>
+              <nav v-if="sidebarNodes.length > 0" class="pdf-excerpt-block__sidebar-nav" aria-label="PDF 目录">
+                <PdfExcerptSidebar
+                  :nodes="sidebarNodes"
+                  :start-page="resolvedStartPage"
+                  :end-page="resolvedEndPage"
+                  :active-node-id="activeNodeId"
+                  @navigate="navigateSidebar"
+                />
+              </nav>
+              <p v-else-if="sidebarEmptyHint" class="pdf-excerpt-block__sidebar-empty">
+                {{ sidebarEmptyHint }}
+              </p>
+            </aside>
+            <div class="pdf-excerpt-block__sidebar-edge">
               <button
                 type="button"
                 class="pdf-excerpt-block__sidebar-toggle"
-                :title="`隐藏${sidebarTitle}`"
-                :aria-label="`隐藏${sidebarTitle}`"
-                @click="toggleSidebar"
+                data-node-view-no-drag
+                :title="sidebarOpen ? `隐藏${sidebarTitle}` : `显示${sidebarTitle}`"
+                :aria-label="sidebarOpen ? `隐藏${sidebarTitle}` : `显示${sidebarTitle}`"
+                :aria-expanded="sidebarOpen"
+                @mousedown.stop
+                @click.stop="toggleSidebar"
               >
-                ‹
+                <svg
+                  class="pdf-excerpt-block__sidebar-toggle-icon"
+                  :class="{ 'pdf-excerpt-block__sidebar-toggle-icon--collapsed': !sidebarOpen }"
+                  viewBox="0 0 12 12"
+                  aria-hidden="true"
+                >
+                  <path
+                    d="M7.5 2 4 6l3.5 4"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.6"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                  />
+                </svg>
               </button>
-            </div>
-            <nav v-if="sidebarNodes.length > 0" class="pdf-excerpt-block__sidebar-nav" aria-label="PDF 目录">
-              <PdfExcerptSidebar
-                :nodes="sidebarNodes"
-                :start-page="resolvedStartPage"
-                :end-page="resolvedEndPage"
-                :active-page="activePage"
-                @navigate="scrollToPage"
+              <div
+                v-show="sidebarOpen"
+                class="pdf-excerpt-block__sidebar-resizer"
+                data-node-view-no-drag
+                title="拖拽调节宽度"
+                aria-label="拖拽调节书签栏宽度"
+                @mousedown.stop.prevent="onSidebarResizeMouseDown"
               />
-            </nav>
-            <p v-else-if="sidebarEmptyHint" class="pdf-excerpt-block__sidebar-empty">
-              {{ sidebarEmptyHint }}
-            </p>
-          </aside>
+            </div>
+          </div>
           <div class="pdf-excerpt-block__main">
-            <button
-              v-if="showSidebar && !sidebarOpen"
-              type="button"
-              class="pdf-excerpt-block__sidebar-expand"
-              :title="`显示${sidebarTitle}`"
-              :aria-label="`显示${sidebarTitle}`"
-              @mousedown.stop
-              @click="toggleSidebar"
-            >
-              <span class="pdf-excerpt-block__sidebar-expand-icon">›</span>
-              <span class="pdf-excerpt-block__sidebar-expand-label">{{ sidebarTitle }}</span>
-            </button>
             <div ref="pagesScrollRef" class="pdf-excerpt-block__pages">
               <div
                 v-if="showZoomBadge"
@@ -467,12 +574,15 @@ onBeforeUnmount(() => {
               <div
                 v-for="page in pageCanvases"
                 :key="page.pageNumber"
-                :ref="(el) => setPageRef(page.pageNumber, el)"
                 class="pdf-excerpt-block__page"
                 :data-page-number="page.pageNumber"
                 :style="{ minHeight: `${page.placeholderHeight || getPlaceholderHeight(page.pageNumber)}px` }"
               >
                 <div class="pdf-excerpt-block__page-label">第 {{ page.pageNumber }} 页</div>
+                <div
+                  :ref="(el) => setPageRef(page.pageNumber, el)"
+                  class="pdf-excerpt-block__page-canvas-host"
+                />
               </div>
             </div>
           </div>
@@ -490,6 +600,24 @@ onBeforeUnmount(() => {
   white-space: nowrap;
 }
 
+.pdf-excerpt-block__edit-source {
+  flex-shrink: 0;
+  padding: 2px 8px;
+  border: 1px solid #cbd5e1;
+  border-radius: 4px;
+  background: #fff;
+  color: #475569;
+  font-size: 11px;
+  line-height: 1.4;
+  cursor: pointer;
+}
+
+.pdf-excerpt-block__edit-source:hover {
+  border-color: #94a3b8;
+  color: #1e293b;
+  background: #f8fafc;
+}
+
 .pdf-excerpt-block {
   flex: 1;
   min-height: 0;
@@ -503,15 +631,98 @@ onBeforeUnmount(() => {
   height: 100%;
 }
 
+.pdf-excerpt-block__sidebar-column {
+  display: flex;
+  flex-shrink: 0;
+  min-height: 0;
+  height: 100%;
+}
+
+.pdf-excerpt-block__sidebar-column--collapsed {
+  min-width: 0;
+}
+
 .pdf-excerpt-block__sidebar {
-  flex: 0 0 200px;
-  width: 200px;
+  flex-shrink: 0;
   min-height: 0;
   display: flex;
   flex-direction: column;
-  border-right: 1px solid #e2e8f0;
+  overflow: hidden;
   background: #f1f5f9;
   box-sizing: border-box;
+}
+
+.pdf-excerpt-block__sidebar-edge {
+  position: relative;
+  flex-shrink: 0;
+  width: 4px;
+  height: 100%;
+  border-right: 1px solid #e4e4e4;
+  background: #f1f5f9;
+  pointer-events: none;
+  overflow: visible;
+}
+
+.pdf-excerpt-block__sidebar-column--collapsed .pdf-excerpt-block__sidebar-edge {
+  width: 0;
+}
+
+.pdf-excerpt-block__sidebar-toggle {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  z-index: 21;
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 12px;
+  height: 48px;
+  padding: 0;
+  border: 1px solid #d0d7de;
+  border-radius: 8px;
+  background: #fff;
+  color: #595959;
+  cursor: pointer;
+  box-shadow: 0 1px 4px rgba(15, 23, 42, 0.08);
+  transform: translate(-50%, -50%);
+  transition: border-color 0.15s, color 0.15s, box-shadow 0.15s;
+}
+
+.pdf-excerpt-block__sidebar-toggle:hover {
+  border-color: #1677ff;
+  color: #1677ff;
+  box-shadow: 0 2px 8px rgba(22, 119, 255, 0.16);
+}
+
+.pdf-excerpt-block__sidebar-toggle-icon {
+  width: 8px;
+  height: 8px;
+  flex-shrink: 0;
+  transition: transform 0.2s ease;
+}
+
+.pdf-excerpt-block__sidebar-toggle-icon--collapsed {
+  transform: rotate(180deg);
+}
+
+.pdf-excerpt-block__sidebar-resizer {
+  position: absolute;
+  inset: 0;
+  width: 4px;
+  max-width: 4px;
+  flex-shrink: 0;
+  cursor: col-resize;
+  background: transparent;
+  transition: background 0.15s;
+  z-index: 10;
+  pointer-events: auto;
+  box-sizing: border-box;
+}
+
+.pdf-excerpt-block__sidebar-resizer:hover,
+.pdf-excerpt-block__sidebar-resizer:active {
+  background: #1677ff40;
 }
 
 .pdf-excerpt-block__sidebar-header {
@@ -520,7 +731,7 @@ onBeforeUnmount(() => {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  padding: 8px 8px 8px 12px;
+  padding: 8px 8px 8px 8px;
 }
 
 .pdf-excerpt-block__sidebar-title {
@@ -530,35 +741,16 @@ onBeforeUnmount(() => {
   color: #64748b;
 }
 
-.pdf-excerpt-block__sidebar-toggle {
-  flex-shrink: 0;
-  width: 24px;
-  height: 24px;
-  padding: 0;
-  border: none;
-  border-radius: 4px;
-  background: transparent;
-  color: #64748b;
-  font-size: 16px;
-  line-height: 1;
-  cursor: pointer;
-}
-
-.pdf-excerpt-block__sidebar-toggle:hover {
-  background: #e2e8f0;
-  color: #334155;
-}
-
 .pdf-excerpt-block__sidebar-nav {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: 0 6px 8px;
+  padding: 0 4px 8px 0;
 }
 
 .pdf-excerpt-block__sidebar-empty {
   margin: 0;
-  padding: 8px 12px 12px;
+  padding: 8px 8px 12px;
   font-size: 12px;
   line-height: 1.5;
   color: #64748b;
@@ -570,39 +762,7 @@ onBeforeUnmount(() => {
   min-height: 0;
   display: flex;
   overflow: hidden;
-}
-
-.pdf-excerpt-block__sidebar-expand {
-  flex: 0 0 28px;
-  width: 28px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: flex-start;
-  gap: 4px;
-  padding: 10px 0;
-  border: none;
-  border-right: 1px solid #e2e8f0;
-  background: #f1f5f9;
-  color: #64748b;
-  cursor: pointer;
-  box-sizing: border-box;
-}
-
-.pdf-excerpt-block__sidebar-expand:hover {
-  background: #e2e8f0;
-  color: #334155;
-}
-
-.pdf-excerpt-block__sidebar-expand-icon {
-  font-size: 14px;
-  line-height: 1;
-}
-
-.pdf-excerpt-block__sidebar-expand-label {
-  font-size: 11px;
-  writing-mode: vertical-rl;
-  letter-spacing: 0.08em;
+  cursor: default;
 }
 
 .pdf-excerpt-block__pages {
@@ -675,12 +835,21 @@ onBeforeUnmount(() => {
 }
 
 .pdf-excerpt-block__page {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
   background: #fff;
   border: 1px solid #e5e7eb;
   border-radius: 8px;
   padding: 8px;
-  box-sizing: border-box;
-  overflow-x: auto;
+  overflow: visible;
+}
+
+.pdf-excerpt-block__page-canvas-host {
+  width: 100%;
+  min-width: 0;
+  overflow: visible;
 }
 
 .pdf-excerpt-block__page-label {

@@ -28,6 +28,10 @@ const props = defineProps({
   compoundBadges: { type: Object as () => CompoundBadge[], default: () => [] },
   headingLevel: { type: Number, default: 0 },
   headingText: { type: String, default: '' },
+  /** false：悬停内容区不显示块级 hover 边框（如 PDF 内嵌阅读区） */
+  contentHoverChrome: { type: Boolean, default: true },
+  /** false：仅在块被选中时显示拖拽手柄 */
+  resizeOnHover: { type: Boolean, default: true },
 })
 
 const emit = defineEmits<{
@@ -38,12 +42,45 @@ const emit = defineEmits<{
 const wrapper = ref<HTMLElement | null>(null)
 const dragging = ref<'right' | 'bottom' | 'corner' | null>(null)
 const hovered = ref(false)
+const chromeHovered = ref(false)
 const dragWidth = ref<number | null>(null)
 const dragHeight = ref<number | null>(null)
 
 const { clampWidth: clampToContentWidth } = useContentContainerBounds(wrapper)
 
-const showHandles = computed(() => props.selected || hovered.value)
+const showHoverChrome = computed(() => (
+  props.contentHoverChrome ? hovered.value : chromeHovered.value
+))
+
+const showHandles = computed(() => {
+  if (props.selected) return true
+  if (!props.resizeOnHover) return false
+  return hovered.value
+})
+
+function onWrapperMouseEnter() {
+  hovered.value = true
+  if (props.contentHoverChrome) {
+    chromeHovered.value = true
+  }
+}
+
+function onWrapperMouseLeave() {
+  hovered.value = false
+  chromeHovered.value = false
+}
+
+function onChromeMouseEnter() {
+  if (!props.contentHoverChrome) {
+    chromeHovered.value = true
+  }
+}
+
+function onChromeMouseLeave() {
+  if (!props.contentHoverChrome) {
+    chromeHovered.value = false
+  }
+}
 
 // Lasso selection state (multi-select for batch operations)
 const lassoSelectedBlockIds = inject('lassoSelectedBlockIds') as Ref<Set<string>>
@@ -144,19 +181,23 @@ onBeforeUnmount(() => {
     class="resizable-block-wrapper"
     :class="{
       'resizable-block-wrapper--selected': selected,
+      'resizable-block-wrapper--hover-chrome': showHoverChrome,
+      'resizable-block-wrapper--content-neutral': !contentHoverChrome,
       'resizable-block-wrapper--dragging': dragging != null,
       'resizable-block-wrapper--lasso-selected': isLassoSelected,
     }"
     :data-block-id="blockId || undefined"
     :style="wrapperStyle"
-    @mouseenter="hovered = true"
-    @mouseleave="hovered = false"
+    @mouseenter="onWrapperMouseEnter"
+    @mouseleave="onWrapperMouseLeave"
   >
     <TuBlockChromeHeader
       v-if="blockTypeLabel"
       :type-label="blockTypeLabel"
       :compound-badges="compoundBadges"
       drag-handle
+      @mouseenter="onChromeMouseEnter"
+      @mouseleave="onChromeMouseLeave"
       @compound-badge-click="(annotationId, event) => emit('compound-badge-click', blockId, annotationId, event)"
     />
 
@@ -164,6 +205,8 @@ onBeforeUnmount(() => {
       v-if="$slots['header-meta']"
       class="resizable-block-wrapper__header-meta"
       data-node-view-no-drag
+      @mouseenter="onChromeMouseEnter"
+      @mouseleave="onChromeMouseLeave"
     >
       <slot name="header-meta" />
     </div>
@@ -210,9 +253,14 @@ onBeforeUnmount(() => {
   transition: border-color 0.15s, box-shadow 0.15s;
 }
 
-.resizable-block-wrapper:hover {
+.resizable-block-wrapper--hover-chrome {
   border-color: rgba(22, 119, 255, 0.35);
   box-shadow: 0 0 0 1px rgba(22, 119, 255, 0.08), 0 1px 6px rgba(22, 119, 255, 0.06);
+}
+
+.resizable-block-wrapper--content-neutral:not(.resizable-block-wrapper--hover-chrome):hover {
+  border-color: transparent;
+  box-shadow: none;
 }
 
 .resizable-block-wrapper--selected {

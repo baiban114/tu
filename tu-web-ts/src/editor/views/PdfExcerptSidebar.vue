@@ -7,12 +7,12 @@ const props = defineProps<{
   nodes: PdfSidebarNode[]
   startPage: number
   endPage: number
-  activePage: number | null
+  activeNodeId: string | null
   depth?: number
 }>()
 
 const emit = defineEmits<{
-  navigate: [pageNumber: number]
+  navigate: [payload: { nodeId: string; pageNumber: number }]
 }>()
 
 function navigablePage(node: PdfSidebarNode): number | null {
@@ -23,7 +23,9 @@ function onClick(node: PdfSidebarNode, event: MouseEvent) {
   event.preventDefault()
   event.stopPropagation()
   const pageNumber = navigablePage(node)
-  if (pageNumber != null) emit('navigate', pageNumber)
+  if (pageNumber != null) {
+    emit('navigate', { nodeId: node.id, pageNumber })
+  }
 }
 </script>
 
@@ -37,10 +39,10 @@ function onClick(node: PdfSidebarNode, event: MouseEvent) {
         type="button"
         class="pdf-excerpt-sidebar__link"
         :class="{
-          'pdf-excerpt-sidebar__link--active': navigablePage(node) === activePage,
+          'pdf-excerpt-sidebar__link--active': node.id === activeNodeId,
           'pdf-excerpt-sidebar__link--disabled': navigablePage(node) == null,
         }"
-        :style="{ paddingLeft: `${8 + (depth ?? 0) * 12}px` }"
+        :style="{ paddingLeft: `${4 + (depth ?? 0) * 3}px` }"
         @mousedown.stop
         @click="onClick(node, $event)"
       >
@@ -54,7 +56,7 @@ function onClick(node: PdfSidebarNode, event: MouseEvent) {
         :nodes="node.children"
         :start-page="startPage"
         :end-page="endPage"
-        :active-page="activePage"
+        :active-node-id="activeNodeId"
         :depth="(depth ?? 0) + 1"
         @navigate="emit('navigate', $event)"
       />
@@ -83,7 +85,7 @@ function onClick(node: PdfSidebarNode, event: MouseEvent) {
   justify-content: space-between;
   gap: 8px;
   width: 100%;
-  padding: 6px 8px;
+  padding: 6px 6px 6px 4px;
   border: none;
   border-radius: 6px;
   background: transparent;

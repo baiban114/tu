@@ -100,6 +100,7 @@ const emit = defineEmits<{
   'open-block-picker': []
   'open-resource-picker': []
   'open-pdf-excerpt-picker': []
+  'edit-pdf-excerpt-source': [blockId: string]
   'open-tag-editor': [blockId: string]
   'heading-source-click': [binding: HeadingSourceBinding, context: { blockId: string; title: string; clientX: number; clientY: number }]
   'mark-block-excerpt': [blockId: string]
@@ -206,6 +207,10 @@ const handleCompoundBadgeClick = (blockId: string, annotationId: string, event: 
   emit('compound-badge-click', blockId, annotationId, event.clientY, event.clientX)
 }
 provide('onCompoundBadgeClick', handleCompoundBadgeClick)
+
+provide('onEditPdfExcerptSource', (blockId: string) => {
+  emit('edit-pdf-excerpt-source', blockId)
+})
 
 // --- Lasso (multi-select) ---
 const lassoSelectedBlockIds = ref(new Set<string>())
@@ -660,6 +665,40 @@ const insertPdfExcerptBlock = (input: {
     return editor.value.chain().focus().insertContentAt(pos, content).run()
   }
   return editor.value.chain().focus().insertContent(content).run()
+}
+
+const updatePdfExcerptBlock = (
+  blockId: string,
+  input: {
+    fileId: string
+    fileName: string
+    viewMode?: 'excerpt' | 'full'
+    startPage: number
+    endPage: number
+    height?: number
+  },
+) => {
+  const ed = editor.value
+  if (!ed || !blockId) return false
+
+  let found: { pos: number; node: import('prosemirror-model').Node } | null = null
+  ed.state.doc.descendants((node, pos) => {
+    if (node.type.name === 'pdfExcerptBlock' && node.attrs.blockId === blockId) {
+      found = { pos, node }
+      return false
+    }
+    return true
+  })
+  if (!found) return false
+
+  return ed.chain().focus().command(({ tr, dispatch }) => {
+    if (!dispatch) return true
+    tr.setNodeMarkup(found!.pos, undefined, {
+      ...found!.node.attrs,
+      ...createPdfExcerptNodeAttrs({ ...input, blockId }),
+    })
+    return true
+  }).run()
 }
 
 const handleScrollInEditor = () => {
@@ -1775,6 +1814,7 @@ defineExpose({
   applyUrlDisplayMode,
   applyUrlEmbedHeight,
   insertPdfExcerptBlock,
+  updatePdfExcerptBlock,
   setUrlHoverSuppressed,
   showUrlHoverForInline: (from: number, to: number, url: string, displayMode: UrlDisplayMode = 'link', label?: string) => {
     const ed = editor.value

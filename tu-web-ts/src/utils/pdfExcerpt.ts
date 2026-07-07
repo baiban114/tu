@@ -6,6 +6,9 @@ export const PDF_EXCERPT_LARGE_DOC_PAGES = 300
 export const PDF_EXCERPT_ZOOM_MIN = 0.5
 export const PDF_EXCERPT_ZOOM_MAX = 3
 export const PDF_EXCERPT_ZOOM_STEP = 0.1
+export const PDF_EXCERPT_SIDEBAR_DEFAULT_WIDTH = 200
+export const PDF_EXCERPT_SIDEBAR_MIN_WIDTH = 160
+export const PDF_EXCERPT_SIDEBAR_MAX_WIDTH = 480
 
 export type PdfExcerptViewMode = 'excerpt' | 'full'
 

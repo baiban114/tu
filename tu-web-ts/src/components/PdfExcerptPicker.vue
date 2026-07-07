@@ -19,8 +19,12 @@ export interface PdfExcerptSelection {
   height: number
 }
 
+export type PdfExcerptPickerMode = 'insert' | 'edit'
+
 const props = defineProps<{
   visible: boolean
+  mode?: PdfExcerptPickerMode
+  initial?: PdfExcerptSelection | null
 }>()
 
 const emit = defineEmits<{
@@ -45,6 +49,12 @@ const dialogVisible = computed({
 })
 
 const isExcerptMode = computed(() => viewMode.value === 'excerpt')
+const isEditMode = computed(() => props.mode === 'edit')
+const dialogTitle = computed(() => (isEditMode.value ? '更改 PDF 来源' : '插入 PDF'))
+const confirmLabel = computed(() => {
+  if (isEditMode.value) return '保存'
+  return isExcerptMode.value ? '插入摘页' : '插入全文'
+})
 const isLargeDocument = computed(() => totalPages.value > PDF_EXCERPT_LARGE_DOC_PAGES)
 const canConfirm = computed(() => {
   if (!fileId.value) return false
@@ -64,8 +74,46 @@ function resetState() {
   height.value = PDF_EXCERPT_DEFAULT_HEIGHT
 }
 
-watch(() => props.visible, (visible) => {
-  if (!visible) resetState()
+async function applyInitial(initial: PdfExcerptSelection) {
+  uploading.value = false
+  fileId.value = initial.fileId
+  fileName.value = initial.fileName
+  viewMode.value = initial.viewMode
+  startPage.value = initial.startPage
+  endPage.value = initial.endPage
+  height.value = initial.height
+  inspecting.value = true
+  try {
+    if (initial.fileId) {
+      totalPages.value = await loadPdfPageCount(buildFileUrl(initial.fileId))
+      if (initial.viewMode === 'excerpt') {
+        const normalized = normalizePdfPageRange(startPage.value, endPage.value, totalPages.value)
+        startPage.value = normalized.startPage
+        endPage.value = normalized.endPage
+      } else {
+        startPage.value = 1
+        endPage.value = totalPages.value
+      }
+    } else {
+      totalPages.value = Math.max(initial.endPage, 1)
+    }
+  } catch {
+    totalPages.value = Math.max(initial.endPage, initial.startPage, 1)
+  } finally {
+    inspecting.value = false
+  }
+}
+
+watch(() => props.visible, async (visible) => {
+  if (!visible) {
+    resetState()
+    return
+  }
+  if (props.mode === 'edit' && props.initial) {
+    await applyInitial(props.initial)
+    return
+  }
+  resetState()
 })
 
 function openFilePicker() {
@@ -126,7 +174,7 @@ function onConfirm() {
   <el-dialog
     v-model="dialogVisible"
     class="tu-dialog-viewport"
-    title="插入 PDF"
+    :title="dialogTitle"
     width="520px"
     @click.stop
   >
@@ -205,7 +253,7 @@ function onConfirm() {
     <template #footer>
       <el-button @click="dialogVisible = false">取消</el-button>
       <el-button type="primary" :disabled="!canConfirm || uploading || inspecting" @click="onConfirm">
-        {{ isExcerptMode ? '插入摘页' : '插入全文' }}
+        {{ confirmLabel }}
       </el-button>
     </template>
   </el-dialog>

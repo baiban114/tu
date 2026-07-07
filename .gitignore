@@ -46,3 +46,4 @@ replay_pid*.log
 # Logs
 **/*.log
 **/logs/
+/opencode.json
