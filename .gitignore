@@ -16,11 +16,6 @@ replay_pid*.log
 /org/
 /main/
 
-# Independent products (not part of tu platform monorepo)
-/studyflow/
-/studyflow-service/
-/tu-backend-go/
-
 # Java (all modules)
 **/target/
 **/.mvn/wrapper/maven-wrapper.jar

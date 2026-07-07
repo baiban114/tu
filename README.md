@@ -14,8 +14,6 @@
 | [`tu-integration-service/`](./tu-integration-service/) | 外部任务系统集成（Kaneo 等） |
 | [`tu-rag-service/`](./tu-rag-service/) | Python FastAPI RAG 服务（端口 19080） |
 
-**不在本仓库内**：StudyFlow（`studyflow/`、`studyflow-service/`）为独立产品，保持单独仓库/目录。
-
 ## 本地开发（最小链路）
 
 1. 基础设施：`cd tu-backend && docker compose -f docker-compose.infra.yml up -d`

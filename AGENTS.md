@@ -10,7 +10,7 @@
 | `tu-backend/` | `baiban114/tu-backend` |
 | `tu-gateway/` | `baiban114/tu-gateway` |
 
-`tu-integration-service/`、`tu-rag-service/` 从未单独建仓，直接在本仓库内维护。StudyFlow（`studyflow/`、`studyflow-service/`）为独立产品，**不纳入**本 git 仓库（见根目录 `.gitignore` 外的同级目录）。
+`tu-integration-service/`、`tu-rag-service/` 从未单独建仓，直接在本仓库内维护。
 
 ## Monorepo layout
 
@@ -18,10 +18,10 @@
 |-----------|---------------|---------|
 | `tu-web-ts/` | Vue 3 + TypeScript + Vite | Frontend (Tiptap rich editor, X6 canvas, etc.) |
 | `tu-backend/` | Java 25 + Spring Boot 4 + Maven | Backend API (MySQL/PostgreSQL via Docker) |
+| `tu-gateway/` | Java + Spring Cloud Gateway | API 网关（默认端口 18080） |
+| `tu-integration-service/` | Java + Spring Boot | 外部任务系统集成 |
 | `tu-rag-service/` | Python + FastAPI | RAG retrieval/indexing on Qdrant |
-| `studyflow/` | React 19 + Vite | StudyFlow 学习驾驶舱 Web（port **5180**） |
-| `studyflow-service/` | Java + Dubbo + PostgreSQL | 学习进度微服务（port **18082**） |
-| `tu-backend/tu-platform-api/` | Java API jar | Dubbo 契约（由 tu-backend Provider 发布，studyflow-service 等 Consumer 依赖） |
+| `tu-backend/tu-platform-api/` | Java API jar | Dubbo 契约（由 tu-backend Provider 发布） |
 | `通用数据结构转换系统.md` | — | Design doc for DataMorph platform |
 
 ## Frontend (tu-web-ts)
