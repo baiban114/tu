@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   buildPdfSidebarTree,
+  collectExpandableNodeIds,
   resolveDestPageNumber,
   resolveSidebarNodePage,
   type PdfSidebarNode,
@@ -65,6 +66,21 @@ describe('pdfOutline', () => {
     }
     expect(resolveSidebarNodePage(node, 3, 10)).toBe(8)
     expect(resolveSidebarNodePage(node, 1, 10)).toBe(2)
+  })
+
+  it('collectExpandableNodeIds returns only nodes with children', () => {
+    const nodes: PdfSidebarNode[] = [
+      {
+        id: 'a',
+        title: 'A',
+        pageNumber: 1,
+        children: [
+          { id: 'a-1', title: 'A1', pageNumber: 2, children: [] },
+        ],
+      },
+      { id: 'b', title: 'B', pageNumber: 3, children: [] },
+    ]
+    expect(collectExpandableNodeIds(nodes)).toEqual(['a'])
   })
 
   it('buildPdfSidebarTree skips huge page list in full mode without outline', async () => {

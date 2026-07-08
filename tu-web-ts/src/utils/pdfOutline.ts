@@ -77,6 +77,21 @@ export function resolveSidebarNodePage(
   return null
 }
 
+/** Node ids that have children and can be expanded/collapsed in the sidebar tree. */
+export function collectExpandableNodeIds(nodes: PdfSidebarNode[]): string[] {
+  const ids: string[] = []
+  const walk = (list: PdfSidebarNode[]) => {
+    for (const node of list) {
+      if (node.children.length > 0) {
+        ids.push(node.id)
+        walk(node.children)
+      }
+    }
+  }
+  walk(nodes)
+  return ids
+}
+
 async function mapOutlineItems(
   doc: PdfDocumentProxy,
   items: RawOutlineItem[],

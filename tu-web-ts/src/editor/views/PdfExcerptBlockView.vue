@@ -23,11 +23,13 @@ import { acquirePdfDocument, releasePdfDocument } from '@/utils/pdfDocumentCache
 import type { PdfDocumentProxy } from '@/utils/pdfjsSetup'
 import {
   buildPdfSidebarTree,
+  collectExpandableNodeIds,
   type PdfSidebarNode,
   type PdfSidebarSource,
 } from '@/utils/pdfOutline'
 import { PdfPageRenderManager } from '@/utils/pdfPageRender'
 import PdfExcerptSidebar from './PdfExcerptSidebar.vue'
+import { useExpandCollapse } from '@/composables/useExpandCollapse'
 
 const props = defineProps(nodeViewProps)
 
@@ -53,6 +55,7 @@ const sidebarOpen = ref(true)
 const sidebarWidth = ref(PDF_EXCERPT_SIDEBAR_DEFAULT_WIDTH)
 const savedSidebarWidth = ref(PDF_EXCERPT_SIDEBAR_DEFAULT_WIDTH)
 const activeNodeId = ref<string | null>(null)
+const sidebarExpand = useExpandCollapse()
 const pagesScrollRef = ref<HTMLElement | null>(null)
 const pdfBlockRef = ref<HTMLElement | null>(null)
 const isPdfBlockHovered = ref(false)
@@ -90,6 +93,8 @@ const sidebarTitle = computed(() => {
 })
 
 const showSidebar = computed(() => sidebarNodes.value.length > 0 || sidebarSource.value === 'none')
+const sidebarExpandableIds = computed(() => collectExpandableNodeIds(sidebarNodes.value))
+const sidebarHasNestedNodes = computed(() => sidebarExpandableIds.value.length > 0)
 const sidebarEmptyHint = computed(() => (
   sidebarSource.value === 'none'
     ? '该 PDF 无书签目录，请滚动浏览各页'
@@ -115,6 +120,19 @@ function setPageRef(pageNumber: number, el: unknown) {
 
 function getPlaceholderHeight(pageNumber: number): number {
   return renderManager?.getPlaceholderHeight(pageNumber) ?? 120
+}
+
+function expandSidebarAll() {
+  sidebarExpand.expandAll(sidebarExpandableIds.value)
+}
+
+function collapseSidebarAll() {
+  sidebarExpand.collapseAll()
+}
+
+function resetSidebarExpandState(nodes: PdfSidebarNode[]) {
+  sidebarExpand.collapseAll()
+  sidebarExpand.expandAll(collectExpandableNodeIds(nodes))
 }
 
 function toggleSidebar() {
@@ -173,9 +191,10 @@ function onSidebarResizeMouseDown(event: MouseEvent) {
 function scrollToPage(pageNumber: number, nodeId: string | null = null) {
   if (pageNumber < resolvedStartPage || pageNumber > resolvedEndPage) return
   activeNodeId.value = nodeId
-  const el = pageRefs.get(pageNumber)
-  el?.scrollIntoView({ behavior: 'smooth', block: 'start' })
   renderManager?.requestRender(pageNumber)
+  const el = pageRefs.get(pageNumber)
+  const pageEl = el?.closest('.pdf-excerpt-block__page')
+  pageEl?.scrollIntoView({ behavior: 'instant', block: 'start' })
 }
 
 function navigateSidebar(payload: { nodeId: string; pageNumber: number }) {
@@ -380,6 +399,7 @@ async function loadDocument() {
     if (generation !== loadGeneration) return
     sidebarNodes.value = sidebar.nodes
     sidebarSource.value = sidebar.source
+    resetSidebarExpandState(sidebar.nodes)
   } catch (error) {
     loadError.value = error instanceof Error ? error.message : 'PDF 加载失败'
     pageCanvases.value = []
@@ -510,6 +530,28 @@ onBeforeUnmount(() => {
             >
               <div class="pdf-excerpt-block__sidebar-header">
                 <span class="pdf-excerpt-block__sidebar-title">{{ sidebarTitle }}</span>
+                <div v-if="sidebarHasNestedNodes" class="pdf-excerpt-block__sidebar-actions">
+                  <button
+                    type="button"
+                    class="pdf-excerpt-block__sidebar-action"
+                    data-node-view-no-drag
+                    title="全部展开"
+                    @mousedown.stop
+                    @click.stop="expandSidebarAll"
+                  >
+                    全部展开
+                  </button>
+                  <button
+                    type="button"
+                    class="pdf-excerpt-block__sidebar-action"
+                    data-node-view-no-drag
+                    title="全部收起"
+                    @mousedown.stop
+                    @click.stop="collapseSidebarAll"
+                  >
+                    全部收起
+                  </button>
+                </div>
               </div>
               <nav v-if="sidebarNodes.length > 0" class="pdf-excerpt-block__sidebar-nav" aria-label="PDF 目录">
                 <PdfExcerptSidebar
@@ -517,7 +559,9 @@ onBeforeUnmount(() => {
                   :start-page="resolvedStartPage"
                   :end-page="resolvedEndPage"
                   :active-node-id="activeNodeId"
+                  :expanded-node-ids="sidebarExpand.expanded.value"
                   @navigate="navigateSidebar"
+                  @toggle-expand="sidebarExpand.toggle"
                 />
               </nav>
               <p v-else-if="sidebarEmptyHint" class="pdf-excerpt-block__sidebar-empty">
@@ -739,6 +783,30 @@ onBeforeUnmount(() => {
   font-weight: 600;
   letter-spacing: 0.04em;
   color: #64748b;
+}
+
+.pdf-excerpt-block__sidebar-actions {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 2px;
+}
+
+.pdf-excerpt-block__sidebar-action {
+  flex-shrink: 0;
+  padding: 2px 6px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: #64748b;
+  font-size: 11px;
+  line-height: 1.4;
+  cursor: pointer;
+}
+
+.pdf-excerpt-block__sidebar-action:hover {
+  background: #e2e8f0;
+  color: #334155;
 }
 
 .pdf-excerpt-block__sidebar-nav {
