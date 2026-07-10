@@ -13,6 +13,8 @@
 | [`tu-gateway/`](./tu-gateway/) | Spring Cloud Gateway（默认端口 18080，转发 `/api/**`） |
 | [`tu-integration-service/`](./tu-integration-service/) | 外部任务系统集成（Kaneo 等） |
 | [`tu-rag-service/`](./tu-rag-service/) | Python FastAPI RAG 服务（端口 19080） |
+| [`studyflow/`](./studyflow/) | StudyFlow 学习驾驶舱前端（Vite + React，端口 5180） |
+| [`studyflow-service/`](./studyflow-service/) | StudyFlow 学习域微服务（REST + Dubbo Consumer，端口 18082） |
 
 ## 本地开发（最小链路）
 
@@ -20,6 +22,15 @@
 2. 后端：`cd tu-backend && mvn spring-boot:run -pl tu-backend-app`
 3. 网关：`cd tu-gateway && mvn spring-boot:run`
 4. 前端：`cd tu-web-ts && npm run dev`（代理到 `http://localhost:18080`）
+
+### StudyFlow（学习驾驶舱，可选）
+
+与 tu-web-ts 并列，同属本 monorepo：
+
+1. PostgreSQL：`cd studyflow-service && docker compose up -d`
+2. 安装 Dubbo 契约：`cd tu-backend && mvn install -pl tu-platform-api -am -DskipTests`
+3. 后端：`cd studyflow-service && mvn spring-boot:run`
+4. 前端：`cd studyflow && pnpm install && pnpm dev`（`http://localhost:5180`）
 
 各子目录 README 有更完整的配置说明。
 

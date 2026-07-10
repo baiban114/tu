@@ -1,0 +1,26 @@
+spring:
+  application:
+    name: studyflow-service
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:15433/studyflow}
+    username: ${SPRING_DATASOURCE_USERNAME:studyflow}
+    password: ${SPRING_DATASOURCE_PASSWORD:studyflow123}
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+  cloud:
+    nacos:
+      discovery:
+        server-addr: ${NACOS_SERVER_ADDR:localhost:8848}
+
+server:
+  port: ${SERVER_PORT:18082}
+
+dubbo:
+  application:
+    name: studyflow-service
+  registry:
+    address: nacos://${NACOS_SERVER_ADDR:localhost:8848}
+  consumer:
+    check: false
+    timeout: 10000
