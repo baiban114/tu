@@ -1,0 +1,147 @@
+# Standalone Redis Cluster (generic infra — not tied to tu project naming).
+# 3 masters + 3 replicas; host clients use cluster mode against any node port.
+#
+#   cd tu-backend
+#   copy .env.redis.example .env.redis
+#   docker compose -f docker-compose.redis.yml --env-file .env.redis pull
+#   docker compose -f docker-compose.redis.yml --env-file .env.redis up -d
+#
+# Cluster nodes: localhost:6379-6384 (override via REDIS_NODE_*_PORT in .env.redis)
+
+name: redis
+
+x-redis-node: &redis-node
+  image: redis:7.4-alpine
+  restart: unless-stopped
+  extra_hosts:
+    - "host.docker.internal:host-gateway"
+  volumes:
+    - ./scripts/redis-cluster-node.sh:/usr/local/bin/redis-cluster-node.sh:ro
+  entrypoint: ["/bin/sh", "/usr/local/bin/redis-cluster-node.sh"]
+  networks:
+    - redis-net
+
+services:
+  redis-1:
+    <<: *redis-node
+    container_name: redis-1
+    environment:
+      REDIS_ANNOUNCE_PORT: ${REDIS_NODE_1_PORT:-6379}
+      REDIS_ANNOUNCE_BUS_PORT: ${REDIS_NODE_1_BUS_PORT:-16379}
+    ports:
+      - "${REDIS_NODE_1_PORT:-6379}:6379"
+      - "${REDIS_NODE_1_BUS_PORT:-16379}:16379"
+    volumes:
+      - redis-1-data:/data
+      - ./scripts/redis-cluster-node.sh:/usr/local/bin/redis-cluster-node.sh:ro
+
+  redis-2:
+    <<: *redis-node
+    container_name: redis-2
+    environment:
+      REDIS_ANNOUNCE_PORT: ${REDIS_NODE_2_PORT:-6380}
+      REDIS_ANNOUNCE_BUS_PORT: ${REDIS_NODE_2_BUS_PORT:-16380}
+    ports:
+      - "${REDIS_NODE_2_PORT:-6380}:6379"
+      - "${REDIS_NODE_2_BUS_PORT:-16380}:16379"
+    volumes:
+      - redis-2-data:/data
+      - ./scripts/redis-cluster-node.sh:/usr/local/bin/redis-cluster-node.sh:ro
+
+  redis-3:
+    <<: *redis-node
+    container_name: redis-3
+    environment:
+      REDIS_ANNOUNCE_PORT: ${REDIS_NODE_3_PORT:-6381}
+      REDIS_ANNOUNCE_BUS_PORT: ${REDIS_NODE_3_BUS_PORT:-16381}
+    ports:
+      - "${REDIS_NODE_3_PORT:-6381}:6379"
+      - "${REDIS_NODE_3_BUS_PORT:-16381}:16379"
+    volumes:
+      - redis-3-data:/data
+      - ./scripts/redis-cluster-node.sh:/usr/local/bin/redis-cluster-node.sh:ro
+
+  redis-4:
+    <<: *redis-node
+    container_name: redis-4
+    environment:
+      REDIS_ANNOUNCE_PORT: ${REDIS_NODE_4_PORT:-6382}
+      REDIS_ANNOUNCE_BUS_PORT: ${REDIS_NODE_4_BUS_PORT:-16382}
+    ports:
+      - "${REDIS_NODE_4_PORT:-6382}:6379"
+      - "${REDIS_NODE_4_BUS_PORT:-16382}:16379"
+    volumes:
+      - redis-4-data:/data
+      - ./scripts/redis-cluster-node.sh:/usr/local/bin/redis-cluster-node.sh:ro
+
+  redis-5:
+    <<: *redis-node
+    container_name: redis-5
+    environment:
+      REDIS_ANNOUNCE_PORT: ${REDIS_NODE_5_PORT:-6383}
+      REDIS_ANNOUNCE_BUS_PORT: ${REDIS_NODE_5_BUS_PORT:-16383}
+    ports:
+      - "${REDIS_NODE_5_PORT:-6383}:6379"
+      - "${REDIS_NODE_5_BUS_PORT:-16383}:16379"
+    volumes:
+      - redis-5-data:/data
+      - ./scripts/redis-cluster-node.sh:/usr/local/bin/redis-cluster-node.sh:ro
+
+  redis-6:
+    <<: *redis-node
+    container_name: redis-6
+    environment:
+      REDIS_ANNOUNCE_PORT: ${REDIS_NODE_6_PORT:-6384}
+      REDIS_ANNOUNCE_BUS_PORT: ${REDIS_NODE_6_BUS_PORT:-16384}
+    ports:
+      - "${REDIS_NODE_6_PORT:-6384}:6379"
+      - "${REDIS_NODE_6_BUS_PORT:-16384}:16379"
+    volumes:
+      - redis-6-data:/data
+      - ./scripts/redis-cluster-node.sh:/usr/local/bin/redis-cluster-node.sh:ro
+
+  redis-cluster-init:
+    image: redis:7.4-alpine
+    container_name: redis-cluster-init
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      - redis-1
+      - redis-2
+      - redis-3
+      - redis-4
+      - redis-5
+      - redis-6
+    networks:
+      - redis-net
+    restart: "no"
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        for host in redis-1 redis-2 redis-3 redis-4 redis-5 redis-6; do
+          until redis-cli -h "$$host" -p 6379 ping | grep -q PONG; do
+            echo "waiting for $$host..."
+            sleep 1
+          done
+        done
+        if redis-cli -h redis-1 -p 6379 cluster info | grep -q 'cluster_state:ok'; then
+          echo "cluster already initialized"
+          exit 0
+        fi
+        redis-cli --cluster create \
+          redis-1:6379 redis-2:6379 redis-3:6379 \
+          redis-4:6379 redis-5:6379 redis-6:6379 \
+          --cluster-replicas 1 --cluster-yes
+        echo "cluster initialized"
+
+networks:
+  redis-net:
+
+volumes:
+  redis-1-data:
+  redis-2-data:
+  redis-3-data:
+  redis-4-data:
+  redis-5-data:
+  redis-6-data:

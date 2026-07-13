@@ -34,6 +34,28 @@ docker compose -f docker-compose.infra.yml up -d
 
 Use this for local shared middleware without rebuilding application services.
 
+## Redis Cluster Only
+
+When other containers are already running, use the **standalone** compose file.
+It uses project name `redis` and does not touch other stacks.
+
+```powershell
+cd tu-backend
+copy .env.redis.example .env.redis
+docker compose -f docker-compose.redis.yml --env-file .env.redis pull
+docker compose -f docker-compose.redis.yml --env-file .env.redis up -d
+```
+
+- Cluster nodes: `127.0.0.1:6379`–`6384` (3 masters + 3 replicas; override via `.env.redis`)
+- Topology: `redis-cli -c -h 127.0.0.1 -p 6379 cluster nodes`
+- Data volumes: `redis-1-data` … `redis-6-data` (Compose project `redis`)
+
+Stop / remove only Redis Cluster:
+
+```powershell
+docker compose -f docker-compose.redis.yml --env-file .env.redis down
+```
+
 ## MinIO Only (object storage)
 
 When MySQL / ES / other containers are already running, use the **standalone** compose file.
