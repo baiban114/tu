@@ -74,6 +74,7 @@ export async function createKnowledgeRelation(
     from?: KnowledgeAnchor;
     to?: KnowledgeAnchor;
     note?: string;
+    sourceProvenance?: 'user' | 'ai';
   },
 ): Promise<KnowledgeRelation> {
   if (isMockDataSource()) {

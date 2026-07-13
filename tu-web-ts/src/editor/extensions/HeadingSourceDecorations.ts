@@ -2,7 +2,7 @@ import { Extension } from '@tiptap/core'
 import { Plugin, PluginKey } from '@tiptap/pm/state'
 import { Decoration, DecorationSet } from '@tiptap/pm/view'
 import type { HeadingSourceBinding } from '@/api/types'
-import { headingSourceBadgeLabel, headingSourceBadgeTitle } from '@/utils/headingSource'
+import { effectiveMarkerSource, headingSourceBadgeLabel, headingSourceBadgeTitle } from '@/utils/headingSource'
 
 export interface HeadingSourceDecorationsOptions {
   onSourceClick: (
@@ -40,7 +40,16 @@ export const HeadingSourceDecorations = Extension.create<HeadingSourceDecoration
                   const button = document.createElement('button')
                   button.type = 'button'
                   button.className = 'heading-source-badge'
+                  if (effectiveMarkerSource(binding.markerSource) === 'ai') {
+                    button.classList.add('heading-source-badge--ai')
+                  }
                   button.textContent = headingSourceBadgeLabel(binding)
+                  if (effectiveMarkerSource(binding.markerSource) === 'ai') {
+                    const aiTag = document.createElement('span')
+                    aiTag.className = 'heading-source-badge__ai'
+                    aiTag.textContent = 'AI'
+                    button.appendChild(aiTag)
+                  }
                   button.title = headingSourceBadgeTitle(binding)
                   button.addEventListener('mousedown', (event) => {
                     event.preventDefault()

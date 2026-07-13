@@ -1798,6 +1798,32 @@ defineExpose({
     }).run()
     return true
   },
+  applyHeadingBindingByBlockId: (blockId: string, binding: HeadingSourceBinding) => {
+    const ed = editor.value
+    if (!ed) return false
+    let targetPos = -1
+    let targetAttrs: Record<string, unknown> | null = null
+    ed.state.doc.descendants((node, pos) => {
+      if (node.type.name === 'heading' && node.attrs.blockId === blockId) {
+        targetPos = pos
+        targetAttrs = { ...(node.attrs as Record<string, unknown>) }
+        return false
+      }
+      return true
+    })
+    if (targetPos < 0 || !targetAttrs) return false
+    const attrs = targetAttrs as Record<string, unknown>
+    const resolvedBlockId = String(attrs.blockId || blockId || createHeadingBlockId())
+    ed.chain().command(({ tr }) => {
+      tr.setNodeMarkup(targetPos, undefined, {
+        ...attrs,
+        blockId: resolvedBlockId,
+        sourceBinding: binding,
+      })
+      return true
+    }).run()
+    return true
+  },
   clearHeadingSourceBinding: () => {
     const found = findHeadingAtSelection()
     const ed = editor.value
@@ -1985,6 +2011,25 @@ defineExpose({
 
 .tu-editor-wrapper :deep(.heading-source-badge:hover) {
   background: #dbeafe;
+}
+
+.tu-editor-wrapper :deep(.heading-source-badge__ai) {
+  margin-left: 4px;
+  padding: 0 4px;
+  border-radius: 4px;
+  background: #1677ff;
+  color: #fff;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 14px;
+}
+
+.tu-editor-wrapper :deep(.tu-tiptap-annotation--ai) {
+  outline: 1px dashed #1677ff;
+}
+
+.tu-editor-wrapper :deep(.tu-tiptap-annotation--basis.tu-tiptap-annotation--ai) {
+  box-shadow: 0 0 0 2px rgba(22, 119, 255, 0.35) !important;
 }
 
 .tu-editor-wrapper :deep(.tu-editor-content ul),

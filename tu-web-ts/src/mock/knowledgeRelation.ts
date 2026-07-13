@@ -17,6 +17,7 @@ const SYSTEM_TYPES: RelationTypeDef[] = [
   { id: 'rt-sys-case', kbId: null, typeKey: 'case', label: '案例', color: '#1677ff', icon: null, bidirectional: false, system: true, enabled: true },
   { id: 'rt-sys-cites', kbId: null, typeKey: 'cites', label: '引用', color: '#722ed1', icon: null, bidirectional: false, system: true, enabled: true },
   { id: 'rt-sys-related', kbId: null, typeKey: 'related', label: '相关', color: '#8c8c8c', icon: null, bidirectional: true, system: true, enabled: true },
+  { id: 'rt-sys-association', kbId: null, typeKey: 'association', label: '联想', color: '#9254de', icon: null, bidirectional: true, system: true, enabled: true },
   { id: 'rt-sys-prerequisite', kbId: null, typeKey: 'prerequisite', label: '前置', color: '#fa8c16', icon: null, bidirectional: false, system: true, enabled: true },
 ];
 
@@ -125,6 +126,7 @@ export function createKnowledgeRelationMock(
     from?: KnowledgeAnchor;
     to?: KnowledgeAnchor;
     note?: string;
+    sourceProvenance?: 'user' | 'ai';
   },
 ): KnowledgeRelation {
   const typeDef = resolveType(kbId, payload.relationTypeKey);
@@ -152,7 +154,7 @@ export function createKnowledgeRelationMock(
     from: payload.from ?? null,
     to: payload.to ?? null,
     note: payload.note ?? null,
-    sourceProvenance: 'user',
+    sourceProvenance: payload.sourceProvenance ?? 'user',
     status: 'ok',
   };
   const all = loadRelations();

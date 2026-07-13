@@ -73,6 +73,7 @@ function onNavigate(relation: KnowledgeRelation, direction: 'out' | 'in') {
           @click="onNavigate(relation, 'out')"
         >
           <span class="krl-type" :style="{ color: relation.relationTypeColor || '#1677ff' }">{{ relation.relationTypeLabel }}</span>
+          <span v-if="relation.sourceProvenance === 'ai'" class="krl-ai">AI</span>
           <span class="krl-label">{{ relationEndpointLabel(relation, 'out') }}</span>
         </button>
       </div>
@@ -86,6 +87,7 @@ function onNavigate(relation: KnowledgeRelation, direction: 'out' | 'in') {
           @click="onNavigate(relation, 'in')"
         >
           <span class="krl-type" :style="{ color: relation.relationTypeColor || '#1677ff' }">{{ relation.relationTypeLabel }}</span>
+          <span v-if="relation.sourceProvenance === 'ai'" class="krl-ai">AI</span>
           <span class="krl-label">{{ relationEndpointLabel(relation, 'in') }}</span>
         </button>
       </div>
@@ -136,6 +138,17 @@ function onNavigate(relation: KnowledgeRelation, direction: 'out' | 'in') {
   flex-shrink: 0;
   font-size: 12px;
   font-weight: 600;
+}
+
+.krl-ai {
+  flex-shrink: 0;
+  font-size: 10px;
+  font-weight: 700;
+  color: #1677ff;
+  background: #e6f4ff;
+  border-radius: 4px;
+  padding: 0 4px;
+  line-height: 16px;
 }
 
 .krl-label {

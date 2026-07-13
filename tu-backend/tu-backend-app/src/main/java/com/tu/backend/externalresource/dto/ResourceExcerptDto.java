@@ -10,6 +10,7 @@ public record ResourceExcerptDto(
     String locator,
     String excerptText,
     String note,
-    Integer sortOrder
+    Integer sortOrder,
+    java.util.Map<String, Object> metadata
 ) {
 }

@@ -30,6 +30,15 @@ public interface KnowledgeRelationRepository extends JpaRepository<KnowledgeRela
     void deleteMigratedByPage(@Param("kbId") String kbId, @Param("pageLocator") String pageLocator, @Param("pagePrefix") String pagePrefix);
 
     @Modifying
+    @Query("""
+        DELETE FROM KnowledgeRelationEntity e
+        WHERE e.kbId = :kbId
+          AND e.sourceProvenance = 'ai'
+          AND (e.fromLocator = :pageLocator OR e.fromLocator LIKE CONCAT(:pagePrefix, '%'))
+        """)
+    void deleteAiByPage(@Param("kbId") String kbId, @Param("pageLocator") String pageLocator, @Param("pagePrefix") String pagePrefix);
+
+    @Modifying
     void deleteByKbIdAndIdIn(String kbId, List<String> ids);
 
     void deleteByKbId(String kbId);

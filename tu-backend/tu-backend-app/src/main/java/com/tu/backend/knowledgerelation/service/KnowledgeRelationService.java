@@ -165,9 +165,23 @@ public class KnowledgeRelationService {
             applyAnchor(entity, false, request.to());
         }
         entity.setNote(blankToNull(request.note()));
-        entity.setSourceProvenance("user");
+        entity.setSourceProvenance(resolveSourceProvenance(request.sourceProvenance()));
         entity.setStatus("ok");
         return toDto(knowledgeRelationRepository.save(entity), typeDef);
+    }
+
+    @Transactional
+    public void deleteMigratedForPage(String kbId, String pageId) {
+        String pageLocator = "page:" + pageId;
+        String pagePrefix = pageLocator + ":";
+        knowledgeRelationRepository.deleteMigratedByPage(kbId, pageLocator, pagePrefix);
+    }
+
+    @Transactional
+    public void deleteAiForPage(String kbId, String pageId) {
+        String pageLocator = "page:" + pageId;
+        String pagePrefix = pageLocator + ":";
+        knowledgeRelationRepository.deleteAiByPage(kbId, pageLocator, pagePrefix);
     }
 
     @Transactional
@@ -228,10 +242,6 @@ public class KnowledgeRelationService {
         if (!entities.isEmpty()) {
             knowledgeRelationRepository.saveAll(entities);
         }
-    }
-
-    void deleteMigratedForPage(String kbId, String pageId) {
-        knowledgeRelationRepository.deleteMigratedByPage(kbId, "page:" + pageId, "page:" + pageId + ":");
     }
 
     @Transactional
@@ -442,6 +452,17 @@ public class KnowledgeRelationService {
             return null;
         }
         return value.trim();
+    }
+
+    private static String resolveSourceProvenance(String value) {
+        if (value == null || value.isBlank()) {
+            return "user";
+        }
+        String normalized = value.trim().toLowerCase(Locale.ROOT);
+        if ("ai".equals(normalized)) {
+            return "ai";
+        }
+        return "user";
     }
 
     private static String safe(String value) {

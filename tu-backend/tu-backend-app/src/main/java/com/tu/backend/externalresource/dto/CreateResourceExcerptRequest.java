@@ -9,6 +9,7 @@ public record CreateResourceExcerptRequest(
     @Size(max = 255) String locator,
     @Size(max = 20000) String excerptText,
     @Size(max = 1024) String note,
-    Integer sortOrder
+    Integer sortOrder,
+    java.util.Map<String, Object> metadata
 ) {
 }

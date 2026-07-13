@@ -36,6 +36,9 @@ import com.tu.backend.externalresource.repository.ResourceItemRepository;
 import com.tu.backend.externalresource.repository.ResourceTypeRepository;
 import com.tu.backend.externalresource.repository.ResourceWorkRepository;
 import com.tu.backend.externalresource.util.ExternalUrlNormalizer;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
@@ -65,6 +68,7 @@ public class ExternalResourceService {
     private final ContentTreeNodeService contentTreeNodeService;
     private final ResourceItemRelationRepository itemRelationRepository;
     private final UrlClusterMatcherService clusterMatcherService;
+    private final ObjectMapper objectMapper;
 
     public ExternalResourceService(
         ResourceTypeRepository typeRepository,
@@ -73,7 +77,8 @@ public class ExternalResourceService {
         ResourceExcerptRepository excerptRepository,
         ContentTreeNodeService contentTreeNodeService,
         ResourceItemRelationRepository itemRelationRepository,
-        UrlClusterMatcherService clusterMatcherService
+        UrlClusterMatcherService clusterMatcherService,
+        ObjectMapper objectMapper
     ) {
         this.typeRepository = typeRepository;
         this.workRepository = workRepository;
@@ -82,6 +87,7 @@ public class ExternalResourceService {
         this.contentTreeNodeService = contentTreeNodeService;
         this.itemRelationRepository = itemRelationRepository;
         this.clusterMatcherService = clusterMatcherService;
+        this.objectMapper = objectMapper;
     }
 
     @Transactional(readOnly = true)
@@ -511,6 +517,7 @@ public class ExternalResourceService {
             request.excerptText(),
             request.note(),
             request.sortOrder(),
+            request.metadata(),
             item
         );
         return toExcerptDto(excerptRepository.save(entity), item, loadChapterTitleMap(item.getId()));
@@ -668,12 +675,33 @@ public class ExternalResourceService {
         Integer sortOrder,
         ResourceItemEntity item
     ) {
+        fillExcerpt(entity, title, chapterId, locator, excerptText, note, sortOrder, null, item);
+    }
+
+    private void fillExcerpt(
+        ResourceExcerptEntity entity,
+        String title,
+        String chapterId,
+        String locator,
+        String excerptText,
+        String note,
+        Integer sortOrder,
+        java.util.Map<String, Object> metadata,
+        ResourceItemEntity item
+    ) {
         entity.setTitle(normalizeRequired(title, "resource excerpt title required"));
         entity.setChapterId(resolveChapterForExcerpt(item, blankToNull(chapterId)));
         entity.setLocator(blankToNull(locator));
         entity.setExcerptText(blankToNull(excerptText));
         entity.setNote(blankToNull(note));
         entity.setSortOrder(sortOrder == null ? nextExcerptSortOrder(item.getId()) : Math.max(0, sortOrder));
+        if (metadata != null && !metadata.isEmpty()) {
+            try {
+                entity.setMetadataJson(objectMapper.writeValueAsString(metadata));
+            } catch (JsonProcessingException ex) {
+                throw new BusinessException(40000, "invalid excerpt metadata");
+            }
+        }
     }
 
     private String resolveChapterForExcerpt(ResourceItemEntity item, String chapterId) {
@@ -899,8 +927,21 @@ public class ExternalResourceService {
             entity.getLocator(),
             entity.getExcerptText(),
             entity.getNote(),
-            entity.getSortOrder()
+            entity.getSortOrder(),
+            deserializeExcerptMetadata(entity.getMetadataJson())
         );
+    }
+
+    private Map<String, Object> deserializeExcerptMetadata(String json) {
+        if (json == null || json.isBlank()) {
+            return Map.of();
+        }
+        try {
+            return objectMapper.readValue(json, new TypeReference<>() {
+            });
+        } catch (JsonProcessingException ex) {
+            return Map.of();
+        }
     }
 
     private String normalizeCode(String value) {

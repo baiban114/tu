@@ -19,7 +19,10 @@ import Toast from './Toast.vue'
 import NoteEditor from './NoteEditor.vue'
 import NotePopover from './NotePopover.vue'
 import KnowledgePointPicker from './KnowledgePointPicker.vue'
-import KnowledgeRelationList from './KnowledgeRelationList.vue'
+import DocumentMarkingReviewPanel from './DocumentMarkingReviewPanel.vue'
+import { generateDocumentMarkingStream, clearPageAiMarkers } from '@/api/aiDocumentMarking'
+import { applyAiMarkingSuggestions, clearAiMarkersFromDocument } from '@/utils/aiDocumentMarking'
+import type { DocumentMarkingSuggestion } from '@/api/types'
 import { useExpandCollapse } from '@/composables/useExpandCollapse'
 import { useAnchoredFloating, type FloatingAnchorRect } from '@/composables/useAnchoredFloating'
 import { useViewportClampedFixedPanel } from '@/utils/viewportPanel'
@@ -559,6 +562,12 @@ const tiptapEditor = computed(() => tuEditorRef.value?.editor ?? null)
 const knowledgeAnchorPickerVisible = ref(false)
 const knowledgeSourceAnchor = ref<KnowledgeAnchor | null>(null)
 const knowledgeRelationRefreshKey = ref(0)
+
+const documentMarkingPanelVisible = ref(false)
+const documentMarkingLoading = ref(false)
+const documentMarkingProgress = ref('')
+const documentMarkingSuggestions = ref<DocumentMarkingSuggestion[]>([])
+let documentMarkingAbort: AbortController | null = null
 const headingSourcePopoverVisible = ref(false)
 const headingSourcePopoverTop = ref(0)
 const headingSourcePopoverLeft = ref(0)
@@ -1084,6 +1093,21 @@ const closeHeadingSourcePopover = () => {
   headingSourcePopoverBinding.value = null
 }
 
+const promoteHeadingSourceToUser = () => {
+  const binding = headingSourcePopoverBinding.value
+  const anchor = headingSourcePopoverAnchor.value
+  const editor = tuEditorRef.value?.editor
+  if (!binding || !anchor || !editor) return
+  const blockId = anchor.locator.match(/:heading:([^:]+)$/)?.[1]
+  if (!blockId) return
+  const userBinding: HeadingSourceBinding = { ...binding, markerSource: 'user' }
+  if (tuEditorRef.value?.applyHeadingBindingByBlockId?.(blockId, userBinding)) {
+    emitLocalContentChange()
+    headingSourcePopoverBinding.value = userBinding
+    showToast('已转为手动标记')
+  }
+}
+
 const handleCreateKnowledgeRelationFromSelection = () => {
   const editor = tuEditorRef.value?.editor
   const pageId = workspaceStore.currentPageId
@@ -1097,6 +1121,82 @@ const handleCreateKnowledgeRelationFromSelection = () => {
 const handleKnowledgeRelationCreated = () => {
   knowledgeRelationRefreshKey.value += 1
   showToast('已关联到知识点')
+}
+
+const handleAiDocumentMarking = async () => {
+  const pageId = workspaceStore.currentPageId
+  const kbId = workspaceStore.currentKbId
+  const editor = tuEditorRef.value?.editor
+  if (!pageId || !kbId || !editor || !props.editable) return
+
+  documentMarkingAbort?.abort()
+  documentMarkingAbort = new AbortController()
+  documentMarkingPanelVisible.value = true
+  documentMarkingLoading.value = true
+  documentMarkingProgress.value = '正在分析文档…'
+  documentMarkingSuggestions.value = []
+
+  try {
+    const response = await generateDocumentMarkingStream(
+      { pageId, kbId },
+      {
+        signal: documentMarkingAbort.signal,
+        onEvent: (event) => {
+          if (event.message) documentMarkingProgress.value = event.message
+        },
+      },
+    )
+    documentMarkingSuggestions.value = response.suggestions
+  } catch (err) {
+    if (err instanceof DOMException && err.name === 'AbortError') return
+    ElMessage.error(err instanceof Error ? err.message : '文档标记分析失败')
+    documentMarkingPanelVisible.value = false
+  } finally {
+    documentMarkingLoading.value = false
+  }
+}
+
+const handleApplyDocumentMarking = async (payload: { selectedIds: string[]; replaceExistingAi: boolean }) => {
+  const pageId = workspaceStore.currentPageId
+  const kbId = workspaceStore.currentKbId
+  const editor = tuEditorRef.value?.editor
+  if (!pageId || !kbId || !editor) return
+
+  const selected = documentMarkingSuggestions.value.filter((item) => payload.selectedIds.includes(item.id))
+  if (selected.length === 0) return
+
+  if (payload.replaceExistingAi) {
+    const cleared = clearAiMarkersFromDocument(editor, localAnnotations.value)
+    localAnnotations.value = cleared.annotations
+    try {
+      await clearPageAiMarkers(pageId)
+    } catch {
+      // mock mode or offline — local clear still applies
+    }
+    emitLocalContentChange()
+  }
+
+  const result = await applyAiMarkingSuggestions(selected, {
+    pageId,
+    kbId,
+    editor,
+    getAnnotations: () => localAnnotations.value,
+    setAnnotations: (annotations) => {
+      localAnnotations.value = annotations
+      emitLocalContentChange()
+    },
+    applyHeadingBindingByBlockId: (blockId, binding) =>
+      tuEditorRef.value?.applyHeadingBindingByBlockId?.(blockId, binding) ?? false,
+  })
+
+  documentMarkingPanelVisible.value = false
+  emitLocalContentChange()
+  knowledgeRelationRefreshKey.value += 1
+  if (result.errors.length) {
+    showToast(`已应用 ${result.applied} 条，${result.errors.length} 条失败`)
+  } else {
+    showToast(`已应用 ${result.applied} 条 AI 标记建议`)
+  }
 }
 
 const handleMarkHeadingSourceFromSelection = () => {
@@ -2492,6 +2592,24 @@ const handleNavigateBasisFromPopover = (annotation?: TextAnnotation) => {
   navigateToHeadingSource(target.basisBinding)
 }
 
+const handlePromoteAnnotationToUser = (annotation?: TextAnnotation) => {
+  const target = annotation ?? notePopoverAnnotation.value
+  if (!target || target.markerSource !== 'ai') return
+  const next: TextAnnotation = {
+    ...target,
+    markerSource: 'user',
+    basisBinding: target.basisBinding
+      ? { ...target.basisBinding, markerSource: 'user' }
+      : undefined,
+    updatedAt: Date.now(),
+  }
+  localAnnotations.value = localAnnotations.value.map((item) => (item.id === next.id ? next : item))
+  notePopoverAnnotations.value = notePopoverAnnotations.value.map((item) => (item.id === next.id ? next : item))
+  notePopoverAnnotation.value = next
+  emitLocalContentChange()
+  showToast('已转为手动标记')
+}
+
 const handleDeleteAnnotation = (annotation?: TextAnnotation) => {
   const target = annotation ?? notePopoverAnnotation.value
   if (!target) return
@@ -2584,6 +2702,13 @@ onBeforeUnmount(() => {
           title="提取选中文本为新块"
         >
           提取成块
+        </button>
+        <button
+          class="toolbar-button"
+          @click="handleAiDocumentMarking"
+          title="AI 分析文档结构并建议知识标记"
+        >
+          AI 分析标记
         </button>
       </div>
       <span
@@ -2963,6 +3088,7 @@ onBeforeUnmount(() => {
       @edit="handleEditAnnotation"
       @delete="handleDeleteAnnotation"
       @navigate-basis="handleNavigateBasisFromPopover"
+      @promote-to-user="handlePromoteAnnotationToUser"
       @close="notePopoverVisible = false; notePopoverAnnotation = null; notePopoverAnnotations = []; notePopoverAnchor = null"
     />
 
@@ -2992,8 +3118,24 @@ onBeforeUnmount(() => {
         >
           查看来源资料
         </button>
+        <button
+          v-if="headingSourcePopoverBinding?.markerSource === 'ai'"
+          type="button"
+          class="heading-source-relation-popover__link"
+          @click="promoteHeadingSourceToUser"
+        >
+          转为手动标记
+        </button>
       </div>
     </Teleport>
+
+    <DocumentMarkingReviewPanel
+      v-model:visible="documentMarkingPanelVisible"
+      :suggestions="documentMarkingSuggestions"
+      :loading="documentMarkingLoading"
+      :progress-message="documentMarkingProgress"
+      @apply="handleApplyDocumentMarking"
+    />
 
     <!-- Toast 消息 -->
     <div class="toast-container">

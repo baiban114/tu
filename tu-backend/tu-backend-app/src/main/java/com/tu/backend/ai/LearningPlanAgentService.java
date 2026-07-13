@@ -106,7 +106,7 @@ public class LearningPlanAgentService {
             emitProgress(progressListener, AiAgentProgressEvent.completed(
                 "学习计划生成完成",
                 startedAt,
-                response
+                objectMapper.valueToTree(response)
             ));
             return response;
         } catch (RuntimeException ex) {

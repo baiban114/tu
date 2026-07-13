@@ -47,9 +47,9 @@ flowchart LR
 
 ## 4. 关系类型注册表
 
-- 系统预置（`kbId = null`）：`source`、`basis`、`case`、`cites`、`related`、`prerequisite`
+- 系统预置（`kbId = null`）：`source`、`basis`、`case`、`cites`、`related`、`association`（联想）、`prerequisite`
 - 知识库可 `POST /api/kbs/{kbId}/relation-types` 扩展自定义类型
-- `related` 为双向；其余默认有向（fromPoint → toPoint）
+- `related`、`association`（联想）为双向；其余默认有向（fromPoint → toPoint）
 
 ## 5. 与树 / 标注 / 标签 / 页面的边界
 
@@ -71,8 +71,17 @@ flowchart LR
 | `basis` 标注 | `TextAnnotation.basisBinding` | 知识点 + `basis` 边 + 证据 |
 | Phase 1 anchor 关系 | — | 启动迁移：为 anchor 创建知识点并投影 point 边 |
 | 用户建链 UI | — | `provenance=user` |
+| AI 文档标记（用户确认后） | `markerSource=ai` / `source_provenance=ai` | 不自动覆盖手动标记；重跑可勾选「替换本页 AI 标记」 |
 
-`saveContent` 后 rebuild 本页 migrated 关系；用户创建的关系不删除。
+`saveContent` 后 rebuild 本页 migrated 关系；用户创建的关系与 AI 确认的关系不删除（AI 关系仅通过「替换本页 AI 标记」或 `DELETE /api/ai/document-marking/pages/{pageId}/ai-markers` 清理）。
+
+### AI 文档标记（MVP）
+
+- 编辑真源：`TextAnnotation.markerSource`、`HeadingSourceBinding.markerSource`（缺省 `user`）；节选 `external_resource_excerpt.metadata_json.markerSource`
+- `source_provenance=ai`：用户确认后的 `createRelation` 建议；rebuild **不删**
+- Protected：手动 headingSource / basis / 用户建链 / 用户节选 → AI 不得覆盖，作为 prompt 参考
+- 触发：`TuEditorPage` 工具栏「AI 分析标记」→ SSE `POST /api/ai/document-marking/analyze/stream` → `DocumentMarkingReviewPanel` 预览确认 → 前端 `applyAiMarkingSuggestions`
+- Mock：`src/api/aiDocumentMarking.ts` + `src/mock/aiDocumentMarking.ts`
 
 ## 7. API
 
@@ -104,6 +113,14 @@ flowchart LR
 | GET | `/api/kbs/{kbId}/relations/by-anchor?locator=…`（桥接：证据 → 知识点 → 关系） |
 | DELETE | `/api/relations/{id}` |
 
+### AI 文档标记
+
+| 方法 | 路径 |
+|------|------|
+| POST | `/api/ai/document-marking/analyze` |
+| POST | `/api/ai/document-marking/analyze/stream`（SSE，`completed.result` 为 suggestions JSON） |
+| DELETE | `/api/ai/document-marking/pages/{pageId}/ai-markers`（清理本页 `source_provenance=ai` 关系） |
+
 ## 8. UI 约定
 
 - 创建：`SelectionToolbar` →「建立关联」→ 弹窗「关联到知识点」：单选要挂靠的知识点；编辑器带入的可定位内容静默写入 `relation.from`，**不展示**证据栏、不做知识点↔知识点双选
@@ -114,6 +131,7 @@ flowchart LR
 - **从结构生成**：知识点 Tab 工具栏「从结构生成…」→ 勾选知识库页面树 / 文档标题结构；若工作区有当前页则仅处理该页。完成后刷新分类树
 - **别名**：选中知识点后在详情区维护别名 chips；列表搜索与 Picker 搜索 Tab 可命中别名（副标题展示匹配别名）
 - 查看：`NotePopover`、标题来源徽章、资源管理「知识关联」Tab
+- **AI 标记**：文档页工具栏「AI 分析标记」；来源/依据徽章与关系列表显示 `AI` chip；可「转为手动标记」（`markerSource` → `user`）
 - 跳转：`navigateKnowledgePoint(pointId)` → 取 `is_primary` 证据 → `navigateKnowledgeAnchor(locator)`
 
 ## 9. Phase 2/3（未实施）

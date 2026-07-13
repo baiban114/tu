@@ -35,6 +35,9 @@ public class ResourceExcerptEntity {
     @Column(length = 1024)
     private String note;
 
+    @Column(name = "metadata_json", columnDefinition = "text")
+    private String metadataJson;
+
     @Column(name = "sort_order", nullable = false)
     private Integer sortOrder;
 
@@ -113,6 +116,14 @@ public class ResourceExcerptEntity {
 
     public void setNote(String note) {
         this.note = note;
+    }
+
+    public String getMetadataJson() {
+        return metadataJson;
+    }
+
+    public void setMetadataJson(String metadataJson) {
+        this.metadataJson = metadataJson;
     }
 
     public Integer getSortOrder() {

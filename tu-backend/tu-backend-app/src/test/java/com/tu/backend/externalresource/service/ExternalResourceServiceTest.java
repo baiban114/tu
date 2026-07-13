@@ -12,6 +12,7 @@ import com.tu.backend.common.BusinessException;
 import com.tu.backend.contenttree.entity.ContentTreeNodeEntity;
 import com.tu.backend.contenttree.entity.ScopeType;
 import com.tu.backend.contenttree.service.ContentTreeNodeService;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.tu.backend.externalresource.dto.CreateResourceChapterRequest;
 import com.tu.backend.externalresource.dto.CreateResourceItemRequest;
 import com.tu.backend.externalresource.dto.CreateResourceExcerptRequest;
@@ -74,6 +75,7 @@ class ExternalResourceServiceTest {
             " 第 2 章 ",
             "  节选正文  ",
             "  备注  ",
+            null,
             null
         ));
 
@@ -100,7 +102,8 @@ class ExternalResourceServiceTest {
             "p. 1",
             "   ",
             null,
-            0
+            0,
+            null
         ));
 
         assertThat(dto.title()).isEqualTo("仅标题节选");
@@ -145,7 +148,8 @@ class ExternalResourceServiceTest {
             null,
             "正文",
             null,
-            0
+            0,
+            null
         )))
             .isInstanceOf(BusinessException.class)
             .hasMessageContaining("resource excerpts are only supported for book or web-link resources");
@@ -170,7 +174,8 @@ class ExternalResourceServiceTest {
             "#intro",
             "这是从网页摘录的要点。",
             null,
-            0
+            0,
+            null
         ));
 
         assertThat(dto.title()).isEqualTo("页面要点");
@@ -207,14 +212,16 @@ class ExternalResourceServiceTest {
             "第一卷",
             "p.1–p.100",
             null,
-            0
+            0,
+            null
         ));
         var child = context.service.createChapter("ri-book", new CreateResourceChapterRequest(
             "rc-parent",
             "第一章",
             null,
             null,
-            0
+            0,
+            null
         ));
 
         assertThat(parent.id()).startsWith("rc-");
@@ -239,7 +246,8 @@ class ExternalResourceServiceTest {
             "p.12",
             "正文",
             null,
-            0
+            0,
+            null
         ));
 
         assertThat(dto.chapterId()).isEqualTo("rc-1");
@@ -259,7 +267,8 @@ class ExternalResourceServiceTest {
             null,
             "正文",
             null,
-            0
+            0,
+            null
         )))
             .isInstanceOf(BusinessException.class)
             .hasMessageContaining("resource chapter does not belong to resource item");
@@ -356,7 +365,8 @@ class ExternalResourceServiceTest {
             excerptRepository,
             contentTreeNodeService,
             itemRelationRepository,
-            clusterMatcherService
+            clusterMatcherService,
+            new ObjectMapper()
         );
 
         void stubBookItem() {

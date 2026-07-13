@@ -1089,6 +1089,7 @@ export function createResourceExcerptMock(resourceItemId: string, payload: Creat
     excerptText: payload.excerptText?.trim() || undefined,
     note: payload.note || '',
     sortOrder: payload.sortOrder ?? maxOrder + 1,
+    metadata: payload.metadata,
   };
   state.resourceExcerpts.push(excerpt);
   persistState();

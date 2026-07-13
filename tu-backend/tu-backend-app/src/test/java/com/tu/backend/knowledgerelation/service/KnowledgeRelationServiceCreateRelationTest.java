@@ -57,7 +57,7 @@ class KnowledgeRelationServiceCreateRelationTest {
         );
         KnowledgeRelationDto dto = service.createRelation(
             "kb-1",
-            new CreateKnowledgeRelationRequest("case", null, "kp-to", from, null, null)
+            new CreateKnowledgeRelationRequest("case", null, "kp-to", from, null, null, null)
         );
 
         assertThat(dto.toPointId()).isEqualTo("kp-to");

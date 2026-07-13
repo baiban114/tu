@@ -119,6 +119,7 @@ export interface ResourceExcerpt {
   excerptText?: string;
   note?: string;
   sortOrder: number;
+  metadata?: Record<string, unknown>;
 }
 
 export interface ResourceChapter {

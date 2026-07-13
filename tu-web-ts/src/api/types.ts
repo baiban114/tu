@@ -91,6 +91,9 @@ export interface SpannedBlockInfo {
   title?: string;
 }
 
+/** 知识标记来源：缺省视为 user（兼容旧数据） */
+export type KnowledgeMarkerSource = 'user' | 'ai'
+
 export interface TextAnnotation {
   id: string;
   selectedText: string;
@@ -113,6 +116,8 @@ export interface TextAnnotation {
   kind?: 'note' | 'basis';
   /** 依据标注绑定的外部资源节选 */
   basisBinding?: HeadingSourceBinding;
+  /** 标记来源；缺省视为 user */
+  markerSource?: KnowledgeMarkerSource;
 }
 
 export interface BlockMetadata {
@@ -213,6 +218,8 @@ export interface HeadingSourceBinding {
   resourceExcerptId?: string | null;
   snapshot: Pick<ExternalResourceSnapshot,
     'resourceTitle' | 'resourceTypeName' | 'excerptTitle' | 'excerptLocator'>;
+  /** 标记来源；缺省视为 user */
+  markerSource?: KnowledgeMarkerSource;
 }
 
 /**
@@ -410,6 +417,28 @@ export interface RelationsByPoint {
   pointId: string;
   outgoing: KnowledgeRelation[];
   incoming: KnowledgeRelation[];
+}
+
+export type DocumentMarkingAction = 'bindSource' | 'setBasis' | 'markExcerpt' | 'createRelation';
+
+export interface DocumentMarkingSuggestion {
+  id: string;
+  action: DocumentMarkingAction;
+  locator: string;
+  relationTypeKey?: string | null;
+  resourceItemId?: string | null;
+  resourceExcerptId?: string | null;
+  excerptText?: string | null;
+  excerptTitle?: string | null;
+  toPointId?: string | null;
+  confidence?: number | null;
+  reason?: string | null;
+  markerSource?: KnowledgeMarkerSource;
+}
+
+export interface DocumentMarkingResponse {
+  runId: string;
+  suggestions: DocumentMarkingSuggestion[];
 }
 
 export interface KnowledgePoint {

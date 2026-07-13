@@ -1,6 +1,6 @@
 package com.tu.backend.ai;
 
-import com.tu.backend.ai.dto.LearningPlanResponseDto;
+import com.fasterxml.jackson.databind.JsonNode;
 
 public record AiAgentProgressEvent(
     String phase,
@@ -8,7 +8,7 @@ public record AiAgentProgressEvent(
     Integer round,
     String toolName,
     Long elapsedMs,
-    LearningPlanResponseDto result
+    JsonNode result
 ) {
 
     public static AiAgentProgressEvent of(
@@ -28,7 +28,7 @@ public record AiAgentProgressEvent(
         );
     }
 
-    public static AiAgentProgressEvent completed(String message, long startedAtNanos, LearningPlanResponseDto result) {
+    public static AiAgentProgressEvent completed(String message, long startedAtNanos, JsonNode result) {
         return new AiAgentProgressEvent(
             phaseCompleted(),
             message,

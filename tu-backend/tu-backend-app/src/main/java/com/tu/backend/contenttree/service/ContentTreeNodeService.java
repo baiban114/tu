@@ -21,6 +21,7 @@ import com.tu.backend.contenttree.repository.ContentTreeNodeRepository;
 import com.tu.backend.contenttree.repository.ContentTreeScopeRepository;
 import com.tu.backend.page.entity.PageEntity;
 import com.tu.backend.page.repository.PageRepository;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -30,6 +31,7 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 
 @Service
@@ -172,15 +174,7 @@ public class ContentTreeNodeService {
         }
         nodeRepository.saveAll(toSave);
 
-        ContentTreeScopeEntity scope = scopeRepository.findById(new ContentTreeScopeId(ScopeType.PAGE, pageId))
-            .orElseGet(() -> {
-                ContentTreeScopeEntity created = new ContentTreeScopeEntity();
-                created.setId(new ContentTreeScopeId(ScopeType.PAGE, pageId));
-                return created;
-            });
-        scope.setKbId(page.getKbId());
-        scope.setContentFingerprint(fingerprint);
-        scopeRepository.save(scope);
+        savePageScope(page, pageId, fingerprint);
     }
 
     @Transactional
@@ -191,7 +185,7 @@ public class ContentTreeNodeService {
 
     @Transactional(readOnly = true)
     public String getStoredFingerprint(String pageId) {
-        return scopeRepository.findById(new ContentTreeScopeId(ScopeType.PAGE, pageId))
+        return findScope(ScopeType.PAGE, pageId)
             .map(ContentTreeScopeEntity::getContentFingerprint)
             .orElse(null);
     }
@@ -388,6 +382,53 @@ public class ContentTreeNodeService {
         } catch (Exception ex) {
             return objectMapper.createArrayNode();
         }
+    }
+
+    private void savePageScope(PageEntity page, String pageId, String fingerprint) {
+        ContentTreeScopeId scopeId = new ContentTreeScopeId(ScopeType.PAGE, pageId);
+        ContentTreeScopeEntity scope = findScope(ScopeType.PAGE, pageId)
+            .orElseGet(() -> {
+                ContentTreeScopeEntity created = new ContentTreeScopeEntity();
+                created.setId(scopeId);
+                return created;
+            });
+        scope.setKbId(page.getKbId());
+        scope.setContentFingerprint(fingerprint);
+        persistScope(scope);
+    }
+
+    private Optional<ContentTreeScopeEntity> findScope(String scopeType, String scopeId) {
+        return scopeRepository.findByIdScopeTypeAndIdScopeId(scopeType, scopeId)
+            .or(() -> scopeRepository.findById(new ContentTreeScopeId(scopeType, scopeId)));
+    }
+
+    private void persistScope(ContentTreeScopeEntity scope) {
+        try {
+            scopeRepository.saveAndFlush(scope);
+        } catch (DataIntegrityViolationException ex) {
+            if (!isDuplicatePrimaryKey(ex)) {
+                throw ex;
+            }
+            ContentTreeScopeEntity existing = findScope(
+                scope.getId().getScopeType(),
+                scope.getId().getScopeId()
+            ).orElseThrow(() -> ex);
+            existing.setKbId(scope.getKbId());
+            existing.setContentFingerprint(scope.getContentFingerprint());
+            scopeRepository.save(existing);
+        }
+    }
+
+    private static boolean isDuplicatePrimaryKey(DataIntegrityViolationException ex) {
+        Throwable current = ex;
+        while (current != null) {
+            String message = current.getMessage();
+            if (message != null && message.contains("Duplicate entry")) {
+                return true;
+            }
+            current = current.getCause();
+        }
+        return false;
     }
 
     private PageEntity findPage(String pageId) {

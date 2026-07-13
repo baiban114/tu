@@ -41,6 +41,7 @@ const emit = defineEmits<{
   (e: 'edit', annotation?: TextAnnotation): void
   (e: 'delete', annotation?: TextAnnotation): void
   (e: 'navigate-basis', annotation?: TextAnnotation): void
+  (e: 'promote-to-user', annotation?: TextAnnotation): void
   (e: 'close'): void
 }>()
 
@@ -228,6 +229,14 @@ watch(
                 @click="emit('edit', item)"
               >
                 编辑
+              </button>
+              <button
+                v-if="item.markerSource === 'ai'"
+                type="button"
+                class="note-popover__edit-btn"
+                @click="emit('promote-to-user', item)"
+              >
+                转为手动标记
               </button>
               <button type="button" class="note-popover__delete-btn" @click="emit('delete', item)">
                 {{ item.kind === 'basis' ? '解除依据' : '删除' }}

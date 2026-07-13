@@ -255,8 +255,12 @@ function createDecorations(doc: ProseMirrorNode, annotations: TextAnnotation[]):
     }
 
     decorations.push(Decoration.inline(from, to, {
-      class: annotation.kind === 'basis' ? 'tu-tiptap-annotation tu-tiptap-annotation--basis' : 'tu-tiptap-annotation',
+      class: [
+        annotation.kind === 'basis' ? 'tu-tiptap-annotation tu-tiptap-annotation--basis' : 'tu-tiptap-annotation',
+        annotation.markerSource === 'ai' ? 'tu-tiptap-annotation--ai' : '',
+      ].filter(Boolean).join(' '),
       'data-tu-annotation-id': annotation.id,
+      'data-tu-annotation-ai': annotation.markerSource === 'ai' ? '1' : undefined,
       style: [
         `--tu-annotation-color:${annotation.color || (annotation.kind === 'basis' ? '#A5D6A7' : '#FFEB3B')}`,
         `background:${annotation.color || (annotation.kind === 'basis' ? '#A5D6A7' : '#FFEB3B')}`,

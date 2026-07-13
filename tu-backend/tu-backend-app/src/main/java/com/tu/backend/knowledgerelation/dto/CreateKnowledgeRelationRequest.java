@@ -9,6 +9,7 @@ public record CreateKnowledgeRelationRequest(
     @Size(max = 64) String toPointId,
     KnowledgeAnchorDto from,
     KnowledgeAnchorDto to,
-    @Size(max = 1024) String note
+    @Size(max = 1024) String note,
+    @Size(max = 32) String sourceProvenance
 ) {
 }
