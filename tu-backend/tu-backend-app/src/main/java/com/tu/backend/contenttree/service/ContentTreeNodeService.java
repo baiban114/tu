@@ -26,13 +26,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.List;
-import java.util.Map;
-import java.util.Optional;
-import java.util.Set;
+import java.util.*;
 
 @Service
 public class ContentTreeNodeService {
@@ -146,7 +140,9 @@ public class ContentTreeNodeService {
         }
 
         Set<String> newIds = new HashSet<>();
-        List<ContentTreeNodeEntity> toSave = new ArrayList<>();
+        // 用 LinkedHashMap 按 ID 去重：当 stableNodeId 因 title 规范化（trim/lowercase）
+        // 导致两条 extracted 输出相同 ID 时，保留后写入的，避免 saveAll 内 INSERT 冲突。
+        Map<String, ContentTreeNodeEntity> toSaveById = new LinkedHashMap<>();
         for (OutlineExtractor.ExtractedOutlineNode extractedNode : extracted) {
             newIds.add(extractedNode.id());
             ContentTreeNodeEntity entity = existingById.get(extractedNode.id());
@@ -164,15 +160,27 @@ public class ContentTreeNodeService {
             entity.setSourceType(extractedNode.sourceType());
             entity.setPreviewText(extractedNode.previewText());
             entity.setBlockType(extractedNode.blockType());
-            toSave.add(entity);
+            toSaveById.put(entity.getId(), entity);
         }
 
+        // 先删除孤儿并立即 flush，确保 DELETE 在 INSERT 之前真正下到 DB，
+        // 否则同事务内 saveAll 的 INSERT 可能先于 DELETE 触发主键冲突。
+        List<ContentTreeNodeEntity> orphans = new ArrayList<>();
         for (ContentTreeNodeEntity orphan : existing) {
             if (!newIds.contains(orphan.getId())) {
-                nodeRepository.delete(orphan);
+                orphans.add(orphan);
             }
         }
-        nodeRepository.saveAll(toSave);
+        if (!orphans.isEmpty()) {
+            nodeRepository.deleteAllInBatch(orphans);
+            nodeRepository.flush();
+        }
+
+        List<ContentTreeNodeEntity> toSave = new ArrayList<>(toSaveById.values());
+        if (!toSave.isEmpty()) {
+            nodeRepository.saveAll(toSave);
+            nodeRepository.flush();
+        }
 
         savePageScope(page, pageId, fingerprint);
     }
@@ -406,7 +414,10 @@ public class ContentTreeNodeService {
         try {
             scopeRepository.saveAndFlush(scope);
         } catch (DataIntegrityViolationException ex) {
-            if (!isDuplicatePrimaryKey(ex)) {
+            // 关键：只对 content_tree_scope 表的主键冲突做幂等重试。
+            // 之前仅判断 "Duplicate entry" 子串，会误吞 content_tree_node 表的主键冲突，
+            // 掩盖真实错误并触发错误的回查路径。
+            if (!isContentTreeScopeDuplicate(ex)) {
                 throw ex;
             }
             ContentTreeScopeEntity existing = findScope(
@@ -419,11 +430,13 @@ public class ContentTreeNodeService {
         }
     }
 
-    private static boolean isDuplicatePrimaryKey(DataIntegrityViolationException ex) {
+    private static boolean isContentTreeScopeDuplicate(DataIntegrityViolationException ex) {
         Throwable current = ex;
         while (current != null) {
             String message = current.getMessage();
-            if (message != null && message.contains("Duplicate entry")) {
+            if (message != null
+                && message.contains("Duplicate entry")
+                && message.contains("content_tree_scope")) {
                 return true;
             }
             current = current.getCause();

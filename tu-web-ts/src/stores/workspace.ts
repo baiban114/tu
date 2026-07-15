@@ -4,6 +4,7 @@ import {
   listKnowledgeBases,
   createKnowledgeBase,
   deleteKnowledgeBase,
+  renameKnowledgeBase,
   importRoadmap,
   type KnowledgeBase,
 } from '@/api/knowledge';
@@ -442,6 +443,18 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     }
   }
 
+  async function renameKb(id: string, name: string) {
+    const trimmed = name.trim();
+    if (!trimmed) throw new Error('知识库名称不能为空');
+    const updated = await renameKnowledgeBase(id, trimmed);
+    const idx = kbList.value.findIndex((kb) => kb.id === id);
+    if (idx >= 0) {
+      // 保留列表顺序，仅更新字段
+      kbList.value[idx] = { ...kbList.value[idx], ...updated };
+    }
+    return updated;
+  }
+
   async function addPage(parentId: string | null, title?: string, pageType?: PageType) {
     if (!currentKbId.value) return;
     const defaultTitle = defaultTitleForPageType(pageType);
@@ -646,6 +659,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     saveCurrentPage,
     addKb,
     removeKb,
+    renameKb,
     addPage,
     importMarkdownFile,
     importRoadmapJson,

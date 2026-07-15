@@ -17,7 +17,7 @@ import { useViewportClampedFixedPanel } from '@/utils/viewportPanel';
 import { useWorkspaceStore } from '@/stores/workspace';
 import { useOutlineCacheStore } from '@/stores/outlineCache';
 import type { PageItem } from '@/api/page';
-import type { PageType } from '@/api/types';
+import type { KnowledgeBase, PageType } from '@/api/types';
 import {
   isDocumentPage,
   isOutlineTreeNode,
@@ -256,6 +256,8 @@ onBeforeUnmount(() => {
   document.removeEventListener('keydown', handlePageDeleteKeydown, true);
   document.removeEventListener('click', closeContextMenu);
   document.removeEventListener('keydown', closeContextMenuOnEscape);
+  document.removeEventListener('click', closeKbContextMenu);
+  document.removeEventListener('keydown', closeKbContextMenuOnEscape);
 });
 
 async function onSelectKb(kbId: string) {
@@ -288,6 +290,56 @@ async function onDeleteKb(id: string, name: string) {
   } catch {
     // ignore cancel
   }
+}
+
+// 知识库右键菜单
+function onKbContextMenu(event: MouseEvent, kb: KnowledgeBase) {
+  event.preventDefault();
+  event.stopPropagation();
+  kbContextMenu.value = { visible: true, x: event.clientX, y: event.clientY, kb };
+}
+
+function closeKbContextMenu() {
+  kbContextMenu.value.visible = false;
+}
+
+function closeKbContextMenuOnEscape(event: KeyboardEvent) {
+  if (event.key === 'Escape') closeKbContextMenu();
+}
+
+function onStartKbRename(kb: KnowledgeBase) {
+  closeKbContextMenu();
+  renamingKbId.value = kb.id;
+  renamingKbValue.value = kb.name;
+  nextTick(() => {
+    renamingKbInputRef.value?.focus();
+    renamingKbInputRef.value?.select();
+  });
+}
+
+async function onFinishKbRename(kb: KnowledgeBase) {
+  const name = renamingKbValue.value.trim();
+  if (!name) {
+    ElMessage.warning('知识库名称不能为空');
+    return;
+  }
+  if (name === kb.name) {
+    renamingKbId.value = null;
+    return;
+  }
+  try {
+    await store.renameKb(kb.id, name);
+    ElMessage.success('已重命名');
+  } catch (err) {
+    ElMessage.error(err instanceof Error ? err.message : '重命名失败');
+  } finally {
+    renamingKbId.value = null;
+  }
+}
+
+function onCancelKbRename() {
+  renamingKbId.value = null;
+  renamingKbValue.value = '';
 }
 
 const selectedPageCount = computed(() => selectedPageIds.value.size);
@@ -373,6 +425,36 @@ function allowDrag(node: any) {
 }
 
 const contextMenu = ref({ visible: false, x: 0, y: 0, node: null as PageItem | null });
+
+// 知识库右键菜单：单独维护，避免与页面菜单混淆
+const kbContextMenu = ref({ visible: false, x: 0, y: 0, kb: null as KnowledgeBase | null });
+const kbContextMenuSourcePoint = computed(() =>
+  kbContextMenu.value.visible ? { x: kbContextMenu.value.x, y: kbContextMenu.value.y } : null,
+);
+const { panelRef: kbContextMenuRef, position: kbContextMenuPosition } = useViewportClampedFixedPanel({
+  visible: computed(() => kbContextMenu.value.visible),
+  getSourcePoint: () => kbContextMenuSourcePoint.value,
+});
+
+// 知识库内联重命名状态（与页面重命名状态 renamingId 区分）
+const renamingKbId = ref<string | null>(null);
+const renamingKbValue = ref('');
+const renamingKbInputRef = ref<InstanceType<typeof ElInput> | null>(null);
+
+// 注意：watch 必须在 kbContextMenu / closeKbContextMenu 等标识符声明之后注册，
+// 否则 setup 顶部立即执行 getter 时会触发 ReferenceError（temporal dead zone）。
+watch(
+  () => kbContextMenu.value.visible,
+  (visible) => {
+    if (visible) {
+      document.addEventListener('click', closeKbContextMenu);
+      document.addEventListener('keydown', closeKbContextMenuOnEscape);
+    } else {
+      document.removeEventListener('click', closeKbContextMenu);
+      document.removeEventListener('keydown', closeKbContextMenuOnEscape);
+    }
+  },
+);
 
 const contextMenuSourcePoint = computed(() =>
   contextMenu.value.visible ? { x: contextMenu.value.x, y: contextMenu.value.y } : null,
@@ -599,18 +681,33 @@ function collapseAllTree() {
           class="kb-item"
           :class="{ 'kb-item--active': store.currentKbId === kb.id }"
           @click.stop="onSelectKb(kb.id)"
+          @contextmenu="onKbContextMenu($event, kb)"
         >
           <span class="kb-icon">{{ kb.icon ?? '📚' }}</span>
-          <span class="kb-name">{{ kb.name }}</span>
-          <el-button
-            class="kb-delete"
-            link
-            size="small"
-            title="删除知识库"
-            @click.stop="onDeleteKb(kb.id, kb.name)"
-          >
-            ×
-          </el-button>
+          <template v-if="renamingKbId === kb.id">
+            <el-input
+              ref="renamingKbInputRef"
+              v-model="renamingKbValue"
+              size="small"
+              class="rename-input kb-rename-input"
+              @keyup.enter="onFinishKbRename(kb)"
+              @keyup.escape="onCancelKbRename"
+              @blur="onFinishKbRename(kb)"
+              @click.stop
+            />
+          </template>
+          <template v-else>
+            <span class="kb-name">{{ kb.name }}</span>
+            <el-button
+              class="kb-delete"
+              link
+              size="small"
+              title="删除知识库"
+              @click.stop="onDeleteKb(kb.id, kb.name)"
+            >
+              ×
+            </el-button>
+          </template>
         </div>
 
         <div v-if="store.kbList.length === 0" class="empty-hint">
@@ -795,6 +892,28 @@ function collapseAllTree() {
           @click="selectedPageCount > 1 && contextMenu.node && isPageSelected(contextMenu.node.id) ? onDeleteSelectedPages() : onDeletePage(contextMenu.node!)"
         >
           {{ selectedPageCount > 1 && contextMenu.node && isPageSelected(contextMenu.node.id) ? `删除 ${selectedPageCount} 个页面` : '删除' }}
+        </div>
+      </div>
+    </Teleport>
+
+    <Teleport to="body">
+      <div
+        v-if="kbContextMenu.visible && kbContextMenu.kb"
+        ref="kbContextMenuRef"
+        class="context-menu"
+        :style="{ left: `${kbContextMenuPosition.left}px`, top: `${kbContextMenuPosition.top}px` }"
+        @mousedown.stop
+        @click.stop
+      >
+        <div class="context-menu-item" @click="kbContextMenu.kb && onStartKbRename(kbContextMenu.kb)">
+          重命名
+        </div>
+        <div class="context-menu-divider" />
+        <div
+          class="context-menu-item context-menu-item--danger"
+          @click="kbContextMenu.kb && onDeleteKb(kbContextMenu.kb.id, kbContextMenu.kb.name)"
+        >
+          删除
         </div>
       </div>
     </Teleport>
@@ -1067,6 +1186,11 @@ function collapseAllTree() {
 .rename-input {
   flex: 1;
   font-size: 13px;
+}
+
+.kb-rename-input {
+  /* 内联重命名时让输入框紧贴图标右侧、占据剩余空间 */
+  margin-left: 4px;
 }
 
 .context-menu {

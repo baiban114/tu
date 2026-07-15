@@ -57,6 +57,6 @@ npm run test:e2e
 
 `AI 生成计划` 面板可输入学习目标，并可选填写总可用小时、每日学习小时和截止日期。点击「生成」后会显示步骤日志（模型调用、知识库/联网工具等）与已用时，可随时「中止」。mock 数据源下会模拟进度并生成示例计划；backend 数据源下会调用 `POST /api/ai/learning-plan/generate/stream`（SSE），生成结果先预览，点击 `确认替换当前学习计划` 后才覆盖当前记录。同步接口 `POST /api/ai/learning-plan/generate` 仍保留供兼容。
 
-AI Agent 的 OpenAI-compatible 接入信息完全在 `系统配置` 页面管理。后端会把 API Key 写入通用密钥库并使用应用级 AES-GCM 加密；本地开发使用后端配置文件中的开发默认加密密钥，生产部署应通过 `TU_SECRET_ENCRYPTION_KEY` 覆盖。
+AI Agent 的 OpenAI-compatible 接入信息完全在 `系统设置` 页面（`AI` 模块）管理。后端会把 API Key 写入通用密钥库并使用应用级 AES-GCM 加密；本地开发使用后端配置文件中的开发默认加密密钥，生产部署应通过 `TU_SECRET_ENCRYPTION_KEY` 覆盖。
 
-`系统配置` 页面还会展示 `Agent 记录`：学习计划等业务型 AI 生成会记录完整 system/user prompt、请求体、原始响应、解析输出、耗时和模型返回的 token usage；连接测试不会写入记录。mock 数据源下生成学习计划也会写入本地 mock 记录，便于调试页面展示。
+`系统设置` 页面的 `AI` 模块还会展示 `Agent 记录`：学习计划等业务型 AI 生成会记录完整 system/user prompt、请求体、原始响应、解析输出、耗时和模型返回的 token usage；连接测试不会写入记录。mock 数据源下生成学习计划也会写入本地 mock 记录，便于调试页面展示。`系统设置` 的 `编辑器` 模块提供「文本选择工具栏」等编辑器开关，通过 `GET/PUT /api/editor-preferences` 持久化。

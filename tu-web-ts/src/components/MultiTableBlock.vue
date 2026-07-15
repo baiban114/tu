@@ -618,7 +618,7 @@ const generatePlan = async () => {
     }
     const message = error instanceof Error ? error.message : '生成学习计划失败。'
     aiPlanError.value = message.includes('configuration incomplete')
-      ? 'AI Agent 配置不完整，请先到系统配置中设置 Base URL、Model 和 API Key。'
+      ? 'AI Agent 配置不完整，请先到系统设置中设置 Base URL、Model 和 API Key。'
       : message
   } finally {
     generatingPlan.value = false

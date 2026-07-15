@@ -248,6 +248,7 @@ test('writes an agent run log for mock learning-plan generation', async ({ page 
   await openMockLearningPlanPreview(page)
 
   await page.goto('/settings')
+  await page.getByRole('menuitem', { name: 'AI' }).click()
   await expect(page.getByRole('heading', { name: 'Agent 记录' })).toBeVisible()
   await expect(page.locator('.agent-run-log__row')).toContainText('学习计划生成')
   await expect(page.locator('.agent-run-log__row')).toContainText('成功')

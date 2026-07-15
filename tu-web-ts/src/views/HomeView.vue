@@ -161,7 +161,7 @@ watch(
         <RouterLink class="workspace-topbar__link" to="/tasks">任务管理</RouterLink>
         <RouterLink class="workspace-topbar__link" to="/resources">引用与资源</RouterLink>
         <RouterLink class="workspace-topbar__link" :to="{ path: '/resources', query: { tab: 'objects' } }">对象管理</RouterLink>
-        <RouterLink class="workspace-topbar__link" to="/settings">系统配置</RouterLink>
+        <RouterLink class="workspace-topbar__link" to="/settings">系统设置</RouterLink>
         <button
           v-if="route.query.pageId"
           class="workspace-topbar__link workspace-topbar__link--button"

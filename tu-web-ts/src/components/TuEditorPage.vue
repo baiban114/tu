@@ -1,4 +1,4 @@
-﻿<script setup lang="ts">
+<script setup lang="ts">
 import { ref, reactive, watch, computed, onMounted, onBeforeUnmount, nextTick, provide } from 'vue'
 import { useRouter } from 'vue-router'
 import type { Block, BlockTag, EmbeddedObject, ExternalResourceEmbedData, HeadingSourceBinding, PageContent, TextAnnotation, TextTagSpan, SpannedBlockInfo } from '@/api/types'
@@ -28,6 +28,7 @@ import { useAnchoredFloating, type FloatingAnchorRect } from '@/composables/useA
 import { useViewportClampedFixedPanel } from '@/utils/viewportPanel'
 import { blockSyncManager } from '@/utils/blockSyncManager'
 import { useWorkspaceStore } from '@/stores/workspace'
+import { useEditorPreferencesStore } from '@/stores/editorPreferences'
 import { normalizeBlockTags } from '@/utils/blockMetadata'
 import { getPageTags } from '@/utils/pageMetadata'
 import {
@@ -348,6 +349,7 @@ watch(() => nodeViewToolbar.visible, (visible, wasVisible) => {
 })
 
 const workspaceStore = useWorkspaceStore()
+const editorPreferencesStore = useEditorPreferencesStore()
 const router = useRouter()
 const registryStore = useBlockRegistryStore()
 const outlineCacheStore = useOutlineCacheStore()
@@ -575,7 +577,8 @@ const headingSourcePopoverAnchor = ref<KnowledgeAnchor | null>(null)
 const headingSourcePopoverBinding = ref<HeadingSourceBinding | null>(null)
 
 const selectionToolbarSuppressed = computed(() => (
-  nodeViewToolbar.visible
+  !editorPreferencesStore.selectionToolbarEnabled
+  || nodeViewToolbar.visible
   || showResourcePicker.value
   || showPdfExcerptPicker.value
   || noteEditorVisible.value
@@ -2653,6 +2656,8 @@ onMounted(() => {
   document.addEventListener('paste', handleGlobalPaste, true)
   document.addEventListener('click', closeTocContextMenu)
 
+  void editorPreferencesStore.load()
+
   blockSyncManager.onStatusChange((status, error) => {
     if (status === 'syncing') {
       showToast('正在同步内容...')
@@ -3134,6 +3139,7 @@ onBeforeUnmount(() => {
       :suggestions="documentMarkingSuggestions"
       :loading="documentMarkingLoading"
       :progress-message="documentMarkingProgress"
+      :page-title="props.pageTitle"
       @apply="handleApplyDocumentMarking"
     />
 
