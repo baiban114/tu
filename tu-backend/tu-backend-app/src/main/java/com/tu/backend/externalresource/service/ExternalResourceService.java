@@ -60,6 +60,7 @@ public class ExternalResourceService {
 
     private static final String BOOK_TYPE_CODE = "book";
     private static final String WEB_LINK_TYPE_CODE = "web-link";
+    private static final String DOCUMENT_TYPE_CODE = "document";
 
     private final ResourceTypeRepository typeRepository;
     private final ResourceWorkRepository workRepository;
@@ -660,8 +661,10 @@ public class ExternalResourceService {
     private void ensureExcerptSupportedItem(ResourceItemEntity item) {
         ResourceTypeEntity type = findType(item.getTypeId());
         String code = type.getCode();
-        if (!BOOK_TYPE_CODE.equals(code) && !WEB_LINK_TYPE_CODE.equals(code)) {
-            throw new BusinessException(40000, "resource excerpts are only supported for book or web-link resources");
+        if (!BOOK_TYPE_CODE.equals(code)
+            && !WEB_LINK_TYPE_CODE.equals(code)
+            && !DOCUMENT_TYPE_CODE.equals(code)) {
+            throw new BusinessException(40000, "resource excerpts are only supported for book, document, or web-link resources");
         }
     }
 

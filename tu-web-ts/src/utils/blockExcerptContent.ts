@@ -3,6 +3,11 @@ import type { Node as ProseMirrorNode } from '@tiptap/pm/model'
 import { collectFlatTocEntries, type TocCollectContext } from '@/utils/toc/collectFlatTocEntries'
 import type { FlatTocEntry } from '@/utils/toc/headings'
 import { getTocEntrySectionContentRange, getTocSectionBoundaryPos } from '@/utils/toc/tocSections'
+import type { RefGutterHostContext } from '@/editor/refGutterBridge'
+import {
+  getRefChildSectionExcerpt,
+  getRefGroupExcerptFromBlocks,
+} from '@/utils/refInnerGutter'
 
 export interface BlockExcerptContent {
   text: string
@@ -164,8 +169,14 @@ export function getTocEntryExcerptContent(
   }
 
   if (entry.sourceType === 'ref-group') {
-    const parts: string[] = []
     const title = entry.text.trim()
+    const host = resolveRefHostFromEntry(entry, flat, entryIndex, ctx)
+    if (host) {
+      const fromBlocks = getRefGroupExcerptFromBlocks(host, ctx, title)
+      if (fromBlocks) return fromBlocks
+    }
+
+    const parts: string[] = []
     if (title) parts.push(title)
 
     const { contentRange } = getTocEntrySectionContentRange(flat, entryIndex, doc)
@@ -186,7 +197,48 @@ export function getTocEntryExcerptContent(
     return { text, title: excerptTitleFromText(text) }
   }
 
+  if (entry.sourceType === 'ref-child') {
+    const host = resolveRefHostFromEntry(entry, flat, entryIndex, ctx)
+    if (host) {
+      const fromBlocks = getRefChildSectionExcerpt(host, entry, ctx)
+      if (fromBlocks) return fromBlocks
+    }
+    const text = entry.text.trim() || entry.targetText?.trim() || ''
+    if (!text) return null
+    return { text, title: excerptTitleFromText(text) }
+  }
+
   return null
+}
+
+function resolveRefHostFromEntry(
+  entry: FlatTocEntry,
+  flat: FlatTocEntry[],
+  entryIndex: number,
+  ctx: TocCollectContext,
+): RefGutterHostContext | null {
+  if (!entry.blockId || !entry.refId) return null
+
+  const hostBlock = ctx.blocks.find((block) => block.id === entry.blockId)
+  const refType: 'block' | 'page' = hostBlock?.refType === 'page' ? 'page' : 'block'
+
+  let contentParentLevel = entry.level > 0 ? entry.level : 0
+  if (entry.sourceType === 'ref-child') {
+    for (let j = entryIndex - 1; j >= 0; j -= 1) {
+      if (flat[j].pos !== entry.pos) continue
+      if (flat[j].sourceType === 'ref-group') {
+        contentParentLevel = flat[j].level > 0 ? flat[j].level : contentParentLevel
+        break
+      }
+    }
+  }
+
+  return {
+    hostBlockId: entry.blockId,
+    refId: entry.refId,
+    refType,
+    contentParentLevel,
+  }
 }
 
 function collectTopLevelBlockIdsBetween(doc: ProseMirrorNode, fromPos: number, toPos: number): string[] {

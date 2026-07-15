@@ -1,4 +1,5 @@
 import type { ExternalResourceEmbedData, HeadingSourceBinding, KnowledgeMarkerSource } from '@/api/types'
+import { resourcePositionDisplay } from '@/utils/resourcePositionLocator'
 
 export function effectiveMarkerSource(source?: KnowledgeMarkerSource | null): KnowledgeMarkerSource {
   return source === 'ai' ? 'ai' : 'user'
@@ -101,7 +102,10 @@ export function serializeHeadingSourceComment(blockId: string, binding: HeadingS
 
 export function headingSourceBadgeLabel(binding: HeadingSourceBinding): string {
   const snapshot = binding.snapshot
-  const label = snapshot.excerptTitle || snapshot.excerptLocator || snapshot.resourceTitle || '来源'
+  const label = snapshot.excerptTitle
+    || (snapshot.excerptLocator ? resourcePositionDisplay(snapshot.excerptLocator) : '')
+    || snapshot.resourceTitle
+    || '来源'
   return label.length > 24 ? `${label.slice(0, 24)}…` : label
 }
 
@@ -111,7 +115,7 @@ export function headingSourceBadgeTitle(binding: HeadingSourceBinding): string {
     snapshot.resourceTitle,
     snapshot.resourceTypeName,
     snapshot.excerptTitle,
-    snapshot.excerptLocator,
+    snapshot.excerptLocator ? resourcePositionDisplay(snapshot.excerptLocator) : '',
   ].filter(Boolean)
   return parts.join(' · ') || (binding.resourceExcerptId ? '外部资源节选' : '外部资源')
 }

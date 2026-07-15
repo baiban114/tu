@@ -83,7 +83,7 @@ test('creates knowledge points from picker tree toolbar and context menu', async
 
   await dialog.getByTitle('新建顶层知识点').click()
   await expect(dialog.getByText('未命名知识点').first()).toBeVisible()
-  await expect(dialog.locator('.kpp-selected')).toContainText('未命名知识点')
+  await expect(dialog.locator('.kpp-panel__value')).toContainText('未命名知识点')
 
   const rootNode = dialog.locator('.el-tree-node__content', { hasText: '未命名知识点' }).first()
   await rootNode.click({ button: 'right' })
@@ -125,7 +125,7 @@ test('renames knowledge point from picker tree via context menu and F2', async (
   await renameInput.fill('核心概念')
   await renameInput.press('Enter')
   await expect(dialog.getByLabel('知识点树').getByText('核心概念')).toBeVisible()
-  await expect(dialog.locator('.kpp-selected')).toContainText('核心概念')
+  await expect(dialog.locator('.kpp-panel__value')).toContainText('核心概念')
 
   await page.keyboard.press('F2')
   const secondRenameInput = dialog.locator('.kpt-tree-rename-input input')

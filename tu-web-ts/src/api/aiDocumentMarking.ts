@@ -7,6 +7,9 @@ export interface AnalyzeDocumentMarkingPayload {
   pageId: string
   kbId?: string | null
   replaceExistingAi?: boolean | null
+  sectionHeadingBlockId?: string | null
+  sectionEmbedBlockId?: string | null
+  sectionTitle?: string | null
 }
 
 export type DocumentMarkingProgressPhase =

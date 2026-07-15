@@ -8,6 +8,7 @@ const props = defineProps<{
   loading?: boolean
   progressMessage?: string
   pageTitle?: string
+  sectionTitle?: string
 }>()
 
 const emit = defineEmits<{
@@ -87,9 +88,14 @@ const originalMarkingMap = computed(() => {
 })
 
 const displayPageTitle = computed(() => props.pageTitle?.trim() || '未命名页面')
+const displaySectionTitle = computed(() => props.sectionTitle?.trim() || '')
 
-// 标题栏：面板标题 + 页面名，让用户从打开到结束都能看到正在分析的页面
-const dialogTitle = computed(() => `AI 文档标记建议 · ${displayPageTitle.value}`)
+const dialogTitle = computed(() => {
+  if (displaySectionTitle.value) {
+    return `AI 文档标记建议 · ${displaySectionTitle.value}`
+  }
+  return `AI 文档标记建议 · ${displayPageTitle.value}`
+})
 
 function toggle(id: string, checked: boolean) {
   const next = new Set(selectedIds.value)

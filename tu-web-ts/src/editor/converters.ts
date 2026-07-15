@@ -553,6 +553,10 @@ function parseMarkdown(markdown: string): JSONContent[] {
   return injectCodeBlockPlaceholders(parseMarkdownBlocks(withoutFences), blocks)
 }
 
+function createLineBlockId(): string {
+  return `block-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+}
+
 function parseMarkdownBlocks(markdown: string): JSONContent[] {
   if (!markdown.trim()) return []
 
@@ -573,6 +577,7 @@ function parseMarkdownBlocks(markdown: string): JSONContent[] {
       if (currentQuoteLines.length === 0) return
       nodes.push({
         type: 'blockquote',
+        attrs: { blockId: createLineBlockId() },
         content: [{
           type: 'paragraph',
           content: parseInlineMarkdown(currentQuoteLines.join('\n')),

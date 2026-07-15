@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, inject, onMounted, ref, unref, watch, type Ref } from 'vue'
+import { computed, inject, onMounted, provide, ref, unref, watch, type Ref } from 'vue'
 import { nodeViewProps, NodeViewWrapper } from '@tiptap/vue-3'
 import ResizableBlockWrapper from '../components/ResizableBlockWrapper.vue'
 import ReferencedBlockRenderer from '@/components/ReferencedBlockRenderer.vue'
@@ -15,6 +15,8 @@ import {
   clampHeadingLevel,
   findParentHeadingLevel,
 } from '@/utils/toc/headings'
+import { REF_GUTTER_DELEGATE_KEY, REF_GUTTER_HOST_KEY, type RefGutterHostContext } from '@/editor/refGutterBridge'
+import { useRefGutterForwarding, type ExposedTuEditor } from '@/composables/useRefGutterForwarding'
 
 interface CompoundBadge {
   annotationId: string
@@ -93,6 +95,65 @@ const headingText = computed(() => {
 const referencedContentParentLevel = computed(() => {
   return headingLevel.value > 0 ? headingLevel.value : parentHeadingLevel.value
 })
+
+const refGutterHost = computed<RefGutterHostContext>(() => ({
+  hostBlockId: blockId.value,
+  refId: refId.value,
+  refType: refType.value,
+  contentParentLevel: referencedContentParentLevel.value,
+}))
+
+provide(REF_GUTTER_HOST_KEY, refGutterHost)
+
+const {
+  forwardLineAnnotate: forwardLineAnnotateDefault,
+  forwardMarkExcerpt: forwardMarkExcerptDefault,
+  forwardSetBasis: forwardSetBasisDefault,
+  forwardCreateKnowledgeRelation: forwardCreateKnowledgeRelationDefault,
+} = useRefGutterForwarding()
+
+const refGutterDelegate = inject(REF_GUTTER_DELEGATE_KEY, null)
+
+const nestedEditorsByBlockId = ref<Record<string, ExposedTuEditor>>({})
+
+const setNestedEditorRef = (pageBlockId: string, el: unknown) => {
+  if (el && typeof el === 'object' && 'editor' in el) {
+    nestedEditorsByBlockId.value[pageBlockId] = el as ExposedTuEditor
+    return
+  }
+  delete nestedEditorsByBlockId.value[pageBlockId]
+}
+
+const forwardRefGutterAction = (
+  pageBlockId: string,
+  innerBlockId: string,
+  action: 'annotate' | 'mark-excerpt' | 'set-basis' | 'knowledge-relation',
+) => {
+  const innerEditor = unref(nestedEditorsByBlockId.value[pageBlockId]?.editor) ?? null
+  const host = refGutterHost.value
+  if (!innerEditor || !host || !refGutterDelegate) {
+    if (action === 'annotate') forwardLineAnnotateDefault(innerBlockId)
+    else if (action === 'mark-excerpt') forwardMarkExcerptDefault(innerBlockId)
+    else if (action === 'set-basis') forwardSetBasisDefault(innerBlockId)
+    else forwardCreateKnowledgeRelationDefault(innerBlockId)
+    return
+  }
+
+  switch (action) {
+    case 'annotate':
+      refGutterDelegate.onLineAnnotate(host, innerBlockId, innerEditor)
+      break
+    case 'mark-excerpt':
+      refGutterDelegate.onMarkExcerpt(host, innerBlockId, innerEditor)
+      break
+    case 'set-basis':
+      refGutterDelegate.onSetBasis(host, innerBlockId, innerEditor)
+      break
+    case 'knowledge-relation':
+      refGutterDelegate.onCreateKnowledgeRelation(host, innerBlockId, innerEditor)
+      break
+  }
+}
 
 const isRichTextBlock = (block: Block): boolean => block.type === 'richtext' || block.type === 'richText'
 
@@ -207,9 +268,15 @@ onMounted(() => {
         <template v-for="block in shiftedPageBlocks" :key="block.id">
           <TuEditor
             v-if="isRichTextBlock(block) && (block.content || '').trim()"
+            :ref="(el) => setNestedEditorRef(block.id, el)"
             :blocks="[block]"
             :editable="false"
+            :line-gutter-actions="true"
             class="ref-page-content__block"
+            @line-annotate="(innerBlockId) => forwardRefGutterAction(block.id, innerBlockId, 'annotate')"
+            @mark-block-excerpt="(innerBlockId) => forwardRefGutterAction(block.id, innerBlockId, 'mark-excerpt')"
+            @set-block-basis="(innerBlockId) => forwardRefGutterAction(block.id, innerBlockId, 'set-basis')"
+            @line-create-knowledge-relation="(innerBlockId) => forwardRefGutterAction(block.id, innerBlockId, 'knowledge-relation')"
           />
           <X6Component
             v-else-if="block.type === 'x6'"
@@ -232,9 +299,15 @@ onMounted(() => {
           />
           <TuEditor
             v-else-if="getExternalResourceExcerptBlocks(block)"
+            :ref="(el) => setNestedEditorRef(block.id, el)"
             :blocks="getExternalResourceExcerptBlocks(block)!"
             :editable="false"
+            :line-gutter-actions="true"
             class="ref-page-content__block"
+            @line-annotate="(innerBlockId) => forwardRefGutterAction(block.id, innerBlockId, 'annotate')"
+            @mark-block-excerpt="(innerBlockId) => forwardRefGutterAction(block.id, innerBlockId, 'mark-excerpt')"
+            @set-block-basis="(innerBlockId) => forwardRefGutterAction(block.id, innerBlockId, 'set-basis')"
+            @line-create-knowledge-relation="(innerBlockId) => forwardRefGutterAction(block.id, innerBlockId, 'knowledge-relation')"
           />
           <div v-else-if="block.type !== 'ref'" class="ref-page-content__fallback">
             {{ renderFallbackText(block) }}

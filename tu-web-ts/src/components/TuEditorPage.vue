@@ -81,7 +81,7 @@ import {
   type TocTreeItem,
 } from '@/utils/toc/headings'
 import { collectFlatTocEntries, type TocCollectContext } from '@/utils/toc/collectFlatTocEntries'
-import { resolveRefGroupSectionEntry, resolveSectionEntryAtEditor } from '@/utils/sectionTocResolve'
+import { resolveRefGroupSectionEntry } from '@/utils/sectionTocResolve'
 import { getBlockExcerptContent, getTocEntryExcerptContent, collectBasisBlockIds, collectTocEntryBasisBlockIds } from '@/utils/blockExcerptContent'
 import { HEADING_SECTION_FOLD_META } from '@/utils/toc/tocSectionFoldActions'
 import { isMindmapBlueprint } from '@/components/x6'
@@ -95,9 +95,20 @@ import {
   type KnowledgeAnchorNavigateHandlers,
 } from '@/utils/knowledgeAnchor'
 import type { GraphData } from '@/api/types'
+import { buildDocumentMarkingSectionScope } from '@/utils/documentMarkingSectionScope'
 import type { UrlHoverTarget } from '@/editor/urlHoverTarget'
 import type { UrlDisplayMode } from '@/utils/urlDisplay'
 import { PDF_EXCERPT_SCROLL_EVENT, PDF_EXCERPT_DEFAULT_HEIGHT, parsePdfExcerptViewMode } from '@/utils/pdfExcerpt'
+import {
+  REF_GUTTER_DELEGATE_KEY,
+  type RefGutterDelegate,
+  type RefGutterHostContext,
+} from '@/editor/refGutterBridge'
+import {
+  collectRefInnerBasisBlockIds,
+  getRefInnerBlockExcerptContent,
+} from '@/utils/refInnerGutter'
+import type { Editor } from '@tiptap/vue-3'
 
 type TocItem = TocTreeItem
 const NODEVIEW_TYPES = ['x6Block', 'tableBlock', 'multiTableBlock', 'timelineBlock', 'spacerBlock', 'refBlock', 'externalResourceBlock', 'pdfExcerptBlock']
@@ -433,17 +444,6 @@ const canMarkResourceExcerptFromSelection = computed(() => {
 
 const canSetExcerptBasisFromSelection = computed(() => canMarkResourceExcerptFromSelection.value)
 
-const canMarkHeadingSourceFromSelection = computed(() => {
-  return hasSelection.value && isSelectionInHeading.value
-})
-
-const canClearHeadingSourceFromSelection = computed(() => {
-  selectionStateVersion.value
-  return tuEditorRef.value?.getHeadingSourceBindingAtSelection?.() != null
-    && (tuEditorRef.value?.isSelectionInHeading?.() ?? false)
-    && hasSelection.value
-})
-
 const tocContextMenu = ref<{ visible: boolean; top: number; left: number; item: TocItem | null }>({
   visible: false,
   top: 0,
@@ -569,12 +569,8 @@ const documentMarkingPanelVisible = ref(false)
 const documentMarkingLoading = ref(false)
 const documentMarkingProgress = ref('')
 const documentMarkingSuggestions = ref<DocumentMarkingSuggestion[]>([])
+const documentMarkingSectionTitle = ref('')
 let documentMarkingAbort: AbortController | null = null
-const headingSourcePopoverVisible = ref(false)
-const headingSourcePopoverTop = ref(0)
-const headingSourcePopoverLeft = ref(0)
-const headingSourcePopoverAnchor = ref<KnowledgeAnchor | null>(null)
-const headingSourcePopoverBinding = ref<HeadingSourceBinding | null>(null)
 
 const selectionToolbarSuppressed = computed(() => (
   !editorPreferencesStore.selectionToolbarEnabled
@@ -591,6 +587,9 @@ const notePopoverVisible = ref(false)
 const notePopoverAnnotation = ref<TextAnnotation | null>(null)
 const notePopoverAnnotations = ref<TextAnnotation[]>([])
 const notePopoverAnchor = ref<FloatingAnchorRect | null>(null)
+const notePopoverSourceBinding = ref<HeadingSourceBinding | null>(null)
+const notePopoverHeadingTitle = ref('')
+const notePopoverRelationAnchor = ref<KnowledgeAnchor | null>(null)
 
 const {
   position: notePopoverPosition,
@@ -1073,6 +1072,16 @@ const navigateToHeadingSource = (binding: HeadingSourceBinding) => {
   })
 }
 
+const closeNotePopover = () => {
+  notePopoverVisible.value = false
+  notePopoverAnnotation.value = null
+  notePopoverAnnotations.value = []
+  notePopoverAnchor.value = null
+  notePopoverSourceBinding.value = null
+  notePopoverHeadingTitle.value = ''
+  notePopoverRelationAnchor.value = null
+}
+
 const handleHeadingSourceClick = (
   binding: HeadingSourceBinding,
   context: { blockId: string; title: string; clientX: number; clientY: number },
@@ -1082,23 +1091,20 @@ const handleHeadingSourceClick = (
     navigateToHeadingSource(binding)
     return
   }
-  headingSourcePopoverBinding.value = binding
-  headingSourcePopoverAnchor.value = headingAnchor(pageId, context.blockId, context.title)
-  headingSourcePopoverTop.value = context.clientY + 8
-  headingSourcePopoverLeft.value = context.clientX
-  headingSourcePopoverVisible.value = true
+  notePopoverAnnotation.value = null
+  notePopoverAnnotations.value = []
+  notePopoverSourceBinding.value = binding
+  notePopoverHeadingTitle.value = context.title
+  notePopoverRelationAnchor.value = headingAnchor(pageId, context.blockId, context.title)
+  notePopoverAnchor.value = rectFromPoint(context.clientX, context.clientY)
+  notePopoverVisible.value = true
+  updateNotePopoverPosition()
   knowledgeRelationRefreshKey.value += 1
 }
 
-const closeHeadingSourcePopover = () => {
-  headingSourcePopoverVisible.value = false
-  headingSourcePopoverAnchor.value = null
-  headingSourcePopoverBinding.value = null
-}
-
 const promoteHeadingSourceToUser = () => {
-  const binding = headingSourcePopoverBinding.value
-  const anchor = headingSourcePopoverAnchor.value
+  const binding = notePopoverSourceBinding.value
+  const anchor = notePopoverRelationAnchor.value
   const editor = tuEditorRef.value?.editor
   if (!binding || !anchor || !editor) return
   const blockId = anchor.locator.match(/:heading:([^:]+)$/)?.[1]
@@ -1106,9 +1112,16 @@ const promoteHeadingSourceToUser = () => {
   const userBinding: HeadingSourceBinding = { ...binding, markerSource: 'user' }
   if (tuEditorRef.value?.applyHeadingBindingByBlockId?.(blockId, userBinding)) {
     emitLocalContentChange()
-    headingSourcePopoverBinding.value = userBinding
+    notePopoverSourceBinding.value = userBinding
     showToast('已转为手动标记')
   }
+}
+
+const handleNavigateSourceFromPopover = () => {
+  const binding = notePopoverSourceBinding.value
+  if (!binding) return
+  closeNotePopover()
+  navigateToHeadingSource(binding)
 }
 
 const handleCreateKnowledgeRelationFromSelection = () => {
@@ -1126,7 +1139,11 @@ const handleKnowledgeRelationCreated = () => {
   showToast('已关联到知识点')
 }
 
-const handleAiDocumentMarking = async () => {
+const runAiDocumentMarking = async (scope?: {
+  sectionHeadingBlockId?: string
+  sectionEmbedBlockId?: string
+  sectionTitle?: string
+}) => {
   const pageId = workspaceStore.currentPageId
   const kbId = workspaceStore.currentKbId
   const editor = tuEditorRef.value?.editor
@@ -1136,12 +1153,21 @@ const handleAiDocumentMarking = async () => {
   documentMarkingAbort = new AbortController()
   documentMarkingPanelVisible.value = true
   documentMarkingLoading.value = true
-  documentMarkingProgress.value = '正在分析文档…'
+  documentMarkingProgress.value = scope?.sectionTitle
+    ? `正在分析「${scope.sectionTitle}」…`
+    : '正在分析文档…'
   documentMarkingSuggestions.value = []
+  documentMarkingSectionTitle.value = scope?.sectionTitle?.trim() || ''
 
   try {
     const response = await generateDocumentMarkingStream(
-      { pageId, kbId },
+      {
+        pageId,
+        kbId,
+        sectionHeadingBlockId: scope?.sectionHeadingBlockId ?? null,
+        sectionEmbedBlockId: scope?.sectionEmbedBlockId ?? null,
+        sectionTitle: scope?.sectionTitle ?? null,
+      },
       {
         signal: documentMarkingAbort.signal,
         onEvent: (event) => {
@@ -1157,6 +1183,20 @@ const handleAiDocumentMarking = async () => {
   } finally {
     documentMarkingLoading.value = false
   }
+}
+
+const handleAiDocumentMarking = () => {
+  void runAiDocumentMarking()
+}
+
+const handleSectionAiMarkingFromGutter = (entryId: string) => {
+  const editor = tuEditorRef.value?.editor
+  if (!editor) return
+  const flat = collectFlatTocEntries(editor.state.doc, tocCollectContext.value)
+  const entry = flat.find((item) => item.id === entryId)
+  if (!entry) return
+  const scope = buildDocumentMarkingSectionScope(entry)
+  void runAiDocumentMarking(scope)
 }
 
 const handleApplyDocumentMarking = async (payload: { selectedIds: string[]; replaceExistingAi: boolean }) => {
@@ -1202,20 +1242,46 @@ const handleApplyDocumentMarking = async (payload: { selectedIds: string[]; repl
   }
 }
 
-const handleMarkHeadingSourceFromSelection = () => {
-  if (!canMarkHeadingSourceFromSelection.value) return
-  const headingText = tuEditorRef.value?.getHeadingTextAtSelection?.() || selectedText.value.trim()
+const focusTocEntry = (entry: FlatTocEntry) => {
+  const editor = tuEditorRef.value?.editor
+  if (!editor) return
+  const from = Math.max(1, Math.min(entry.pos + 1, editor.state.doc.content.size - 1))
+  editor.commands.setTextSelection({ from, to: from })
+}
+
+const openMarkHeadingSourceForTocEntry = (entryId: string) => {
+  const editor = tuEditorRef.value?.editor
+  if (!editor) return
+  const flat = collectFlatTocEntries(editor.state.doc, tocCollectContext.value)
+  const entry = flat.find((item) => item.id === entryId)
+  if (!entry || entry.sourceType !== 'local') return
+  focusTocEntry(entry)
   pendingResourceExcerptText.value = ''
-  pendingResourceExcerptTitle.value = headingText
+  pendingResourceExcerptTitle.value = entry.text
   resourcePickerMode.value = 'bindSource'
   showResourcePicker.value = true
 }
 
-const handleClearHeadingSourceFromSelection = () => {
-  if (!canClearHeadingSourceFromSelection.value) return
+const openClearHeadingSourceForTocEntry = (entryId: string) => {
+  const editor = tuEditorRef.value?.editor
+  if (!editor) return
+  const flat = collectFlatTocEntries(editor.state.doc, tocCollectContext.value)
+  const entry = flat.find((item) => item.id === entryId)
+  if (!entry?.sourceBinding) return
+  focusTocEntry(entry)
   tuEditorRef.value?.clearHeadingSourceBinding?.()
   tuEditorRef.value?.flushContentChange?.()
   showToast('已解除标题来源')
+}
+
+const openSectionTagsForTocEntry = (entryId: string) => {
+  const editor = tuEditorRef.value?.editor
+  if (!editor) return
+  const flat = collectFlatTocEntries(editor.state.doc, tocCollectContext.value)
+  const entry = flat.find((item) => item.id === entryId)
+  if (!entry) return
+  if (entry.sourceType !== 'local' && entry.sourceType !== 'ref-group') return
+  openSectionTagEditorFromEntry(entry)
 }
 
 const handleBindHeadingSource = (payload: { binding: HeadingSourceBinding }) => {
@@ -1229,10 +1295,18 @@ const handleBindHeadingSource = (payload: { binding: HeadingSourceBinding }) => 
 }
 
 const focusHeadingAtTocItem = (item: TocItem) => {
-  const editor = tuEditorRef.value?.editor
-  if (!editor) return
-  const from = Math.max(1, Math.min(item.pos + 1, editor.state.doc.content.size - 1))
-  editor.commands.setTextSelection({ from, to: from })
+  focusTocEntry({
+    id: item.id,
+    blockId: item.blockId,
+    level: item.level,
+    text: item.text,
+    pos: item.pos,
+    sortIndex: 0,
+    sourceType: item.sourceType,
+    refId: item.refId,
+    targetText: item.targetText,
+    sourceBinding: item.sourceBinding,
+  })
 }
 
 const closeTocContextMenu = () => {
@@ -1294,22 +1368,15 @@ function openSetBasisForTocEntry(entryId: string) {
 const handleTocMarkSource = () => {
   const item = tocContextMenu.value.item
   if (!item) return
-  focusHeadingAtTocItem(item)
-  pendingResourceExcerptText.value = ''
-  pendingResourceExcerptTitle.value = item.text
-  resourcePickerMode.value = 'bindSource'
-  showResourcePicker.value = true
+  openMarkHeadingSourceForTocEntry(item.id)
   closeTocContextMenu()
 }
 
 const handleTocClearSource = () => {
   const item = tocContextMenu.value.item
   if (!item?.sourceBinding) return
-  focusHeadingAtTocItem(item)
-  tuEditorRef.value?.clearHeadingSourceBinding?.()
-  tuEditorRef.value?.flushContentChange?.()
+  openClearHeadingSourceForTocEntry(item.id)
   closeTocContextMenu()
-  showToast('已解除标题来源')
 }
 
 const handleTocSourceClick = (item: TocItem) => {
@@ -1983,13 +2050,16 @@ const bumpTextTagSpanRevision = () => {
   textTagSpanRevision.value += 1
 }
 
-const handleEditSectionTagsFromSelection = () => {
-  const editor = tuEditorRef.value?.editor
-  if (!editor) return
+const handleSectionMarkHeadingSourceFromGutter = (entryId: string) => {
+  openMarkHeadingSourceForTocEntry(entryId)
+}
 
-  const entry = resolveSectionEntryAtEditor(editor, tocCollectContext.value)
-  if (!entry) return
-  openSectionTagEditorFromEntry(entry)
+const handleSectionClearHeadingSourceFromGutter = (entryId: string) => {
+  openClearHeadingSourceForTocEntry(entryId)
+}
+
+const handleSectionEditSectionTagsFromGutter = (entryId: string) => {
+  openSectionTagsForTocEntry(entryId)
 }
 
 const openSectionAnnotationFromTocEntry = (entryId: string) => {
@@ -2046,6 +2116,88 @@ const openBlockAnnotationFromGutter = (blockId: string) => {
   editingAnnotation.value = undefined
   noteEditorVisible.value = true
 }
+
+const openRefInnerAnnotationFromGutter = (
+  host: RefGutterHostContext,
+  innerBlockId: string,
+  innerEditor: Editor,
+) => {
+  const payload = getRefInnerBlockExcerptContent(
+    host,
+    innerBlockId,
+    innerEditor,
+    tocCollectContext.value,
+  )
+  if (!payload) return
+
+  const blockIds = collectRefInnerBasisBlockIds(
+    host,
+    innerBlockId,
+    innerEditor,
+    tocCollectContext.value,
+  )
+  pendingNoteBlockId.value = ''
+  pendingNoteSelectedText.value = payload.text
+  pendingNoteContextBefore.value = ''
+  pendingNoteContextAfter.value = ''
+  pendingNoteFrom.value = 0
+  pendingNoteTo.value = 0
+  pendingNoteSpannedBlockIds.value = blockIds
+  pendingNoteSpannedBlockMetadata.value = normalizeSpannedBlockMetadata(blockIds, [])
+  pendingNoteTags.value = []
+  pendingTextTagSpanId.value = ''
+  editingAnnotation.value = undefined
+  noteEditorVisible.value = true
+}
+
+const refGutterDelegate: RefGutterDelegate = {
+  onLineAnnotate: openRefInnerAnnotationFromGutter,
+  onMarkExcerpt: (host, innerBlockId, innerEditor) => {
+    const payload = getRefInnerBlockExcerptContent(
+      host,
+      innerBlockId,
+      innerEditor,
+      tocCollectContext.value,
+    )
+    if (!payload) return
+    openMarkBlockExcerptPicker(payload.text, payload.title)
+  },
+  onSetBasis: (host, innerBlockId, innerEditor) => {
+    const payload = getRefInnerBlockExcerptContent(
+      host,
+      innerBlockId,
+      innerEditor,
+      tocCollectContext.value,
+    )
+    if (!payload) return
+    const blockIds = collectRefInnerBasisBlockIds(
+      host,
+      innerBlockId,
+      innerEditor,
+      tocCollectContext.value,
+    )
+    openSetBasisPicker({
+      selectedText: payload.text,
+      contextBefore: '',
+      contextAfter: '',
+      scope: blockIds.length > 1 ? 'compound' : 'block',
+      spannedBlockIds: blockIds,
+      spannedBlockMetadata: normalizeSpannedBlockMetadata(blockIds, []),
+    })
+  },
+  onCreateKnowledgeRelation: (host) => {
+    const editor = tuEditorRef.value?.editor
+    const pageId = workspaceStore.currentPageId
+    const kbId = workspaceStore.currentKbId
+    if (!editor || !pageId || !kbId) return
+
+    knowledgeSourceAnchor.value = buildBlockAnchor(editor, pageId, host.hostBlockId)
+    if (!knowledgeSourceAnchor.value) return
+    knowledgeAnchorPickerVisible.value = true
+  },
+}
+
+provide(REF_GUTTER_DELEGATE_KEY, refGutterDelegate)
 
 const openKnowledgeRelationForTocEntry = (entryId: string) => {
   const editor = tuEditorRef.value?.editor
@@ -2479,6 +2631,9 @@ const handleAnnotationClick = (payload: { annotationId: string; annotationIds?: 
   if (!annotation) return
   notePopoverAnnotation.value = annotation
   notePopoverAnnotations.value = matched.length ? matched : [annotation]
+  notePopoverSourceBinding.value = null
+  notePopoverHeadingTitle.value = ''
+  notePopoverRelationAnchor.value = null
   const highlightRect = (payload.event.target as HTMLElement | null)
     ?.closest('[data-tu-annotation-id]')
     ?.getBoundingClientRect()
@@ -2559,6 +2714,9 @@ const handleCompoundBadgeClick = (_blockId: string, annotationId: string, client
   if (!annotation) return
   notePopoverAnnotation.value = annotation
   notePopoverAnnotations.value = related.length ? related : [annotation]
+  notePopoverSourceBinding.value = null
+  notePopoverHeadingTitle.value = ''
+  notePopoverRelationAnchor.value = null
   const fallback = rectFromPoint(clientX, clientY)
   notePopoverAnchor.value = resolveAnnotationAnchorRect(annotation, fallback)
   notePopoverVisible.value = true
@@ -2711,9 +2869,9 @@ onBeforeUnmount(() => {
         <button
           class="toolbar-button"
           @click="handleAiDocumentMarking"
-          title="AI 分析文档结构并建议知识标记"
+          title="分析整页文档结构并建议知识标记"
         >
-          AI 分析标记
+          AI 分析标记（整页）
         </button>
       </div>
       <span
@@ -2826,6 +2984,10 @@ onBeforeUnmount(() => {
           @section-mark-excerpt="handleSectionMarkExcerptFromGutter"
           @section-set-basis="handleSectionSetBasisFromGutter"
           @section-create-knowledge-relation="handleSectionCreateKnowledgeRelationFromGutter"
+          @section-mark-heading-source="handleSectionMarkHeadingSourceFromGutter"
+          @section-clear-heading-source="handleSectionClearHeadingSourceFromGutter"
+          @section-edit-section-tags="handleSectionEditSectionTagsFromGutter"
+          @section-ai-marking="handleSectionAiMarkingFromGutter"
           @heading-source-click="handleHeadingSourceClick"
           @text-tag-span-click="handleTextTagSpanClick"
           @text-tag-spans-mapped="handleTextTagSpansMapped"
@@ -2981,9 +3143,6 @@ onBeforeUnmount(() => {
       @add-note="handleAddNoteFromSelection"
       @mark-resource-excerpt="handleMarkResourceExcerptFromSelection"
       @set-excerpt-basis="handleSetExcerptBasisFromSelection"
-      @mark-heading-source="handleMarkHeadingSourceFromSelection"
-      @clear-heading-source="handleClearHeadingSourceFromSelection"
-      @edit-section-tags="handleEditSectionTagsFromSelection"
       @create-knowledge-relation="handleCreateKnowledgeRelationFromSelection"
     />
 
@@ -3082,6 +3241,9 @@ onBeforeUnmount(() => {
       :visible="notePopoverVisible"
       :annotation="notePopoverAnnotation"
       :annotations="notePopoverAnnotations"
+      :source-binding="notePopoverSourceBinding"
+      :heading-title="notePopoverHeadingTitle"
+      :relation-anchor="notePopoverRelationAnchor"
       :anchor-rect="notePopoverAnchor"
       :top="notePopoverPosition.top"
       :left="notePopoverPosition.left"
@@ -3093,46 +3255,11 @@ onBeforeUnmount(() => {
       @edit="handleEditAnnotation"
       @delete="handleDeleteAnnotation"
       @navigate-basis="handleNavigateBasisFromPopover"
+      @navigate-source="handleNavigateSourceFromPopover"
       @promote-to-user="handlePromoteAnnotationToUser"
-      @close="notePopoverVisible = false; notePopoverAnnotation = null; notePopoverAnnotations = []; notePopoverAnchor = null"
+      @promote-source-to-user="promoteHeadingSourceToUser"
+      @close="closeNotePopover"
     />
-
-    <Teleport to="body">
-      <div
-        v-if="headingSourcePopoverVisible && headingSourcePopoverAnchor"
-        class="heading-source-relation-popover"
-        :style="{ top: `${headingSourcePopoverTop}px`, left: `${headingSourcePopoverLeft}px` }"
-        @mousedown.stop
-      >
-        <div class="heading-source-relation-popover__header">
-          <span>标题关联</span>
-          <button type="button" @click="closeHeadingSourcePopover">关闭</button>
-        </div>
-        <KnowledgeRelationList
-          :key="knowledgeRelationRefreshKey"
-          :kb-id="workspaceStore.currentKbId || ''"
-          :anchor="headingSourcePopoverAnchor"
-          :navigate="knowledgeNavigateHandlers"
-          :after-navigate="closeHeadingSourcePopover"
-        />
-        <button
-          v-if="headingSourcePopoverBinding"
-          type="button"
-          class="heading-source-relation-popover__link"
-          @click="navigateToHeadingSource(headingSourcePopoverBinding); closeHeadingSourcePopover()"
-        >
-          查看来源资料
-        </button>
-        <button
-          v-if="headingSourcePopoverBinding?.markerSource === 'ai'"
-          type="button"
-          class="heading-source-relation-popover__link"
-          @click="promoteHeadingSourceToUser"
-        >
-          转为手动标记
-        </button>
-      </div>
-    </Teleport>
 
     <DocumentMarkingReviewPanel
       v-model:visible="documentMarkingPanelVisible"
@@ -3140,6 +3267,7 @@ onBeforeUnmount(() => {
       :loading="documentMarkingLoading"
       :progress-message="documentMarkingProgress"
       :page-title="props.pageTitle"
+      :section-title="documentMarkingSectionTitle"
       @apply="handleApplyDocumentMarking"
     />
 
@@ -3661,46 +3789,6 @@ onBeforeUnmount(() => {
 
 .toc-context-menu button:hover {
   background: #f3f4f6;
-}
-
-.heading-source-relation-popover {
-  position: fixed;
-  z-index: 60;
-  width: min(320px, calc(100vw - 24px));
-  padding: 10px 12px;
-  border: 1px solid #e8e8e8;
-  border-radius: 8px;
-  background: #fff;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
-}
-
-.heading-source-relation-popover__header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 8px;
-  font-size: 13px;
-  font-weight: 600;
-}
-
-.heading-source-relation-popover__header button {
-  border: none;
-  background: transparent;
-  color: #8c8c8c;
-  cursor: pointer;
-  font-size: 12px;
-}
-
-.heading-source-relation-popover__link {
-  margin-top: 8px;
-  width: 100%;
-  border: none;
-  border-radius: 6px;
-  background: #f6ffed;
-  color: #389e0d;
-  padding: 6px 8px;
-  cursor: pointer;
-  font-size: 12px;
 }
 </style>
 

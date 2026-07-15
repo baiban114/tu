@@ -72,7 +72,7 @@ export function buildExcerptTitle(anchor: string, label?: string): string {
 }
 
 export function formatExcerptLocator(anchor: string): string {
-  const trimmed = anchor.trim();
-  if (!trimmed) return '#';
-  return trimmed.startsWith('#') ? trimmed : `#${trimmed}`;
+  const trimmed = anchor.trim().replace(/^#/, '')
+  if (!trimmed) return ''
+  return `anchor:${trimmed}`
 }

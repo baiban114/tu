@@ -483,3 +483,40 @@ export interface KnowledgePointAnchor {
   role: string;
   primary: boolean;
 }
+
+export type KnowledgeGraphMode = 'full' | 'centered' | 'prerequisite';
+export type KnowledgeGraphDirection = 'out' | 'in' | 'both';
+
+export interface KnowledgeGraphNode {
+  id: string;
+  title: string;
+  parentId?: string | null;
+  estimatedHours?: number | null;
+  summary?: string | null;
+  sortOrder: number;
+}
+
+export interface KnowledgeGraphEdge {
+  id: string;
+  fromPointId: string;
+  toPointId: string;
+  relationTypeKey: string;
+  label: string;
+  color?: string | null;
+  bidirectional: boolean;
+}
+
+export interface KnowledgeGraphMeta {
+  mode: KnowledgeGraphMode;
+  centerPointId?: string | null;
+  totalPoints: number;
+  totalRelations: number;
+  truncated: boolean;
+  warnings: string[];
+}
+
+export interface KnowledgeGraphResponse {
+  nodes: KnowledgeGraphNode[];
+  edges: KnowledgeGraphEdge[];
+  meta: KnowledgeGraphMeta;
+}

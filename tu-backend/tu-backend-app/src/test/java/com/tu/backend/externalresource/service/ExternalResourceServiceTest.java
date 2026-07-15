@@ -152,8 +152,35 @@ class ExternalResourceServiceTest {
             null
         )))
             .isInstanceOf(BusinessException.class)
-            .hasMessageContaining("resource excerpts are only supported for book or web-link resources");
+            .hasMessageContaining("resource excerpts are only supported for book, document, or web-link resources");
         verify(context.excerptRepository, never()).save(any());
+    }
+
+    @Test
+    void createsExcerptsForDocumentResources() {
+        TestContext context = new TestContext();
+        ResourceTypeEntity docType = type("rt-doc", "document", "文档");
+        ResourceWorkEntity docWork = work("rw-doc", "rt-doc", "示例文档集");
+        ResourceItemEntity docItem = item("ri-doc", "rt-doc", "rw-doc", "示例文档");
+        when(context.typeRepository.findById("rt-doc")).thenReturn(Optional.of(docType));
+        when(context.workRepository.findById("rw-doc")).thenReturn(Optional.of(docWork));
+        when(context.itemRepository.findById("ri-doc")).thenReturn(Optional.of(docItem));
+        when(context.excerptRepository.findByResourceItemId("ri-doc")).thenReturn(List.of());
+        when(context.excerptRepository.save(any(ResourceExcerptEntity.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        var dto = context.service.createExcerpt("ri-doc", new CreateResourceExcerptRequest(
+            "第一章摘要",
+            null,
+            "p. 12",
+            "文档节选正文。",
+            null,
+            0,
+            null
+        ));
+
+        assertThat(dto.title()).isEqualTo("第一章摘要");
+        assertThat(dto.locator()).isEqualTo("p. 12");
+        verify(context.excerptRepository).save(any(ResourceExcerptEntity.class));
     }
 
     @Test
@@ -212,16 +239,14 @@ class ExternalResourceServiceTest {
             "第一卷",
             "p.1–p.100",
             null,
-            0,
-            null
+            0
         ));
         var child = context.service.createChapter("ri-book", new CreateResourceChapterRequest(
             "rc-parent",
             "第一章",
             null,
             null,
-            0,
-            null
+            0
         ));
 
         assertThat(parent.id()).startsWith("rc-");

@@ -38,6 +38,7 @@ import {
   supportsResourceExcerpts,
   supportsBookChapters,
   WEB_LINK_RESOURCE_TYPE_CODE,
+  DOCUMENT_RESOURCE_TYPE_CODE,
   type ResourceChapter,
   type ResourceExcerpt,
   type ResourceItem,
@@ -50,6 +51,7 @@ import {
 import { DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE } from '@/constants/pagination';
 import { parseExternalUrl } from '@/utils/externalUrlResource';
 import { recognizeExcerptFieldsFromUrl } from '@/utils/excerptUrlRecognition';
+import { normalizeResourcePositionLocator, resourcePositionDisplay } from '@/utils/resourcePositionLocator';
 import {
   listReferences,
   rebuildReferences,
@@ -66,6 +68,7 @@ import {
 import { useObjectModelStore } from '@/stores/objectModel';
 import { useWorkspaceStore } from '@/stores/workspace';
 import TreeListPanel from '@/components/tree/TreeListPanel.vue';
+import ResourcePositionLocatorField from '@/components/ResourcePositionLocatorField.vue';
 import {
   listKnowledgeRelations,
   deleteKnowledgeRelation,
@@ -76,7 +79,9 @@ import {
   navigateKnowledgeAnchor,
   navigateKnowledgePoint,
 } from '@/utils/knowledgeAnchor';
+import AppHelpButton from '@/components/AppHelpButton.vue';
 import KnowledgePointManagerPanel from '@/components/KnowledgePointManagerPanel.vue';
+import KnowledgeGraphPanel from '@/components/knowledge/KnowledgeGraphPanel.vue';
 import {
   resourcesToTreeNodes,
   resourceWorksToTreeNodes,
@@ -85,14 +90,14 @@ import {
   type TreeNode,
 } from '@/utils/tree';
 
-type ResourceTab = 'references' | 'items' | 'works' | 'types' | 'urlRules' | 'objects' | 'orphaned' | 'knowledgePoints' | 'knowledgeRelations';
+type ResourceTab = 'references' | 'items' | 'works' | 'types' | 'urlRules' | 'objects' | 'orphaned' | 'knowledgePoints' | 'knowledgeRelations' | 'knowledgeGraph';
 type ReferenceCategoryFilter = 'all' | 'internal' | 'external' | 'annotation';
 type ReferenceStatusFilter = 'all' | 'ok' | 'broken' | 'bound' | 'unbound';
 
 const route = useRoute();
 const router = useRouter();
 const workspaceStore = useWorkspaceStore();
-const resourceTabs = new Set<ResourceTab>(['references', 'items', 'works', 'types', 'urlRules', 'objects', 'orphaned', 'knowledgePoints', 'knowledgeRelations']);
+const resourceTabs = new Set<ResourceTab>(['references', 'items', 'works', 'types', 'urlRules', 'objects', 'orphaned', 'knowledgePoints', 'knowledgeRelations', 'knowledgeGraph']);
 
 const TAB_LABELS: Record<ResourceTab, string> = {
   references: '引用管理',
@@ -104,6 +109,7 @@ const TAB_LABELS: Record<ResourceTab, string> = {
   orphaned: '孤立标注',
   knowledgePoints: '知识点',
   knowledgeRelations: '知识关联',
+  knowledgeGraph: '知识图谱',
 };
 
 function getRouteTab(): ResourceTab {
@@ -387,6 +393,16 @@ function resetWorkForm() {
   });
 }
 
+function maybeFillItemTitleFromWork() {
+  if (itemForm.title.trim()) return
+  if (!itemForm.workId) return
+  const work = allWorks.value.find((entry) => entry.id === itemForm.workId)
+  const workTitle = work?.title?.trim()
+  if (!workTitle) return
+  itemForm.title = workTitle
+  itemForm.titleSource = 'auto'
+}
+
 function resetItemForm() {
   const typeId = selectedTypeId.value || visibleResourceTypes.value[0]?.id || '';
   const workId = selectedWorkId.value || '';
@@ -403,6 +419,7 @@ function resetItemForm() {
     workIdSource: 'auto',
     variantKind: '',
   });
+  maybeFillItemTitleFromWork()
 }
 
 function resetUrlRuleForm() {
@@ -742,23 +759,23 @@ function supportsBookChapterItem(item: ResourceItem): boolean {
   return supportsBookChapters(typeById.value.get(item.typeId)?.code);
 }
 
-const excerptLocatorPlaceholder = computed(() => {
-  const code = selectedExcerptItem.value
-    ? typeById.value.get(selectedExcerptItem.value.typeId)?.code
-    : undefined;
-  return code === 'web-link' ? '章节锚点 / 段落位置（可选）' : '页码/段落，例如 p. 18';
-});
-
 const excerptSelectedTypeCode = computed(() => {
   const item = selectedExcerptItem.value;
   return item ? typeById.value.get(item.typeId)?.code : undefined;
 });
+
+function formatExcerptLocatorCell(row: ResourceExcerpt): string {
+  return resourcePositionDisplay(row.locator) || '—';
+}
 
 const excerptUrlPasteVisible = computed(() => supportsResourceExcerpts(excerptSelectedTypeCode.value));
 
 const excerptUrlPasteHint = computed(() => {
   if (excerptSelectedTypeCode.value === WEB_LINK_RESOURCE_TYPE_CODE) {
     return '网络链接：粘贴与当前实体同页、且带 # 锚点的链接，将自动填充标题与定位。';
+  }
+  if (excerptSelectedTypeCode.value === DOCUMENT_RESOURCE_TYPE_CODE) {
+    return '文档：可填写页码/段落定位；也可粘贴带 # 的网页链接作为定位参考。';
   }
   return '图书：可粘贴带 # 的网页链接作为定位参考；页码仍请按需核对。';
 });
@@ -882,6 +899,17 @@ async function refreshReferences() {
 }
 
 const knowledgeRelationsKbId = computed(() => workspaceStore.currentKbId || 'kb-demo-1');
+
+const graphCenterPointId = computed(() => {
+  const raw = route.query.centerPointId;
+  return typeof raw === 'string' && raw.trim() ? raw.trim() : null;
+});
+
+const graphMode = computed(() => {
+  const raw = route.query.graphMode;
+  if (raw === 'full' || raw === 'centered' || raw === 'prerequisite') return raw;
+  return graphCenterPointId.value ? 'centered' : null;
+});
 
 async function refreshKnowledgeRelations() {
   const kbId = knowledgeRelationsKbId.value;
@@ -1065,7 +1093,7 @@ async function saveExcerpt() {
     const payload = {
       title: excerptForm.title.trim(),
       chapterId: excerptForm.chapterId?.trim() || undefined,
-      locator: excerptForm.locator.trim() || undefined,
+      locator: normalizeResourcePositionLocator(excerptForm.locator.trim()) || undefined,
       excerptText: excerptForm.excerptText.trim() || undefined,
       note: excerptForm.note.trim() || undefined,
       sortOrder: Number.isFinite(excerptForm.sortOrder) ? excerptForm.sortOrder : excerpts.value.length,
@@ -1822,7 +1850,10 @@ watch(
         <h1>引用与外部资源</h1>
         <p>统一查看页面内部引用、外部链接引用，以及资源类型、归类和具体实体。</p>
       </div>
-      <el-button @click="router.push('/')">返回工作区</el-button>
+      <div class="resource-header__actions">
+        <AppHelpButton />
+        <el-button @click="router.push('/')">返回工作区</el-button>
+      </div>
     </div>
 
     <el-card shadow="never" class="resource-filters">
@@ -1882,10 +1913,19 @@ watch(
       </el-tab-pane>
       <el-tab-pane label="知识点" name="knowledgePoints" />
       <el-tab-pane label="知识关联" name="knowledgeRelations" />
+      <el-tab-pane label="知识图谱" name="knowledgeGraph" />
     </el-tabs>
 
     <section v-if="activeTab === 'knowledgePoints'" class="resource-layout knowledge-points-layout">
       <KnowledgePointManagerPanel :kb-id="knowledgeRelationsKbId" />
+    </section>
+
+    <section v-if="activeTab === 'knowledgeGraph'" class="resource-layout knowledge-graph-layout">
+      <KnowledgeGraphPanel
+        :kb-id="knowledgeRelationsKbId"
+        :initial-center-point-id="graphCenterPointId"
+        :initial-mode="graphMode"
+      />
     </section>
 
     <section v-if="activeTab === 'knowledgeRelations'" class="resource-layout knowledge-relations-layout">
@@ -2097,7 +2137,13 @@ watch(
             </el-select>
           </el-form-item>
           <el-form-item label="归类 Work">
-            <el-select v-model="itemForm.workId" clearable placeholder="不选择归类" style="width: 100%">
+            <el-select
+              v-model="itemForm.workId"
+              clearable
+              placeholder="不选择归类"
+              style="width: 100%"
+              @change="maybeFillItemTitleFromWork"
+            >
               <el-option
                 v-for="work in worksForItemForm"
                 :key="work.id"
@@ -2679,7 +2725,9 @@ watch(
                 width="120"
                 show-overflow-tooltip
               />
-              <el-table-column prop="locator" label="页码/定位" width="120" show-overflow-tooltip />
+              <el-table-column label="资源定位" width="140" show-overflow-tooltip>
+                <template #default="{ row }">{{ formatExcerptLocatorCell(row) }}</template>
+              </el-table-column>
               <el-table-column prop="excerptText" label="正文" min-width="240" show-overflow-tooltip />
               <el-table-column prop="note" label="备注" min-width="120" show-overflow-tooltip />
               <el-table-column label="操作" width="140" fixed="right">
@@ -2743,8 +2791,11 @@ watch(
               style="width: 100%"
             />
           </el-form-item>
-          <el-form-item label="页码/定位">
-            <el-input v-model="excerptForm.locator" maxlength="255" :placeholder="excerptLocatorPlaceholder" />
+          <el-form-item label="资源定位">
+            <ResourcePositionLocatorField
+              v-model="excerptForm.locator"
+              :resource-type-code="excerptSelectedTypeCode"
+            />
           </el-form-item>
           <el-form-item label="节选正文">
             <el-input v-model="excerptForm.excerptText" type="textarea" :rows="7" maxlength="20000" placeholder="可选" />
@@ -2911,6 +2962,13 @@ watch(
   margin-bottom: 16px;
 }
 
+.resource-header__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
 .resource-header h1 {
   margin: 0 0 6px;
   font-size: 26px;
@@ -2981,8 +3039,13 @@ watch(
 }
 
 .knowledge-relations-layout,
-.knowledge-points-layout {
+.knowledge-points-layout,
+.knowledge-graph-layout {
   grid-template-columns: minmax(0, 1fr);
+}
+
+.knowledge-graph-layout {
+  min-height: calc(100vh - 180px);
 }
 
 .resource-panel {

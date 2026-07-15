@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue'
-import type { TextAnnotation } from '@/api/types'
+import type { HeadingSourceBinding, KnowledgeAnchor, TextAnnotation } from '@/api/types'
 import type { FloatingAnchorRect } from '@/composables/useAnchoredFloating'
-import { headingSourceBadgeLabel, headingSourceBadgeTitle } from '@/utils/headingSource'
+import { effectiveMarkerSource, headingSourceBadgeLabel, headingSourceBadgeTitle } from '@/utils/headingSource'
 import KnowledgeRelationList from './KnowledgeRelationList.vue'
 import { annotationToAnchor } from '@/utils/knowledgeAnchor'
 import type { KnowledgeAnchorNavigateHandlers } from '@/utils/knowledgeAnchor'
@@ -25,6 +25,9 @@ interface Props {
   zIndex?: number
   annotation: TextAnnotation | null
   annotations?: TextAnnotation[]
+  sourceBinding?: HeadingSourceBinding | null
+  headingTitle?: string
+  relationAnchor?: KnowledgeAnchor | null
   kbId?: string
   pageId?: string
   navigate?: KnowledgeAnchorNavigateHandlers
@@ -34,6 +37,9 @@ interface Props {
 const props = withDefaults(defineProps<Props>(), {
   annotations: () => [],
   anchorRect: null,
+  sourceBinding: null,
+  headingTitle: '',
+  relationAnchor: null,
   zIndex: 20,
 })
 
@@ -41,7 +47,9 @@ const emit = defineEmits<{
   (e: 'edit', annotation?: TextAnnotation): void
   (e: 'delete', annotation?: TextAnnotation): void
   (e: 'navigate-basis', annotation?: TextAnnotation): void
+  (e: 'navigate-source'): void
   (e: 'promote-to-user', annotation?: TextAnnotation): void
+  (e: 'promote-source-to-user'): void
   (e: 'close'): void
 }>()
 
@@ -59,18 +67,28 @@ const displayedAnnotations = computed(() => {
   return [...source].sort((a, b) => (b.updatedAt || b.createdAt || 0) - (a.updatedAt || a.createdAt || 0))
 })
 
+const hasSourceBinding = computed(() => !!props.sourceBinding?.resourceItemId && !!props.sourceBinding?.resourceExcerptId)
+
+const hasAnnotations = computed(() => displayedAnnotations.value.length > 0)
+
 const title = computed(() => {
-  if (displayedAnnotations.value.every((item) => item.kind === 'basis')) {
+  if (hasSourceBinding.value && !hasAnnotations.value) return '来源'
+  if (!hasSourceBinding.value && hasAnnotations.value) {
+    if (displayedAnnotations.value.every((item) => item.kind === 'basis')) {
+      return displayedAnnotations.value.length > 1
+        ? `依据 ${displayedAnnotations.value.length}`
+        : '依据'
+    }
     return displayedAnnotations.value.length > 1
-      ? `依据 ${displayedAnnotations.value.length}`
-      : '依据'
+      ? `笔记 ${displayedAnnotations.value.length}`
+      : '笔记'
   }
-  return displayedAnnotations.value.length > 1
-    ? `笔记 ${displayedAnnotations.value.length}`
-    : '笔记'
+  if (hasSourceBinding.value && hasAnnotations.value) return '元信息'
+  return '元信息'
 })
 
-const relationAnchor = computed(() => {
+const effectiveRelationAnchor = computed(() => {
+  if (props.relationAnchor) return props.relationAnchor
   if (!props.pageId || !props.annotation) return null
   return annotationToAnchor(props.pageId, props.annotation)
 })
@@ -128,7 +146,7 @@ const clampToViewport = () => {
 }
 
 watch(
-  () => [props.visible, props.top, props.left, props.anchorRect, displayedAnnotations.value.length] as const,
+  () => [props.visible, props.top, props.left, props.anchorRect, displayedAnnotations.value.length, hasSourceBinding.value] as const,
   async ([visible]) => {
     if (!visible) return
     displayTop.value = props.top
@@ -158,7 +176,7 @@ watch(
 <template>
   <Teleport to="body">
     <div
-      v-if="visible && displayedAnnotations.length"
+      v-if="visible && (hasAnnotations || hasSourceBinding)"
       class="note-popover-mask"
       :style="{ zIndex }"
       @mousedown.self="emit('close')"
@@ -175,6 +193,39 @@ watch(
         </div>
 
         <div class="note-popover__list">
+          <section
+            v-if="hasSourceBinding && sourceBinding"
+            class="note-popover__item note-popover__item--source"
+          >
+            <div v-if="headingTitle" class="note-popover__quote">
+              「{{ headingTitle }}」
+            </div>
+            <div class="note-popover__basis">
+              <div class="note-popover__basis-label">来源资料</div>
+              <button
+                type="button"
+                class="note-popover__basis-link"
+                :title="headingSourceBadgeTitle(sourceBinding)"
+                @click="emit('navigate-source')"
+              >
+                {{ headingSourceBadgeLabel(sourceBinding) }}
+              </button>
+            </div>
+            <div class="note-popover__actions">
+              <button type="button" class="note-popover__edit-btn" @click="emit('navigate-source')">
+                查看资料
+              </button>
+              <button
+                v-if="effectiveMarkerSource(sourceBinding.markerSource) === 'ai'"
+                type="button"
+                class="note-popover__edit-btn"
+                @click="emit('promote-source-to-user')"
+              >
+                转为手动标记
+              </button>
+            </div>
+          </section>
+
           <article
             v-for="item in displayedAnnotations"
             :key="item.id"
@@ -246,10 +297,10 @@ watch(
         </div>
 
         <KnowledgeRelationList
-          v-if="kbId && relationAnchor && relationNavigate"
+          v-if="kbId && effectiveRelationAnchor && relationNavigate"
           :key="relationRefreshKey"
           :kb-id="kbId"
-          :anchor="relationAnchor"
+          :anchor="effectiveRelationAnchor"
           :navigate="relationNavigate"
           :after-navigate="() => emit('close')"
         />
@@ -316,7 +367,8 @@ watch(
   padding: 10px;
 }
 
-.note-popover__item--basis {
+.note-popover__item--basis,
+.note-popover__item--source {
   border-color: rgba(76, 175, 80, 0.35);
   background: rgba(165, 214, 167, 0.12);
 }

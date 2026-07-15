@@ -49,6 +49,7 @@ import {
 } from '@/utils/urlDisplay'
 import {
   buildHandleMenuItems,
+  getSectionHandleMenuContext,
   insertOptions,
   isInsertBlockAction,
   type EditorHandleTarget,
@@ -76,6 +77,8 @@ interface Props {
   editable?: boolean
   annotations?: Record<string, TextAnnotation[]>
   hoverHandle?: boolean
+  /** 只读模式下仍显示行手柄并允许标注/节选等（不启用编辑类操作） */
+  lineGutterActions?: boolean
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -84,6 +87,7 @@ const props = withDefaults(defineProps<Props>(), {
   editable: true,
   annotations: () => ({}),
   hoverHandle: true,
+  lineGutterActions: undefined,
 })
 
 const emit = defineEmits<{
@@ -109,6 +113,10 @@ const emit = defineEmits<{
   'section-mark-excerpt': [entryId: string]
   'section-set-basis': [entryId: string]
   'section-create-knowledge-relation': [entryId: string]
+  'section-mark-heading-source': [entryId: string]
+  'section-clear-heading-source': [entryId: string]
+  'section-edit-section-tags': [entryId: string]
+  'section-ai-marking': [entryId: string]
   'line-annotate': [blockId: string]
   'line-create-knowledge-relation': [blockId: string]
   'url-hover-change': [target: UrlHoverTarget | null]
@@ -162,7 +170,27 @@ const handlePositionStyle = computed<CSSProperties>(() => ({
   transform: 'translateX(-50%)',
 }))
 
-const activeHandleItems = computed(() => buildHandleMenuItems(handleTarget.value))
+const lineGutterActionsEnabled = computed(() => props.lineGutterActions ?? props.editable)
+const gutterReadOnly = computed(() => lineGutterActionsEnabled.value && !props.editable)
+
+const activeHandleItems = computed(() => {
+  const target = handleTarget.value
+  let items = !target || target.kind !== 'section'
+    ? buildHandleMenuItems(target)
+    : (() => {
+      const resolved = resolveSectionEntry(target.entryId)
+      const sectionContext = resolved ? getSectionHandleMenuContext(resolved.entry) : null
+      return buildHandleMenuItems(target, sectionContext)
+    })()
+
+  if (gutterReadOnly.value) {
+    const allowed = new Set(['add-note', 'create-knowledge-relation', 'mark-excerpt', 'set-basis'])
+    items = items.filter((item) => (
+      item.divider ? item.key === 'action-divider' : allowed.has(item.key)
+    ))
+  }
+  return items
+})
 
 const slashQuery = ref('')
 const slashMenuVisible = ref(false)
@@ -469,6 +497,30 @@ const getBlockRange = (resolved: any) => {
 
 const generateBlockId = (): string => `block-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
 
+const LINE_HANDLE_BLOCK_ID_TYPES = new Set(['paragraph', 'heading', 'blockquote', 'list_item', 'task_item'])
+
+const ensureTopLevelLineBlockId = (resolved: ResolvedPos): string | undefined => {
+  const existing = getBlockIdAtPos(resolved.pos)
+  if (existing) return existing
+
+  const ed = editor.value
+  if (!ed) return undefined
+
+  const topPos = resolved.before(1)
+  const topNode = resolved.node(1)
+  if (!LINE_HANDLE_BLOCK_ID_TYPES.has(topNode.type.name)) return undefined
+
+  const newId = generateBlockId()
+  ed.chain().focus().command(({ tr, dispatch }) => {
+    if (dispatch) {
+      tr.setNodeMarkup(topPos, undefined, { ...topNode.attrs, blockId: newId })
+    }
+    return true
+  }).run()
+
+  return newId
+}
+
 const createExternalBlock = (type: InsertBlockType): Block | null => {
   const id = generateBlockId()
   switch (type) {
@@ -745,7 +797,7 @@ const clearHideHandle = () => {
 }
 
 const handleEditorMouseMove = (event: MouseEvent) => {
-  if (!editor.value || !editorEl.value || !props.editable) return
+  if (!editor.value || !editorEl.value || !lineGutterActionsEnabled.value) return
   if (handleMenuVisible.value) return
 
   const wrapperRect = editorEl.value.getBoundingClientRect()
@@ -797,7 +849,7 @@ const handleEditorMouseMove = (event: MouseEvent) => {
 }
 
 function showHandle(target: EditorHandleTarget, anchorEl: HTMLElement) {
-  if (!editor.value || !editorEl.value || !props.editable) return
+  if (!editor.value || !editorEl.value || !lineGutterActionsEnabled.value) return
 
   const wrapperRect = editorEl.value.getBoundingClientRect()
   const gutter = getContentScrollGutterAnchor(editorEl.value)
@@ -968,6 +1020,10 @@ function runLineHandleAction(key: LineHandleAction, resolved: ResolvedPos, curso
   if (!editor.value) return
   const { from, to } = getBlockRange(resolved)
 
+  if (gutterReadOnly.value && !['add-note', 'create-knowledge-relation', 'mark-excerpt', 'set-basis'].includes(key)) {
+    return
+  }
+
   if (isInsertBlockAction(key)) {
     insertExternalBlockAfterPos(key, cursorPos)
     return
@@ -975,22 +1031,22 @@ function runLineHandleAction(key: LineHandleAction, resolved: ResolvedPos, curso
 
   switch (key) {
     case 'add-note': {
-      const blockId = resolved.node(1)?.attrs?.blockId as string | undefined
+      const blockId = ensureTopLevelLineBlockId(resolved)
       if (blockId) emit('line-annotate', blockId)
       break
     }
     case 'create-knowledge-relation': {
-      const blockId = resolved.node(1)?.attrs?.blockId as string | undefined
+      const blockId = ensureTopLevelLineBlockId(resolved)
       if (blockId) emit('line-create-knowledge-relation', blockId)
       break
     }
     case 'mark-excerpt': {
-      const blockId = resolved.node(1)?.attrs?.blockId as string | undefined
+      const blockId = ensureTopLevelLineBlockId(resolved)
       if (blockId) emit('mark-block-excerpt', blockId)
       break
     }
     case 'set-basis': {
-      const blockId = resolved.node(1)?.attrs?.blockId as string | undefined
+      const blockId = ensureTopLevelLineBlockId(resolved)
       if (blockId) emit('set-block-basis', blockId)
       break
     }
@@ -1036,6 +1092,10 @@ function runLineHandleAction(key: LineHandleAction, resolved: ResolvedPos, curso
 function runSectionHandleAction(entryId: string, key: LineHandleAction) {
   if (!editor.value) return
 
+  if (gutterReadOnly.value && !['add-note', 'create-knowledge-relation', 'mark-excerpt', 'set-basis', 'section-ai-marking'].includes(key)) {
+    return
+  }
+
   if (isInsertBlockAction(key)) {
     const resolved = resolveSectionEntry(entryId)
     if (!resolved) return
@@ -1056,6 +1116,18 @@ function runSectionHandleAction(entryId: string, key: LineHandleAction) {
       break
     case 'create-knowledge-relation':
       emit('section-create-knowledge-relation', entryId)
+      break
+    case 'mark-heading-source':
+      emit('section-mark-heading-source', entryId)
+      break
+    case 'clear-heading-source':
+      emit('section-clear-heading-source', entryId)
+      break
+    case 'edit-section-tags':
+      emit('section-edit-section-tags', entryId)
+      break
+    case 'section-ai-marking':
+      emit('section-ai-marking', entryId)
       break
     case 'cut':
     case 'copy':

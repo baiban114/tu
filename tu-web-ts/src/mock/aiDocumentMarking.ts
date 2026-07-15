@@ -32,28 +32,38 @@ const emit = async (
   await sleep(100, options.signal)
 }
 
-function buildMockResponse(pageId: string): DocumentMarkingResponse {
+function buildMockResponse(pageId: string, payload: AnalyzeDocumentMarkingPayload): DocumentMarkingResponse {
+  const headingLocator = payload.sectionHeadingBlockId
+    ? `page:${pageId}:heading:${payload.sectionHeadingBlockId}`
+    : `page:${pageId}:heading:mock-h1`
+  const blockLocator = payload.sectionEmbedBlockId
+    ? `page:${pageId}:block:${payload.sectionEmbedBlockId}`
+    : `page:${pageId}:block:page-content`
   return {
     runId: `mock-dm-${Date.now()}`,
     suggestions: [
       {
         id: 'sug-1',
         action: 'bindSource',
-        locator: `page:${pageId}:heading:mock-h1`,
+        locator: headingLocator,
         resourceItemId: 'ri-mock-1',
         resourceExcerptId: 're-mock-1',
         confidence: 0.85,
-        reason: '该标题与外部资源章节主题一致',
+        reason: payload.sectionTitle
+          ? `「${payload.sectionTitle}」标题可与外部资源章节对应`
+          : '该标题与外部资源章节主题一致',
         markerSource: 'ai',
       },
       {
         id: 'sug-2',
         action: 'createRelation',
-        locator: `page:${pageId}:block:page-content`,
+        locator: blockLocator,
         relationTypeKey: 'case',
         toPointId: 'kp-mock-1',
         confidence: 0.72,
-        reason: '正文案例可关联到知识点',
+        reason: payload.sectionTitle
+          ? `「${payload.sectionTitle}」内容可关联到知识点`
+          : '正文案例可关联到知识点',
         markerSource: 'ai',
       },
     ],
@@ -73,7 +83,7 @@ export async function generateDocumentMarkingMockStream(
     await emit(options, 'tool_done', '搜索知识库 完成', { toolName: 'searchKnowledgeBasePages', elapsedMs: elapsed() })
   }
   await emit(options, 'parsing', '正在校验标记建议…', { elapsedMs: elapsed() })
-  const response = buildMockResponse(payload.pageId)
+  const response = buildMockResponse(payload.pageId, payload)
   options.onEvent({
     phase: 'completed',
     message: '文档标记分析完成',

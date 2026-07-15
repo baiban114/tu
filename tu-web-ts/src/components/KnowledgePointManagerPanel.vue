@@ -10,7 +10,7 @@ import {
   ElMessage,
   ElTag,
 } from 'element-plus';
-import type { KnowledgeAnchor, KnowledgePoint, KnowledgePointAlias, KnowledgePointAnchor, KnowledgeRelation } from '@/api/types';
+import type { KnowledgeAnchor, KnowledgeGraphMode, KnowledgePoint, KnowledgePointAlias, KnowledgePointAnchor, KnowledgeRelation } from '@/api/types';
 import KnowledgePointTree from '@/components/knowledge/KnowledgePointTree.vue';
 import {
   addKnowledgePointAlias,
@@ -127,6 +127,18 @@ function onNavigatePoint(pointId: string) {
   void navigateKnowledgePoint(pointId, navigateHandlers.value);
 }
 
+function openInKnowledgeGraph(mode: KnowledgeGraphMode = 'centered') {
+  if (!selectedPoint.value) return;
+  void router.push({
+    path: '/resources',
+    query: {
+      tab: 'knowledgeGraph',
+      centerPointId: selectedPoint.value.id,
+      graphMode: mode,
+    },
+  });
+}
+
 function openGenerateDialog() {
   generatePageTree.value = true;
   generateDocumentHeadings.value = true;
@@ -230,7 +242,13 @@ async function onTreeUpdated() {
     <div class="kpm-detail-panel">
       <ElCard v-if="selectedPoint" v-loading="relationsLoading" shadow="never" class="kpm-detail">
         <template #header>
-          <span>{{ selectedPoint.title }}</span>
+          <div class="kpm-detail__header">
+            <span>{{ selectedPoint.title }}</span>
+            <div class="kpm-detail__header-actions">
+              <ElButton size="small" @click="openInKnowledgeGraph('centered')">在图谱中查看</ElButton>
+              <ElButton size="small" @click="openInKnowledgeGraph('prerequisite')">前置子图</ElButton>
+            </div>
+          </div>
         </template>
         <p v-if="selectedPoint.summary" class="kpm-detail__summary">{{ selectedPoint.summary }}</p>
 
@@ -375,6 +393,19 @@ async function onTreeUpdated() {
   min-height: 0;
   overflow: auto;
   border: none;
+}
+
+.kpm-detail__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.kpm-detail__header-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
 }
 
 .kpm-detail__summary {

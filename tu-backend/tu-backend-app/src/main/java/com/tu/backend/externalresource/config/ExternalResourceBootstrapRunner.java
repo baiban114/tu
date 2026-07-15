@@ -14,6 +14,8 @@ public class ExternalResourceBootstrapRunner implements ApplicationRunner {
 
     private static final String BOOK_TYPE_CODE = "book";
     private static final String BOOK_TYPE_NAME = "图书";
+    private static final String DOCUMENT_TYPE_CODE = "document";
+    private static final String DOCUMENT_TYPE_NAME = "文档";
 
     private final ResourceTypeRepository typeRepository;
 
@@ -47,5 +49,32 @@ public class ExternalResourceBootstrapRunner implements ApplicationRunner {
             entity.setIdentityFieldLabel("ISBN");
         }
         typeRepository.save(entity);
+        typeRepository.save(ensureDocumentType());
+    }
+
+    private ResourceTypeEntity ensureDocumentType() {
+        ResourceTypeEntity entity = typeRepository.findByCode(DOCUMENT_TYPE_CODE)
+            .or(() -> typeRepository.findByName(DOCUMENT_TYPE_NAME))
+            .orElseGet(() -> {
+                ResourceTypeEntity created = new ResourceTypeEntity();
+                created.setId("rt-" + UUID.randomUUID().toString().replace("-", ""));
+                return created;
+            });
+
+        entity.setCode(DOCUMENT_TYPE_CODE);
+        entity.setName(DOCUMENT_TYPE_NAME);
+        if (entity.getIcon() == null || entity.getIcon().isBlank()) {
+            entity.setIcon("document");
+        }
+        if (entity.getDescription() == null || entity.getDescription().isBlank()) {
+            entity.setDescription("文档资源，支持节选片段管理");
+        }
+        if (entity.getIdentityFieldKey() == null || entity.getIdentityFieldKey().isBlank()) {
+            entity.setIdentityFieldKey("sourceUrl");
+        }
+        if (entity.getIdentityFieldLabel() == null || entity.getIdentityFieldLabel().isBlank()) {
+            entity.setIdentityFieldLabel("源 URL / 文件标识");
+        }
+        return entity;
     }
 }

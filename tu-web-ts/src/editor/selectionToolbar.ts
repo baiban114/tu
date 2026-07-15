@@ -1,7 +1,6 @@
 import type { Editor } from '@tiptap/core'
 import { isTextSelection } from '@tiptap/core'
 import { getAnnotationSelectionPayload } from '@/editor/annotationText'
-import type { HeadingSourceBinding } from '@/api/types'
 
 const TEXT_BLOCK_NODE_TYPES = new Set([
   'paragraph',
@@ -20,9 +19,6 @@ export interface SelectionToolbarActions {
   canAddNote: boolean
   canMarkResourceExcerpt: boolean
   canSetExcerptBasis: boolean
-  canMarkHeadingSource: boolean
-  canClearHeadingSource: boolean
-  canEditSectionTags: boolean
   canEditTextTags: boolean
   canCreateKnowledgeRelation: boolean
   canShow: boolean
@@ -50,21 +46,12 @@ function collectSpannedBlockIds(doc: Editor['state']['doc'], from: number, to: n
   return ids.length > 1 || hasNonTextBlock ? ids : []
 }
 
-function findHeadingAtPos(editor: Editor): {
-  inHeading: boolean
-  sourceBinding: HeadingSourceBinding | null
-} {
+function isSelectionInHeading(editor: Editor): boolean {
   const { $from } = editor.state.selection
   for (let depth = $from.depth; depth > 0; depth -= 1) {
-    const node = $from.node(depth)
-    if (node.type.name === 'heading') {
-      return {
-        inHeading: true,
-        sourceBinding: (node.attrs.sourceBinding as HeadingSourceBinding | null) ?? null,
-      }
-    }
+    if ($from.node(depth).type.name === 'heading') return true
   }
-  return { inHeading: false, sourceBinding: null }
+  return false
 }
 
 export function getSelectionToolbarActions(
@@ -75,25 +62,19 @@ export function getSelectionToolbarActions(
   const payload = getAnnotationSelectionPayload(editor.state.doc, from, to)
   const hasText = payload.selectedText.trim().length > 0
   const spannedBlockIds = collectSpannedBlockIds(editor.state.doc, from, to)
-  const { inHeading, sourceBinding } = findHeadingAtPos(editor)
+  const inHeading = isSelectionInHeading(editor)
 
   const canAddNote = hasText || spannedBlockIds.length > 0
   const canMarkResourceExcerpt = hasText && !inHeading
   const canSetExcerptBasis = hasText && !inHeading
-  const canMarkHeadingSource = inHeading
-  const canClearHeadingSource = inHeading && Boolean(sourceBinding)
-  const canEditSectionTags = inHeading
   const canEditTextTags = hasText && spannedBlockIds.length === 0
   const canCreateKnowledgeRelation = canAddNote && !inHeading
-  const canShow = canAddNote || canMarkResourceExcerpt || canSetExcerptBasis || canMarkHeadingSource || canClearHeadingSource || canEditSectionTags || canEditTextTags || canCreateKnowledgeRelation
+  const canShow = canAddNote || canMarkResourceExcerpt || canSetExcerptBasis || canEditTextTags || canCreateKnowledgeRelation
 
   return {
     canAddNote,
     canMarkResourceExcerpt,
     canSetExcerptBasis,
-    canMarkHeadingSource,
-    canClearHeadingSource,
-    canEditSectionTags,
     canEditTextTags,
     canCreateKnowledgeRelation,
     canShow,
@@ -119,11 +100,7 @@ export function shouldShowSelectionBubbleMenu(
   const hasEditorFocus = view.hasFocus() || isChildOfMenu
 
   if (!hasEditorFocus || suppressed) return false
+  if (empty || isEmptyTextBlock) return false
 
-  const actions = getSelectionToolbarActions(editor, from, to)
-  if (empty || isEmptyTextBlock) {
-    return actions.canEditSectionTags
-  }
-
-  return actions.canShow
+  return getSelectionToolbarActions(editor, from, to).canShow
 }

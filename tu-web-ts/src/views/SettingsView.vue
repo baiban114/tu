@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import { Document, ChatDotRound } from '@element-plus/icons-vue'
+import AppHelpButton from '@/components/AppHelpButton.vue'
 import AiSettingsPanel from '@/components/settings/AiSettingsPanel.vue'
 import EditorSettingsPanel from '@/components/settings/EditorSettingsPanel.vue'
 
@@ -19,7 +20,10 @@ function onMenuSelect(key: string) {
   <main class="settings-page">
     <header class="settings-page__header">
       <h1>系统设置</h1>
-      <RouterLink to="/">返回工作区</RouterLink>
+      <div class="settings-page__header-actions">
+        <AppHelpButton />
+        <RouterLink to="/">返回工作区</RouterLink>
+      </div>
     </header>
 
     <div class="settings-layout">
@@ -74,6 +78,12 @@ function onMenuSelect(key: string) {
 .settings-page__header h1 {
   margin: 0;
   font-size: 28px;
+}
+
+.settings-page__header-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
 }
 
 .settings-page__header a {

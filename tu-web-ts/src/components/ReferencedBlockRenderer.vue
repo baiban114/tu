@@ -5,7 +5,8 @@ import TableBlock from './TableBlock.vue';
 import MultiTableBlock from './MultiTableBlock.vue';
 import X6Component from './X6Component.vue';
 import type { Block, MultiTableData, TableBlockData } from '@/api/types';
-import { ref } from 'vue';
+import { computed, ref } from 'vue';
+import { useRefGutterForwarding } from '@/composables/useRefGutterForwarding';
 
 type ResizeEdge = 'right' | 'bottom' | 'corner';
 
@@ -25,6 +26,17 @@ const props = withDefaults(defineProps<{
 }>(), {
   editable: true,
 });
+
+const {
+  nestedEditorRef,
+  hasRefGutterHost,
+  forwardLineAnnotate,
+  forwardMarkExcerpt,
+  forwardSetBasis,
+  forwardCreateKnowledgeRelation,
+} = useRefGutterForwarding();
+
+const lineGutterActions = computed(() => props.editable || hasRefGutterHost)
 
 const emit = defineEmits<{
   (e: 'update-block', block: Block): void;
@@ -178,10 +190,16 @@ const startChildResize = (event: MouseEvent, childIndex: number, edge: ResizeEdg
     <TuEditor
       v-if="isRichTextBlock(block)"
       :key="`ref-richtext-${block.id}`"
+      ref="nestedEditorRef"
       :blocks="[block]"
       :editable="editable"
+      :line-gutter-actions="lineGutterActions"
       class="block-content"
       @update:blocks="([updated]: Block[]) => updateBlock({ content: updated.content })"
+      @line-annotate="forwardLineAnnotate"
+      @mark-block-excerpt="forwardMarkExcerpt"
+      @set-block-basis="forwardSetBasis"
+      @line-create-knowledge-relation="forwardCreateKnowledgeRelation"
     />
     <X6Component
       v-else-if="block.type === 'x6'"
@@ -217,9 +235,15 @@ const startChildResize = (event: MouseEvent, childIndex: number, edge: ResizeEdg
     <TuEditor
       v-else-if="getExternalResourceExcerptBlocks(block)"
       :key="`ref-external-resource-${block.id}`"
+      ref="nestedEditorRef"
       :blocks="getExternalResourceExcerptBlocks(block)!"
       :editable="editable"
+      :line-gutter-actions="lineGutterActions"
       class="block-content referenced-excerpt-editor"
+      @line-annotate="forwardLineAnnotate"
+      @mark-block-excerpt="forwardMarkExcerpt"
+      @set-block-basis="forwardSetBasis"
+      @line-create-knowledge-relation="forwardCreateKnowledgeRelation"
     />
     <div
       v-else-if="block.type === 'container'"

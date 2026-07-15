@@ -12,13 +12,18 @@ description: >-
 
 弹出面板 UI height 不能超过浏览器内容窗口，避免滚动出现。
 
+**弹窗本体与内部各区域**均须限制高度：打开后 `document` / `body` 不得出现纵向滚动条；列表、表单、富文本编辑区等须在各自容器内滚动，不得把整页或整弹窗撑出视口。
+
 ### 实现要点
 
 - 对话框根节点加 `tu-dialog-viewport`（样式见 `tu-web-ts/src/assets/dialog-viewport.css`）。
 - 对话框本体：`max-height: calc(100dvh - 32px)`，纵向 flex；**禁止**让 `document` / `body` 因弹窗出现纵向滚动条。
 - `.el-dialog__body`：`flex: 1; min-height: 0; overflow: hidden`。
+- 内容根容器（如 `.resource-picker`）：`flex: 1; min-height: 0; max-height: calc(100dvh - 120px)`（预留 header/footer）。
+- 双栏/多栏布局：每栏 `display: flex; flex-direction: column; min-height: 0; overflow: hidden`；列表区 `flex: 1; min-height: 0` + 内部 `el-scrollbar` 或 `overflow-y: auto`。
+- 表单主操作（创建/保存）放在栏底 `flex-shrink: 0` 或 `position: sticky; bottom: 0`，勿随正文滚出视口。
 - 可滚动内容放在内部区域（如表格 `height`/`max-height`、表单列 `overflow-y: auto`），不要给 `el-dialog__body` 设 `overflow: auto`。
-- 避免用 `min-height: 68vh` 等撑破视口的写法。
+- 避免用 `min-height: 68vh`、`el-scrollbar height="360px"` 等撑破视口的固定高度写法。
 
 ## 2. 列表分页
 
@@ -108,6 +113,7 @@ description: >-
 
 - 标注弹窗：`NoteEditor.vue`（标签候选分页 + 固定 footer）
 - 块/页标签编辑：`BlockMetadataTagEditor.vue`
+- 外部资源选择/标记节选：`ExternalResourcePicker.vue`（`tu-dialog-viewport` + 双栏内部滚动 + 表单底栏固定）
 - 样式契约：`tu-web-ts/src/assets/dialog-viewport.css`
 
 ### 反例
@@ -147,6 +153,7 @@ description: >-
 ## 检查清单
 
 - [ ] 新 `el-dialog` 是否使用 `tu-dialog-viewport` 且打开后页面无整体滚动？
+- [ ] 弹窗内双栏/列表/富文本编辑区是否 `min-height: 0` 并在内部滚动，而非撑高整窗？
 - [ ] 新列表是否走后端分页 API，默认 `pageSize=10`？
 - [ ] 保存/删除后是否刷新当前页或合理回退页码？
 - [ ] 悬浮触发的派生 UI 是否延迟 dismiss，且移入派生 UI 不会关闭？

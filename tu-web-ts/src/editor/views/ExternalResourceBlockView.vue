@@ -9,6 +9,7 @@ import {
   type ResourceItem,
 } from '@/api/externalResource'
 import type { ExternalResourceEmbedData, ExternalResourceSnapshot, Block } from '@/api/types'
+import { resourcePositionDisplay } from '@/utils/resourcePositionLocator'
 import TuEditor from '@/components/TuEditor.vue'
 
 interface CompoundBadge {
@@ -90,7 +91,10 @@ const identityDisplay = computed(() => {
   return `${identityLabel.value}: ${value}`
 })
 const chapterTitleDisplay = computed(() => truncateDisplayText(chapterTitle.value, META_DISPLAY_LIMITS.chapterTitle))
-const excerptLocatorDisplay = computed(() => truncateDisplayText(excerptLocator.value, META_DISPLAY_LIMITS.locator))
+const excerptLocatorDisplay = computed(() => {
+  const text = resourcePositionDisplay(excerptLocator.value)
+  return truncateDisplayText(text, META_DISPLAY_LIMITS.locator)
+})
 const excerptNoteDisplay = computed(() => truncateDisplayText(excerptNote.value, META_DISPLAY_LIMITS.note))
 const sourceUrlLabel = computed(() => formatSourceUrlLabel(sourceUrl.value))
 

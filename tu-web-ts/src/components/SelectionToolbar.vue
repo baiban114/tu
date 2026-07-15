@@ -18,9 +18,6 @@ const emit = defineEmits<{
   (e: 'add-note'): void
   (e: 'mark-resource-excerpt'): void
   (e: 'set-excerpt-basis'): void
-  (e: 'mark-heading-source'): void
-  (e: 'clear-heading-source'): void
-  (e: 'edit-section-tags'): void
   (e: 'create-knowledge-relation'): void
 }>()
 
@@ -131,9 +128,6 @@ const actions = computed(() => {
       canAddNote: false,
       canMarkResourceExcerpt: false,
       canSetExcerptBasis: false,
-      canMarkHeadingSource: false,
-      canClearHeadingSource: false,
-      canEditSectionTags: false,
       canCreateKnowledgeRelation: false,
       canShow: false,
     }
@@ -217,58 +211,8 @@ const bubbleFloatingOptions = computed(() => {
         >
           标注
         </ElButton>
-        <template v-if="actions.canMarkHeadingSource">
-          <ElDivider v-if="actions.canAddNote" direction="vertical" class="selection-toolbar__divider" />
-          <ElButton
-            size="small"
-            text
-            type="success"
-            class="selection-toolbar__btn"
-            @mousedown.prevent.stop
-            @click="emit('mark-heading-source')"
-          >
-            标记来源
-          </ElButton>
-        </template>
-        <template v-if="actions.canClearHeadingSource">
-          <ElDivider
-            v-if="actions.canAddNote || actions.canMarkHeadingSource"
-            direction="vertical"
-            class="selection-toolbar__divider"
-          />
-          <ElButton
-            size="small"
-            text
-            type="danger"
-            class="selection-toolbar__btn"
-            @mousedown.prevent.stop
-            @click="emit('clear-heading-source')"
-          >
-            解除来源
-          </ElButton>
-        </template>
-        <template v-if="actions.canEditSectionTags">
-          <ElDivider
-            v-if="actions.canAddNote || actions.canMarkHeadingSource || actions.canClearHeadingSource"
-            direction="vertical"
-            class="selection-toolbar__divider"
-          />
-          <ElButton
-            size="small"
-            text
-            class="selection-toolbar__btn"
-            @mousedown.prevent.stop
-            @click="emit('edit-section-tags')"
-          >
-            节标签
-          </ElButton>
-        </template>
         <template v-if="actions.canMarkResourceExcerpt">
-          <ElDivider
-            v-if="actions.canAddNote || actions.canMarkHeadingSource || actions.canClearHeadingSource || actions.canEditSectionTags"
-            direction="vertical"
-            class="selection-toolbar__divider"
-          />
+          <ElDivider v-if="actions.canAddNote" direction="vertical" class="selection-toolbar__divider" />
           <ElButton
             size="small"
             text
@@ -282,7 +226,7 @@ const bubbleFloatingOptions = computed(() => {
         </template>
         <template v-if="actions.canSetExcerptBasis">
           <ElDivider
-            v-if="actions.canAddNote || actions.canMarkHeadingSource || actions.canClearHeadingSource || actions.canMarkResourceExcerpt || actions.canEditSectionTags"
+            v-if="actions.canAddNote || actions.canMarkResourceExcerpt"
             direction="vertical"
             class="selection-toolbar__divider"
           />
@@ -299,7 +243,7 @@ const bubbleFloatingOptions = computed(() => {
         </template>
         <template v-if="actions.canCreateKnowledgeRelation">
           <ElDivider
-            v-if="actions.canAddNote || actions.canMarkHeadingSource || actions.canClearHeadingSource || actions.canMarkResourceExcerpt || actions.canEditSectionTags || actions.canSetExcerptBasis"
+            v-if="actions.canAddNote || actions.canMarkResourceExcerpt || actions.canSetExcerptBasis"
             direction="vertical"
             class="selection-toolbar__divider"
           />

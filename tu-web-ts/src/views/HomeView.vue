@@ -2,11 +2,12 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { ElEmpty } from 'element-plus';
 import { useRoute, useRouter } from 'vue-router';
+import AppHelpButton from '@/components/AppHelpButton.vue';
 import DevModePanel from '@/components/DevModePanel.vue';
 import LeftPanel from '@/components/LeftPanel.vue';
 import CanvasPage from '@/components/CanvasPage.vue';
 import TuEditorPage from '@/components/TuEditorPage.vue';
-import type { PageContent } from '@/api/types';
+import type { PageContent, PageType } from '@/api/types';
 import { useWorkspaceStore } from '@/stores/workspace';
 
 const store = useWorkspaceStore();
@@ -40,6 +41,12 @@ let startWidth = 0;
 const canvasPageType = computed(() => (
   store.currentPageType === 'x6board' ? 'x6board' : 'mindmap'
 ));
+
+/** Page type for context-aware help; null when no page selected. */
+const helpPageType = computed<PageType | null>(() => {
+  if (!store.currentPageId) return null
+  return store.currentPageType ?? 'document'
+});
 
 const localFileStatusText = computed(() => {
   const binding = store.currentLocalFileBinding;
@@ -170,6 +177,7 @@ watch(
         >
           清除定位
         </button>
+        <AppHelpButton variant="topbar" :page-type="helpPageType" />
       </div>
       <div
         v-if="store.currentPageId && store.isCanvasPage && store.pageContent"

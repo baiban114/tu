@@ -20,6 +20,7 @@ import { SpacerBlockNode } from './extensions/SpacerBlockNode'
 import { TableBlockNode } from './extensions/TableBlockNode'
 import { MultiTableBlockNode } from './extensions/MultiTableBlockNode'
 import { ParagraphNode } from './extensions/ParagraphNode'
+import { BlockquoteNode } from './extensions/BlockquoteNode'
 import { HeadingNode } from './extensions/HeadingNode'
 import { CodeBlockNode } from './extensions/CodeBlockNode'
 import { HeadingSourceDecorations } from './extensions/HeadingSourceDecorations'
@@ -93,6 +94,7 @@ export function getTuEditorSchemaExtensions(): Extensions {
       heading: false,
       paragraph: false,
       codeBlock: false,
+      blockquote: false,
     }),
     CodeBlockNode,
     HeadingNode.configure({ levels: [1, 2, 3, 4, 5, 6] }),
@@ -113,6 +115,7 @@ export function getTuEditorSchemaExtensions(): Extensions {
     UrlEmbedBlockNode,
     PdfExcerptBlockNode,
     ParagraphNode,
+    BlockquoteNode,
   ] as Extensions
 }
 

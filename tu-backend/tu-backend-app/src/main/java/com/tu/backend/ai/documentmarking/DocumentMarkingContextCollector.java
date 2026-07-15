@@ -103,7 +103,264 @@ public final class DocumentMarkingContextCollector {
         for (JsonNode block : blocks) {
             collectSectionTextFromBlock(pageId, block, sections, maxChars);
         }
+        List<SectionTextEntry> headingSections = collectHeadingSectionTexts(pageId, blocks, maxChars);
+        for (SectionTextEntry entry : headingSections) {
+            if (sections.stream().noneMatch(existing -> existing.locator().equals(entry.locator()))) {
+                sections.add(entry);
+            }
+        }
         return sections;
+    }
+
+    public static List<SectionTextEntry> collectHeadingSectionTexts(String pageId, ArrayNode blocks, int maxChars) {
+        List<SectionTextEntry> sections = new ArrayList<>();
+        for (JsonNode block : blocks) {
+            collectHeadingSectionsFromBlock(pageId, block, sections, maxChars);
+        }
+        return sections;
+    }
+
+    public static List<SectionTextEntry> collectScopedSectionTexts(
+        String pageId,
+        ArrayNode blocks,
+        String sectionHeadingBlockId,
+        String sectionEmbedBlockId,
+        String sectionTitle,
+        int maxChars
+    ) {
+        if (sectionHeadingBlockId != null && !sectionHeadingBlockId.isBlank()) {
+            for (JsonNode block : blocks) {
+                SectionTextEntry entry = collectHeadingSectionFromBlock(
+                    pageId, block, sectionHeadingBlockId.trim(), maxChars
+                );
+                if (entry != null) {
+                    return List.of(entry);
+                }
+            }
+            String title = sectionTitle == null || sectionTitle.isBlank() ? "本节" : sectionTitle.trim();
+            return List.of(new SectionTextEntry(
+                "page:" + pageId + ":heading:" + sectionHeadingBlockId.trim(),
+                title,
+                title
+            ));
+        }
+        if (sectionEmbedBlockId != null && !sectionEmbedBlockId.isBlank()) {
+            String title = sectionTitle == null || sectionTitle.isBlank() ? "引用节" : sectionTitle.trim();
+            String locator = "page:" + pageId + ":block:" + sectionEmbedBlockId.trim();
+            String text = truncate(collectEmbedBlockText(blocks, sectionEmbedBlockId.trim()), maxChars);
+            if (text.isBlank()) {
+                text = title;
+            }
+            return List.of(new SectionTextEntry(locator, title, text));
+        }
+        return collectSectionTexts(pageId, blocks, maxChars);
+    }
+
+    public static boolean suggestionMatchesSectionScope(
+        String locator,
+        String pageId,
+        String sectionHeadingBlockId,
+        String sectionEmbedBlockId,
+        Set<String> allowedHeadingBlockIds
+    ) {
+        boolean scoped = (sectionHeadingBlockId != null && !sectionHeadingBlockId.isBlank())
+            || (sectionEmbedBlockId != null && !sectionEmbedBlockId.isBlank());
+        if (!scoped) {
+            return true;
+        }
+        String normalized = locator == null ? "" : locator.trim();
+        if (normalized.isBlank()) {
+            return false;
+        }
+        if (sectionHeadingBlockId != null && !sectionHeadingBlockId.isBlank()) {
+            for (String blockId : allowedHeadingBlockIds) {
+                if (normalized.contains(":heading:" + blockId)) {
+                    return true;
+                }
+            }
+            if (sectionEmbedBlockId != null && normalized.contains(":block:" + sectionEmbedBlockId.trim())) {
+                return true;
+            }
+            return normalized.equals("page:" + pageId + ":heading:" + sectionHeadingBlockId.trim());
+        }
+        if (sectionEmbedBlockId != null && !sectionEmbedBlockId.isBlank()) {
+            return normalized.contains(":block:" + sectionEmbedBlockId.trim())
+                || allowedHeadingBlockIds.stream().anyMatch(blockId -> normalized.contains(":heading:" + blockId));
+        }
+        return true;
+    }
+
+    private static void collectHeadingSectionsFromBlock(
+        String pageId,
+        JsonNode block,
+        List<SectionTextEntry> sections,
+        int maxChars
+    ) {
+        if (!block.isObject()) {
+            return;
+        }
+        String blockType = text(block.get("type"));
+        if (!"richtext".equalsIgnoreCase(blockType) && !"richText".equals(blockType)) {
+            return;
+        }
+        JsonNode document = block.get("document");
+        if (!TiptapDocumentWalker.isDocument(document)) {
+            return;
+        }
+        JsonNode content = document.get("content");
+        if (!(content instanceof ArrayNode contentArray)) {
+            return;
+        }
+        for (int i = 0; i < contentArray.size(); i += 1) {
+            JsonNode node = contentArray.get(i);
+            if (!"heading".equals(text(node.get("type")))) {
+                continue;
+            }
+            String headingBlockId = text(node.path("attrs").get("blockId"));
+            if (headingBlockId.isBlank()) {
+                continue;
+            }
+            int level = node.path("attrs").path("level").asInt(1);
+            String headingText = truncate(collectNodeText(node), 120);
+            StringBuilder body = new StringBuilder();
+            for (int j = i + 1; j < contentArray.size(); j += 1) {
+                JsonNode sibling = contentArray.get(j);
+                if ("heading".equals(text(sibling.get("type"))) && sibling.path("attrs").path("level").asInt(1) <= level) {
+                    break;
+                }
+                String part = collectNodeText(sibling).trim();
+                if (!part.isBlank()) {
+                    if (body.length() > 0) {
+                        body.append("\n\n");
+                    }
+                    body.append(part);
+                }
+            }
+            String sectionText = headingText;
+            if (body.length() > 0) {
+                sectionText = headingText + "\n\n" + body;
+            }
+            sectionText = truncate(sectionText, maxChars);
+            if (!sectionText.isBlank()) {
+                sections.add(new SectionTextEntry(
+                    "page:" + pageId + ":heading:" + headingBlockId,
+                    headingText.isBlank() ? "标题节" : headingText,
+                    sectionText
+                ));
+            }
+        }
+    }
+
+    private static SectionTextEntry collectHeadingSectionFromBlock(
+        String pageId,
+        JsonNode block,
+        String headingBlockId,
+        int maxChars
+    ) {
+        if (!block.isObject()) {
+            return null;
+        }
+        String blockType = text(block.get("type"));
+        if (!"richtext".equalsIgnoreCase(blockType) && !"richText".equals(blockType)) {
+            return null;
+        }
+        JsonNode document = block.get("document");
+        if (!TiptapDocumentWalker.isDocument(document)) {
+            return null;
+        }
+        JsonNode content = document.get("content");
+        if (!(content instanceof ArrayNode contentArray)) {
+            return null;
+        }
+        for (int i = 0; i < contentArray.size(); i += 1) {
+            JsonNode node = contentArray.get(i);
+            if (!"heading".equals(text(node.get("type")))) {
+                continue;
+            }
+            String blockId = text(node.path("attrs").get("blockId"));
+            if (!headingBlockId.equals(blockId)) {
+                continue;
+            }
+            int level = node.path("attrs").path("level").asInt(1);
+            String headingText = truncate(collectNodeText(node), 120);
+            StringBuilder body = new StringBuilder();
+            for (int j = i + 1; j < contentArray.size(); j += 1) {
+                JsonNode sibling = contentArray.get(j);
+                if ("heading".equals(text(sibling.get("type"))) && sibling.path("attrs").path("level").asInt(1) <= level) {
+                    break;
+                }
+                String part = collectNodeText(sibling).trim();
+                if (!part.isBlank()) {
+                    if (body.length() > 0) {
+                        body.append("\n\n");
+                    }
+                    body.append(part);
+                }
+            }
+            String sectionText = headingText;
+            if (body.length() > 0) {
+                sectionText = headingText + "\n\n" + body;
+            }
+            sectionText = truncate(sectionText, maxChars);
+            if (sectionText.isBlank()) {
+                return null;
+            }
+            return new SectionTextEntry(
+                "page:" + pageId + ":heading:" + headingBlockId,
+                headingText.isBlank() ? "标题节" : headingText,
+                sectionText
+            );
+        }
+        return null;
+    }
+
+    private static String collectEmbedBlockText(ArrayNode blocks, String embedBlockId) {
+        for (JsonNode block : blocks) {
+            String text = collectEmbedBlockTextRecursive(block, embedBlockId);
+            if (!text.isBlank()) {
+                return text;
+            }
+        }
+        return "";
+    }
+
+    private static String collectEmbedBlockTextRecursive(JsonNode block, String embedBlockId) {
+        if (!block.isObject()) {
+            return "";
+        }
+        String blockId = text(block.get("id"));
+        if (embedBlockId.equals(blockId)) {
+            return blockToPlainText(block);
+        }
+        JsonNode children = block.get("children");
+        if (children instanceof ArrayNode childArray) {
+            for (JsonNode child : childArray) {
+                String text = collectEmbedBlockTextRecursive(child, embedBlockId);
+                if (!text.isBlank()) {
+                    return text;
+                }
+            }
+        }
+        return "";
+    }
+
+    private static String blockToPlainText(JsonNode block) {
+        String blockType = text(block.get("type"));
+        if ("richtext".equalsIgnoreCase(blockType) || "richText".equals(blockType)) {
+            JsonNode document = block.get("document");
+            if (TiptapDocumentWalker.isDocument(document)) {
+                return TiptapDocumentWalker.extractPlainText(document);
+            }
+            return text(block.get("content"));
+        }
+        if ("externalResource".equals(blockType)) {
+            String excerpt = text(block.path("externalResource").path("snapshot").get("excerptText"));
+            if (!excerpt.isBlank()) {
+                return excerpt;
+            }
+        }
+        String title = text(block.get("title"));
+        return title == null ? "" : title;
     }
 
     private static void collectFromBlock(String pageId, JsonNode block, List<ProtectedLocatorEntry> entries) {

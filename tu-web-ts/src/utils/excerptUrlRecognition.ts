@@ -1,5 +1,6 @@
 import {
   BOOK_RESOURCE_TYPE_CODE,
+  DOCUMENT_RESOURCE_TYPE_CODE,
   WEB_LINK_RESOURCE_TYPE_CODE,
   type ResourceItem,
 } from '@/api/externalResource';
@@ -78,11 +79,11 @@ export function recognizeExcerptFieldsFromUrl(
     };
   }
 
-  if (typeCode === BOOK_RESOURCE_TYPE_CODE) {
+  if (typeCode === BOOK_RESOURCE_TYPE_CODE || typeCode === DOCUMENT_RESOURCE_TYPE_CODE) {
     if (!parsed.anchor) {
       return {
         ok: false,
-        message: '图书节选请手动填写页码；若粘贴网页链接，请使用带 # 定位的地址',
+        message: '文档/图书节选请手动填写页码；若粘贴网页链接，请使用带 # 定位的地址',
       };
     }
 

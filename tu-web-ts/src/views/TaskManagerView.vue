@@ -22,6 +22,7 @@ import {
   type IntegrationConnection,
   type TaskRelation,
 } from '@/api/taskIntegration';
+import AppHelpButton from '@/components/AppHelpButton.vue';
 import { useWorkspaceStore } from '@/stores/workspace';
 
 const workspaceStore = useWorkspaceStore();
@@ -348,6 +349,7 @@ onMounted(() => {
         <span class="task-header__status" :class="{ 'task-header__status--ok': configured }">
           {{ activeProvider?.name || 'Kaneo' }} · {{ configured ? '已连接' : '未连接' }}
         </span>
+        <AppHelpButton />
         <RouterLink class="task-header__link" to="/">返回工作区</RouterLink>
       </div>
     </header>

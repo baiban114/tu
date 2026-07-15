@@ -7,6 +7,7 @@ import {
   parseExternalUrl,
   type ExternalUrlRegistrationMode,
 } from '@/utils/externalUrlResource';
+import { normalizeResourcePositionLocatorKey } from '@/utils/resourcePositionLocator';
 import {
   createResourceExcerptMock,
   createResourceItemMock,
@@ -442,10 +443,13 @@ export function deleteResourceChapter(id: string): Promise<void> {
 
 export const BOOK_RESOURCE_TYPE_CODE = 'book';
 export const WEB_LINK_RESOURCE_TYPE_CODE = 'web-link';
+export const DOCUMENT_RESOURCE_TYPE_CODE = 'document';
 
-/** Resource types that support excerpt CRUD (books and registered web links). */
+/** Resource types that support excerpt CRUD (books, documents, and registered web links). */
 export function supportsResourceExcerpts(typeCode: string | undefined | null): boolean {
-  return typeCode === BOOK_RESOURCE_TYPE_CODE || typeCode === WEB_LINK_RESOURCE_TYPE_CODE;
+  return typeCode === BOOK_RESOURCE_TYPE_CODE
+    || typeCode === WEB_LINK_RESOURCE_TYPE_CODE
+    || typeCode === DOCUMENT_RESOURCE_TYPE_CODE;
 }
 
 /** Book items may define a multi-level chapter tree. */
@@ -479,7 +483,7 @@ async function ensureWebLinkResourceType(): Promise<ResourceType> {
 }
 
 function normalizeExcerptLocatorKey(locator?: string | null): string {
-  return (locator ?? '').trim().replace(/^#/, '');
+  return normalizeResourcePositionLocatorKey(locator);
 }
 
 async function findWebLinkItem(typeId: string, baseUrl: string, fullHref: string): Promise<ResourceItem | null> {

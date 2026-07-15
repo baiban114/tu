@@ -35,6 +35,7 @@ import {
   formatExcerptLocator,
   parseExternalUrl,
 } from '@/utils/externalUrlResource';
+import { normalizeResourcePositionLocator, normalizeResourcePositionLocatorKey } from '@/utils/resourcePositionLocator';
 import { BUILTIN_URL_CLUSTER_RULES, findWorkByClusterKey, matchUrlCluster } from '@/utils/urlCluster';
 import { HEADING_SOURCE_COMMENT_RE, parseHeadingSourceComment } from '@/utils/headingSource';
 import { createInitialPageContent } from '@/utils/boardPageContent';
@@ -224,6 +225,15 @@ const initialState: MockState = {
       identityFieldKey: 'isbn',
       identityFieldLabel: 'ISBN',
     },
+    {
+      id: 'rt-document',
+      code: 'document',
+      name: '文档',
+      icon: 'document',
+      description: '文档资源，支持节选片段管理',
+      identityFieldKey: 'sourceUrl',
+      identityFieldLabel: '源 URL / 文件标识',
+    },
   ],
   resourceWorks: [
     {
@@ -265,7 +275,7 @@ const initialState: MockState = {
       resourceItemTitle: '示例之书',
       parentId: null,
       title: '第 1 章',
-      locator: 'p.1–p.20',
+      locator: 'page:1-20',
       note: 'Mock 章节',
       sortOrder: 0,
     },
@@ -278,7 +288,7 @@ const initialState: MockState = {
       title: '关于结构化笔记',
       chapterId: 'rc-book-demo-1',
       chapterTitle: '第 1 章',
-      locator: 'p. 12',
+      locator: 'page:12',
       excerptText: '好的笔记系统应当让来源、节选和自己的思考保持清晰关系。',
       note: 'Mock 默认节选',
       sortOrder: 0,
@@ -362,8 +372,8 @@ function getResourceExcerptOrThrow(excerptId: string): ResourceExcerpt {
 
 function ensureExcerptSupportedResourceItem(item: ResourceItem): void {
   const type = getResourceTypeOrThrow(item.typeId);
-  if (type.code !== 'book' && type.code !== 'web-link') {
-    throw new Error('resource excerpts are only supported for book or web-link resources');
+  if (type.code !== 'book' && type.code !== 'web-link' && type.code !== 'document') {
+    throw new Error('resource excerpts are only supported for book, document, or web-link resources');
   }
 }
 
@@ -666,7 +676,7 @@ export function removeResourceItemMock(id: string): void {
 }
 
 function normalizeExcerptLocatorKey(locator?: string | null): string {
-  return (locator ?? '').trim().replace(/^#/, '');
+  return normalizeResourcePositionLocatorKey(locator);
 }
 
 function getLinkTitle(label: string, url: string): string {
@@ -1085,7 +1095,7 @@ export function createResourceExcerptMock(resourceItemId: string, payload: Creat
     title: payload.title.trim(),
     chapterId,
     chapterTitle: chapter?.title,
-    locator: payload.locator || '',
+    locator: normalizeResourcePositionLocator(payload.locator) || undefined,
     excerptText: payload.excerptText?.trim() || undefined,
     note: payload.note || '',
     sortOrder: payload.sortOrder ?? maxOrder + 1,
@@ -1110,7 +1120,7 @@ export function updateResourceExcerptMock(id: string, payload: UpdateResourceExc
     title: payload.title.trim(),
     chapterId,
     chapterTitle: chapter?.title,
-    locator: payload.locator || '',
+    locator: normalizeResourcePositionLocator(payload.locator) || undefined,
     excerptText: payload.excerptText?.trim() || undefined,
     note: payload.note || '',
     sortOrder: payload.sortOrder ?? excerpt.sortOrder,

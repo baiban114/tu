@@ -200,6 +200,7 @@ ResourceType (根下第一层，或虚拟根「外部资源」)
               ├── [book] ResourceChapter (parentId 树，前缀 rc:)
               │     └── ResourceExcerpt (chapterId 匹配)
               ├── [book] 「未归类节选」 (chapterId 为空时)
+              ├── [document] ResourceExcerpt (扁平，resourceItemId 匹配)
               └── [web-link] ResourceExcerpt (扁平，resourceItemId 匹配)
 ```
 

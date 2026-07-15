@@ -135,7 +135,7 @@ public class DocumentMarkingAgentService {
 
         String runId = "dm-" + UUID.randomUUID();
         String systemPrompt = systemPrompt();
-        String userPrompt = userPrompt(page, blocks, protectedEntries, kbId);
+        String userPrompt = userPrompt(page, blocks, protectedEntries, kbId, request);
         AiAgentRuntimeConfig config = configResolver.runtimeConfig();
         AiAgentRunLogEntity runLog = startRunLog(config, systemPrompt, userPrompt);
         AiChatCompletionResult completion = null;
@@ -166,7 +166,9 @@ public class DocumentMarkingAgentService {
                 pageId,
                 kbId,
                 parse(completion.content()),
-                protectedLocators
+                protectedLocators,
+                request,
+                OutlineExtractor.extractPageOutline(pageId, blocks)
             );
             DocumentMarkingResponseDto response = new DocumentMarkingResponseDto(runId, suggestions);
             markRunLogSuccess(runLog, completion, serializeOutput(response));
@@ -187,7 +189,9 @@ public class DocumentMarkingAgentService {
         String pageId,
         String kbId,
         JsonNode root,
-        Set<String> protectedLocators
+        Set<String> protectedLocators,
+        AnalyzeDocumentMarkingRequest request,
+        List<OutlineExtractor.ExtractedOutlineNode> outline
     ) {
         JsonNode suggestionsNode = root.path("suggestions");
         if (!suggestionsNode.isArray()) {
@@ -198,6 +202,11 @@ public class DocumentMarkingAgentService {
             .map(RelationTypeDefDto::typeKey)
             .collect(Collectors.toSet());
         String pagePrefix = "page:" + pageId;
+        Set<String> allowedHeadingBlockIds = allowedHeadingBlockIdsForScope(
+            outline,
+            blankToNull(request.sectionHeadingBlockId()),
+            blankToNull(request.sectionEmbedBlockId())
+        );
 
         List<DocumentMarkingSuggestionDto> result = new ArrayList<>();
         int index = 0;
@@ -214,6 +223,15 @@ public class DocumentMarkingAgentService {
                 continue;
             }
             if (DocumentMarkingContextCollector.isLocatorProtected(locator, protectedLocators)) {
+                continue;
+            }
+            if (!DocumentMarkingContextCollector.suggestionMatchesSectionScope(
+                locator,
+                pageId,
+                blankToNull(request.sectionHeadingBlockId()),
+                blankToNull(request.sectionEmbedBlockId()),
+                allowedHeadingBlockIds
+            )) {
                 continue;
             }
             String relationTypeKey = blankToNull(node.path("relationTypeKey").asText(null));
@@ -316,18 +334,45 @@ public class DocumentMarkingAgentService {
         PageEntity page,
         ArrayNode blocks,
         List<DocumentMarkingContextCollector.ProtectedLocatorEntry> protectedEntries,
-        String kbId
+        String kbId,
+        AnalyzeDocumentMarkingRequest request
     ) {
         String pageId = page.getId();
-        List<OutlineExtractor.ExtractedOutlineNode> outline = OutlineExtractor.extractPageOutline(pageId, blocks);
+        List<OutlineExtractor.ExtractedOutlineNode> outline = filterOutlineForScope(
+            OutlineExtractor.extractPageOutline(pageId, blocks),
+            blankToNull(request.sectionHeadingBlockId()),
+            blankToNull(request.sectionEmbedBlockId())
+        );
         List<DocumentMarkingContextCollector.SectionTextEntry> sections =
-            DocumentMarkingContextCollector.collectSectionTexts(pageId, blocks, SECTION_TEXT_MAX);
+            DocumentMarkingContextCollector.collectScopedSectionTexts(
+                pageId,
+                blocks,
+                blankToNull(request.sectionHeadingBlockId()),
+                blankToNull(request.sectionEmbedBlockId()),
+                blankToNull(request.sectionTitle()),
+                SECTION_TEXT_MAX
+            );
         List<RelationTypeDefDto> relationTypes = relationTypeService.listForKb(kbId);
 
         StringBuilder builder = new StringBuilder();
         builder.append("Page id: ").append(pageId).append('\n');
         builder.append("Page title: ").append(page.getTitle()).append('\n');
         builder.append("Knowledge base id: ").append(kbId).append('\n');
+        String sectionHeadingBlockId = blankToNull(request.sectionHeadingBlockId());
+        String sectionEmbedBlockId = blankToNull(request.sectionEmbedBlockId());
+        String sectionTitle = blankToNull(request.sectionTitle());
+        if (sectionHeadingBlockId != null || sectionEmbedBlockId != null) {
+            builder.append("\nSection scope (ONLY suggest markers within this section):\n");
+            if (sectionTitle != null) {
+                builder.append("- title: ").append(sectionTitle).append('\n');
+            }
+            if (sectionHeadingBlockId != null) {
+                builder.append("- anchor: page:").append(pageId).append(":heading:").append(sectionHeadingBlockId).append('\n');
+            }
+            if (sectionEmbedBlockId != null) {
+                builder.append("- embed block: page:").append(pageId).append(":block:").append(sectionEmbedBlockId).append('\n');
+            }
+        }
         builder.append("\nAllowed relation types:\n");
         for (RelationTypeDefDto type : relationTypes) {
             builder.append("- ").append(type.typeKey()).append(" (").append(type.label()).append(")\n");
@@ -362,7 +407,68 @@ public class DocumentMarkingAgentService {
         builder.append("\nResource catalog (match existing sources when possible):\n");
         appendResourceCatalog(builder);
         builder.append("\nAnalyze the document and suggest knowledge markers.");
+        if (sectionHeadingBlockId != null || sectionEmbedBlockId != null) {
+            builder.append(" Limit all suggestions to the section scope above.");
+        }
         return builder.toString();
+    }
+
+    private List<OutlineExtractor.ExtractedOutlineNode> filterOutlineForScope(
+        List<OutlineExtractor.ExtractedOutlineNode> outline,
+        String sectionHeadingBlockId,
+        String sectionEmbedBlockId
+    ) {
+        if (sectionHeadingBlockId != null) {
+            int startIndex = -1;
+            int startLevel = 0;
+            for (int i = 0; i < outline.size(); i += 1) {
+                if (sectionHeadingBlockId.equals(outline.get(i).sourceBlockId())) {
+                    startIndex = i;
+                    startLevel = outline.get(i).level();
+                    break;
+                }
+            }
+            if (startIndex < 0) {
+                return outline;
+            }
+            List<OutlineExtractor.ExtractedOutlineNode> filtered = new ArrayList<>();
+            filtered.add(outline.get(startIndex));
+            for (int i = startIndex + 1; i < outline.size(); i += 1) {
+                if (outline.get(i).level() <= startLevel) {
+                    break;
+                }
+                filtered.add(outline.get(i));
+            }
+            return filtered;
+        }
+        if (sectionEmbedBlockId != null) {
+            return outline.stream()
+                .filter(node -> sectionEmbedBlockId.equals(node.sourceBlockId()))
+                .toList();
+        }
+        return outline;
+    }
+
+    private Set<String> allowedHeadingBlockIdsForScope(
+        List<OutlineExtractor.ExtractedOutlineNode> outline,
+        String sectionHeadingBlockId,
+        String sectionEmbedBlockId
+    ) {
+        Set<String> ids = new HashSet<>();
+        List<OutlineExtractor.ExtractedOutlineNode> scoped = filterOutlineForScope(
+            outline,
+            sectionHeadingBlockId,
+            sectionEmbedBlockId
+        );
+        for (OutlineExtractor.ExtractedOutlineNode node : scoped) {
+            if (node.sourceBlockId() != null && !node.sourceBlockId().isBlank()) {
+                ids.add(node.sourceBlockId());
+            }
+        }
+        if (sectionHeadingBlockId != null) {
+            ids.add(sectionHeadingBlockId);
+        }
+        return ids;
     }
 
     private void appendResourceCatalog(StringBuilder builder) {

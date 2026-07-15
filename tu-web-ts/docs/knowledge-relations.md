@@ -45,6 +45,19 @@ flowchart LR
 
 `snapshot` JSON 存展示用标题等；跳转以 locator 为准。反查路径：`by-anchor` → 找到关联知识点 → `by-point` 展示点间关系。
 
+### 3.1 资源内定位（节选 `locator` 字段）
+
+存储于 `external_resource_excerpt.locator`，表示节选在**外部资源**内的位置（与证据层 `resource:{itemId}:excerpt:{excerptId}` 互补）：
+
+| 类型 | 规范格式 | 示例 | 展示 |
+|------|---------|------|------|
+| 锚点 | `anchor:{fragment}` | `anchor:intro` | `#intro` |
+| 页码 | `page:{n}` | `page:18` | 第 18 页 |
+| 页码范围 | `page:{start}-{end}` | `page:1-20` | 第 1–20 页 |
+| 段落 | `paragraph:{n}` | `paragraph:3` | 第 3 段 |
+
+工具：`tu-web-ts/src/utils/resourcePositionLocator.ts`；UI：`ResourcePositionLocatorField.vue`（标记节选、资源管理节选表单）。粘贴带 `#` 的链接时自动写入 `anchor:…`；历史 `#…` / `p. 18` 等形式读入时自动规范化。
+
 ## 4. 关系类型注册表
 
 - 系统预置（`kbId = null`）：`source`、`basis`、`case`、`cites`、`related`、`association`（联想）、`prerequisite`
@@ -80,7 +93,10 @@ flowchart LR
 - 编辑真源：`TextAnnotation.markerSource`、`HeadingSourceBinding.markerSource`（缺省 `user`）；节选 `external_resource_excerpt.metadata_json.markerSource`
 - `source_provenance=ai`：用户确认后的 `createRelation` 建议；rebuild **不删**
 - Protected：手动 headingSource / basis / 用户建链 / 用户节选 → AI 不得覆盖，作为 prompt 参考
-- 触发：`TuEditorPage` 工具栏「AI 分析标记」→ SSE `POST /api/ai/document-marking/analyze/stream` → `DocumentMarkingReviewPanel` 预览确认 → 前端 `applyAiMarkingSuggestions`
+- 触发：
+  - **整页**：`TuEditorPage` 工具栏「AI 分析标记（整页）」
+  - **本节**：节手柄「AI 分析标记（本节）」→ 请求体带 `sectionHeadingBlockId`（本地标题节）或 `sectionEmbedBlockId`（引用组/引用内节）+ `sectionTitle`
+  - SSE `POST /api/ai/document-marking/analyze/stream` → `DocumentMarkingReviewPanel` 预览确认 → 前端 `applyAiMarkingSuggestions`
 - Mock：`src/api/aiDocumentMarking.ts` + `src/mock/aiDocumentMarking.ts`
 
 ## 7. API
@@ -121,6 +137,12 @@ flowchart LR
 | POST | `/api/ai/document-marking/analyze/stream`（SSE，`completed.result` 为 suggestions JSON） |
 | DELETE | `/api/ai/document-marking/pages/{pageId}/ai-markers`（清理本页 `source_provenance=ai` 关系） |
 
+### 知识图谱（Phase 2）
+
+| 方法 | 路径 |
+|------|------|
+| GET | `/api/kbs/{kbId}/knowledge-graph`（query: `mode=full\|centered\|prerequisite`、`centerPointId`、`depth`、`direction=out\|in\|both`、`relationTypeKeys`、`maxNodes`） |
+
 ## 8. UI 约定
 
 - 创建：`SelectionToolbar` →「建立关联」→ 弹窗「关联到知识点」：单选要挂靠的知识点；编辑器带入的可定位内容静默写入 `relation.from`，**不展示**证据栏、不做知识点↔知识点双选
@@ -128,13 +150,15 @@ flowchart LR
 - 目标知识点可在 Picker 知识点树内直接新建：工具栏 `+` 创建顶层知识点，节点右键「添加子知识点」创建子级；新建知识点不自动绑定当前证据（独立于内容的标签式实体）
 - 知识点树支持重命名：节点右键「重命名」，或选中节点后按 `F2`（管理面板与关联弹窗共用 `KnowledgePointTree`）
 - 管理：资源管理「知识点」Tab（[`KnowledgePointTree.vue`](../src/components/knowledge/KnowledgePointTree.vue) 分类树为主：拖拽调层级、右键新建/重命名/删除；右侧详情展示证据/别名/关联）
+- **知识图谱**：资源管理「知识图谱」Tab（[`KnowledgeGraphPanel.vue`](../src/components/knowledge/KnowledgeGraphPanel.vue)）：全库 / 以选中点为中心 / 前置子图；中心点用通用知识点选择器（见下）
+- **知识点选择器（通用）**：[`KnowledgePointPickerPanel.vue`](../src/components/knowledge/KnowledgePointPickerPanel.vue)（树 + 搜索）；[`KnowledgePointPickerDialog.vue`](../src/components/knowledge/KnowledgePointPickerDialog.vue)（弹窗）；全局 `openKnowledgePointPicker()`（[`knowledgePointPicker.ts`](../src/utils/knowledgePointPicker.ts) + [`KnowledgePointPickerHost.vue`](../src/components/knowledge/KnowledgePointPickerHost.vue) 挂载于 `App.vue`）。任意页面可 `await openKnowledgePointPicker({ kbId, title, selectedId })` 或声明式 `<KnowledgePointPickerDialog v-model:visible @select />`
 - **从结构生成**：知识点 Tab 工具栏「从结构生成…」→ 勾选知识库页面树 / 文档标题结构；若工作区有当前页则仅处理该页。完成后刷新分类树
 - **别名**：选中知识点后在详情区维护别名 chips；列表搜索与 Picker 搜索 Tab 可命中别名（副标题展示匹配别名）
-- 查看：`NotePopover`、标题来源徽章、资源管理「知识关联」Tab
+- 查看：正文内点击标注/依据高亮或标题来源徽章，均打开同一 `NotePopover`（来源、笔记/依据、关联知识点）；资源管理「知识关联」Tab 为全库视图
 - **AI 标记**：文档页工具栏「AI 分析标记」；来源/依据徽章与关系列表显示 `AI` chip；可「转为手动标记」（`markerSource` → `user`）
 - 跳转：`navigateKnowledgePoint(pointId)` → 取 `is_primary` 证据 → `navigateKnowledgeAnchor(locator)`
 
-## 9. Phase 2/3（未实施）
+## 9. Phase 2/3
 
-- **Phase 2**：知识点 + 关系 → X6 知识图谱
-- **Phase 3**：`prerequisite` 子图 + `estimated_hours` 学习路线与门禁
+- **Phase 2（已实施）**：知识点 + 关系 → X6 知识图谱（资源管理「知识图谱」Tab；API `GET /api/kbs/{kbId}/knowledge-graph`）
+- **Phase 3（未实施）**：`prerequisite` 子图 + `estimated_hours` 学习路线与门禁

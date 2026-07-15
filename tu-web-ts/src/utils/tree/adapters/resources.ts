@@ -300,7 +300,7 @@ function buildTypeBranch(
 }
 
 /**
- * ResourceType → ResourceWork → ResourceItem → (book: Chapter → Excerpt | 未归类节选; web-link: Excerpt)
+ * ResourceType → ResourceWork → ResourceItem → (book: Chapter → Excerpt | 未归类节选; document/web-link: Excerpt)
  */
 export function resourcesToTreeNodes(input: ResourceTreeInput): TreeNode<ResourceTreeMeta>[] {
   const {

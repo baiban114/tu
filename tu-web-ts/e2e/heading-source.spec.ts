@@ -15,33 +15,104 @@ test.beforeEach(async ({ page }) => {
 
 async function waitForHeadingSourceInContent(page: import('@playwright/test').Page) {
   await page.waitForFunction(() => {
+    type StoredDocNode = {
+      type?: string
+      attrs?: {
+        sourceBinding?: {
+          resourceItemId?: string
+          resourceExcerptId?: string
+        }
+      }
+      content?: StoredDocNode[]
+    }
+
+    const hasBinding = (content: { content?: string; document?: { content?: StoredDocNode[] } }): boolean => {
+      if (typeof content.content === 'string' && content.content.includes('<!--tu:heading-source')) {
+        return true
+      }
+      const walk = (nodes?: StoredDocNode[]): boolean => {
+        if (!nodes) return false
+        for (const node of nodes) {
+          const binding = node.attrs?.sourceBinding
+          if (node.type === 'heading' && binding?.resourceItemId && binding?.resourceExcerptId) {
+            return true
+          }
+          if (walk(node.content)) return true
+        }
+        return false
+      }
+      return walk(content.document?.content)
+    }
+
     const state = JSON.parse(window.localStorage.getItem('tu:mock-state') || '{}')
-    return Object.values(state.contents || {}).some((content: { content?: string }) => (
-      typeof content.content === 'string' && content.content.includes('<!--tu:heading-source')
-    ))
+    return Object.values(state.contents || {}).some((content) => hasBinding(content as { content?: string; document?: { content?: StoredDocNode[] } }))
   })
 }
 
 async function expectMockReferencesIncludeHeadingSource(page: import('@playwright/test').Page) {
   const found = await page.evaluate(() => {
     const state = JSON.parse(localStorage.getItem('tu:mock-state') || '{}') as {
-      contents?: Record<string, { content?: string }>
+      contents?: Record<string, StoredPageContent>
       resourceExcerpts?: Array<{ id: string; title?: string }>
     }
-    const re = /<!--tu:heading-source\s+([^>]+)-->/g
-    for (const pc of Object.values(state.contents || {})) {
-      if (!pc?.content) continue
-      re.lastIndex = 0
-      let match: RegExpExecArray | null
-      while ((match = re.exec(pc.content)) !== null) {
-        const attrs: Record<string, string> = {}
-        for (const part of match[1].matchAll(/([\w-]+)="([^"]*)"/g)) {
-          attrs[part[1]] = part[2]
+
+    type StoredPageContent = {
+      content?: string
+      document?: { content?: StoredDocNode[] }
+    }
+
+    type StoredDocNode = {
+      type?: string
+      attrs?: {
+        sourceBinding?: {
+          resourceItemId?: string
+          resourceExcerptId?: string
+          snapshot?: { excerptTitle?: string; resourceTitle?: string }
         }
-        if (!attrs.excerpt || !attrs.item) continue
-        const excerpt = (state.resourceExcerpts || []).find((entry) => entry.id === attrs.excerpt)
-        if (excerpt) return excerpt.title || attrs.title || true
       }
+      content?: StoredDocNode[]
+    }
+
+    function findHeadingSourceBinding(content: StoredPageContent) {
+      if (typeof content.content === 'string') {
+        const re = /<!--tu:heading-source\s+([^>]+)-->/g
+        let match: RegExpExecArray | null
+        while ((match = re.exec(content.content)) !== null) {
+          const attrs: Record<string, string> = {}
+          for (const part of match[1].matchAll(/([\w-]+)="([^"]*)"/g)) {
+            attrs[part[1]] = part[2]
+          }
+          if (attrs.item && attrs.excerpt) {
+            return { resourceItemId: attrs.item, resourceExcerptId: attrs.excerpt, excerptTitle: attrs.title }
+          }
+        }
+      }
+
+      const walk = (nodes?: StoredDocNode[]): ReturnType<typeof findHeadingSourceBinding> => {
+        if (!nodes) return null
+        for (const node of nodes) {
+          const binding = node.attrs?.sourceBinding
+          if (node.type === 'heading' && binding?.resourceItemId && binding?.resourceExcerptId) {
+            return {
+              resourceItemId: binding.resourceItemId,
+              resourceExcerptId: binding.resourceExcerptId,
+              excerptTitle: binding.snapshot?.excerptTitle,
+            }
+          }
+          const nested = walk(node.content)
+          if (nested) return nested
+        }
+        return null
+      }
+
+      return walk(content.document?.content) ?? null
+    }
+
+    for (const pc of Object.values(state.contents || {})) {
+      const binding = findHeadingSourceBinding(pc)
+      if (!binding) continue
+      const excerpt = (state.resourceExcerpts || []).find((entry) => entry.id === binding.resourceExcerptId)
+      if (excerpt) return excerpt.title || binding.excerptTitle || true
     }
     return null
   })
@@ -49,20 +120,25 @@ async function expectMockReferencesIncludeHeadingSource(page: import('@playwrigh
   return String(found)
 }
 
-async function selectFirstHeading(page: import('@playwright/test').Page) {
+async function clickHeadingWithoutSelection(page: import('@playwright/test').Page) {
   const heading = page.locator('.ProseMirror h1, .ProseMirror h2, .ProseMirror h3').first()
   await expect(heading).toBeVisible()
   await heading.click()
   await page.keyboard.press('Home')
-  await page.keyboard.down('Shift')
-  await page.keyboard.press('End')
-  await page.keyboard.up('Shift')
 }
 
-async function bindHeadingSourceFromSelection(page: import('@playwright/test').Page) {
-  const markSourceButton = page.getByRole('button', { name: '标记来源' })
-  await expect(markSourceButton).toBeVisible({ timeout: 8000 })
-  await markSourceButton.click()
+async function openSectionHandleMenu(page: import('@playwright/test').Page, itemLabel: string) {
+  const heading = page.locator('.ProseMirror h1, .ProseMirror h2, .ProseMirror h3').first()
+  await expect(heading).toBeVisible()
+  await heading.hover()
+  const handle = page.locator('.tu-editor-wrapper > .hover-handle').first()
+  await expect(handle).toBeVisible({ timeout: 5000 })
+  await handle.hover()
+  await page.locator('.hover-handle__item', { hasText: itemLabel }).click()
+}
+
+async function bindHeadingSourceFromSectionHandle(page: import('@playwright/test').Page) {
+  await openSectionHandleMenu(page, '标记来源')
 
   const dialog = page.getByRole('dialog', { name: '标记标题来源' })
   await expect(dialog).toBeVisible()
@@ -70,17 +146,25 @@ async function bindHeadingSourceFromSelection(page: import('@playwright/test').P
   await dialog.getByRole('button', { name: /关于结构化笔记/ }).click()
 }
 
+test('does not show selection toolbar on heading click without text selection', async ({ page }) => {
+  await page.goto('/')
+  await expect(page.locator('.ProseMirror')).toBeVisible()
+
+  await clickHeadingWithoutSelection(page)
+  await expect(page.locator('.selection-toolbar')).toHaveCount(0)
+})
+
 test('binds heading source, persists after reload, and indexes mock references', async ({ page }) => {
   test.setTimeout(60_000)
   await page.goto('/')
   await expect(page.locator('.ProseMirror')).toBeVisible()
 
-  await selectFirstHeading(page)
-  await bindHeadingSourceFromSelection(page)
+  await bindHeadingSourceFromSectionHandle(page)
 
   await expect(page.locator('.heading-source-badge')).toBeVisible()
   await expect(page.locator('.heading-source-badge')).toContainText('关于结构化笔记')
   await expect(page.locator('.page-toc__source')).toBeVisible()
+  await page.waitForTimeout(700)
   await waitForHeadingSourceInContent(page)
   const excerptTitle = await expectMockReferencesIncludeHeadingSource(page)
   expect(excerptTitle).toContain('关于结构化笔记')
@@ -90,16 +174,13 @@ test('binds heading source, persists after reload, and indexes mock references',
   await expect(page.locator('.page-toc__source')).toBeVisible()
 })
 
-test('clears heading source from selection toolbar', async ({ page }) => {
+test('clears heading source from section handle menu', async ({ page }) => {
   await page.goto('/')
   await expect(page.locator('.ProseMirror')).toBeVisible()
 
-  await selectFirstHeading(page)
-  await bindHeadingSourceFromSelection(page)
+  await bindHeadingSourceFromSectionHandle(page)
   await expect(page.locator('.heading-source-badge')).toBeVisible()
 
-  await selectFirstHeading(page)
-  await expect(page.getByRole('button', { name: '解除来源' })).toBeVisible({ timeout: 8000 })
-  await page.getByRole('button', { name: '解除来源' }).click()
+  await openSectionHandleMenu(page, '解除来源')
   await expect(page.locator('.heading-source-badge')).toHaveCount(0)
 })
