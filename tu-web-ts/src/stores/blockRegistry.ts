@@ -8,6 +8,8 @@ import {
   type BlockWithMeta,
 } from '@/api/page';
 import type { Block, PageContent, EmbeddedObject } from '@/api/types';
+import { tipTapToBlocks } from '@/editor/converters';
+import { isV2PageContent, resolvePageDocument } from '@/editor/pageDocument';
 
 const EMBED_RE = /<!--tu:embed\s+id="([^"]+)"\s+type="([^"]+)"\s*-->/g;
 
@@ -103,13 +105,15 @@ export const useBlockRegistryStore = defineStore('blockRegistry', () => {
   }
 
   function registerPageContent(pc: PageContent, pageId: string, pageTitle: string) {
-    const blocks = pageContentToBlocks(pc);
+    const blocks = isV2PageContent(pc)
+      ? tipTapToBlocks(resolvePageDocument(pc), [])
+      : pageContentToBlocks(pc);
     pageBlocks.set(pageId, blocks);
 
-    for (const embed of pc.embeds || []) {
-      if (embed.type === 'ref' || embed.type === 'spacer') continue;
-      const block = embedToBlock(embed);
-      registry.set(embed.id, { block, pageId, pageTitle });
+    for (const block of blocks) {
+      if (block.type === 'ref' || block.type === 'spacer') continue;
+      if (block.type === 'richtext' || block.type === 'richText') continue;
+      registry.set(block.id, { block, pageId, pageTitle });
     }
   }
 

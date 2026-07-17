@@ -14,6 +14,7 @@ import com.tu.backend.knowledgerelation.entity.KnowledgePointEntity;
 import com.tu.backend.knowledgerelation.repository.KnowledgePointAliasRepository;
 import com.tu.backend.knowledgerelation.repository.KnowledgePointAnchorRepository;
 import com.tu.backend.knowledgerelation.repository.KnowledgePointRepository;
+import com.tu.backend.knowledgerelation.repository.KnowledgeRelationRepository;
 import com.tu.backend.knowledge.repository.KnowledgeBaseRepository;
 import java.util.List;
 import java.util.Optional;
@@ -43,10 +44,12 @@ class KnowledgePointServiceAliasTest {
             return entity;
         });
 
+        KnowledgeRelationRepository relationRepository = org.mockito.Mockito.mock(KnowledgeRelationRepository.class);
         KnowledgePointService service = new KnowledgePointService(
             pointRepository,
             anchorRepository,
             aliasRepository,
+            relationRepository,
             kbRepository,
             objectMapper
         );
@@ -89,10 +92,12 @@ class KnowledgePointServiceAliasTest {
         when(pointRepository.findById("kp-1")).thenReturn(Optional.of(point));
         when(aliasRepository.findByKnowledgePointIdOrderByAliasAsc("kp-1")).thenReturn(List.of(existing));
 
+        KnowledgeRelationRepository relationRepository = org.mockito.Mockito.mock(KnowledgeRelationRepository.class);
         KnowledgePointService service = new KnowledgePointService(
             pointRepository,
             anchorRepository,
             aliasRepository,
+            relationRepository,
             kbRepository,
             objectMapper
         );

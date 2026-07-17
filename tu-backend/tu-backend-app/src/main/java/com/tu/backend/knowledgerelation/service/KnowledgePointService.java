@@ -16,9 +16,11 @@ import com.tu.backend.knowledgerelation.dto.UpdateKnowledgePointRequest;
 import com.tu.backend.knowledgerelation.entity.KnowledgePointAliasEntity;
 import com.tu.backend.knowledgerelation.entity.KnowledgePointAnchorEntity;
 import com.tu.backend.knowledgerelation.entity.KnowledgePointEntity;
+import com.tu.backend.knowledgerelation.entity.KnowledgeRelationEntity;
 import com.tu.backend.knowledgerelation.repository.KnowledgePointAliasRepository;
 import com.tu.backend.knowledgerelation.repository.KnowledgePointAnchorRepository;
 import com.tu.backend.knowledgerelation.repository.KnowledgePointRepository;
+import com.tu.backend.knowledgerelation.repository.KnowledgeRelationRepository;
 import com.tu.backend.knowledge.repository.KnowledgeBaseRepository;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -28,10 +30,12 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 @Service
@@ -43,6 +47,7 @@ public class KnowledgePointService {
     private final KnowledgePointRepository knowledgePointRepository;
     private final KnowledgePointAnchorRepository knowledgePointAnchorRepository;
     private final KnowledgePointAliasRepository knowledgePointAliasRepository;
+    private final KnowledgeRelationRepository knowledgeRelationRepository;
     private final KnowledgeBaseRepository knowledgeBaseRepository;
     private final ObjectMapper objectMapper;
 
@@ -50,12 +55,14 @@ public class KnowledgePointService {
         KnowledgePointRepository knowledgePointRepository,
         KnowledgePointAnchorRepository knowledgePointAnchorRepository,
         KnowledgePointAliasRepository knowledgePointAliasRepository,
+        KnowledgeRelationRepository knowledgeRelationRepository,
         KnowledgeBaseRepository knowledgeBaseRepository,
         ObjectMapper objectMapper
     ) {
         this.knowledgePointRepository = knowledgePointRepository;
         this.knowledgePointAnchorRepository = knowledgePointAnchorRepository;
         this.knowledgePointAliasRepository = knowledgePointAliasRepository;
+        this.knowledgeRelationRepository = knowledgeRelationRepository;
         this.knowledgeBaseRepository = knowledgeBaseRepository;
         this.objectMapper = objectMapper;
     }
@@ -165,6 +172,32 @@ public class KnowledgePointService {
             throw new BusinessException(40000, "no fields to update");
         }
         return toDto(knowledgePointRepository.save(entity));
+    }
+
+    @Transactional
+    public KnowledgePointDto mergePoints(String sourceId, String targetId) {
+        if (sourceId.equals(targetId)) {
+            throw new BusinessException(40000, "cannot merge a knowledge point into itself");
+        }
+        KnowledgePointEntity source = findPoint(sourceId);
+        KnowledgePointEntity target = findPoint(targetId);
+        if (!source.getKbId().equals(target.getKbId())) {
+            throw new BusinessException(40000, "knowledge points must belong to the same knowledge base");
+        }
+        validateNotMoveToSelfOrDescendant(source, targetId);
+
+        String kbId = source.getKbId();
+        reparentChildrenToTarget(sourceId, targetId, kbId);
+        mergeScalarFields(source, target);
+        migrateAnchors(sourceId, targetId);
+        migrateAliases(source, target);
+        migrateRelations(kbId, sourceId, targetId);
+
+        knowledgePointAnchorRepository.deleteByKnowledgePointId(sourceId);
+        knowledgePointAliasRepository.deleteByKnowledgePointId(sourceId);
+        knowledgePointRepository.delete(source);
+
+        return toDto(knowledgePointRepository.save(target));
     }
 
     @Transactional
@@ -297,6 +330,152 @@ public class KnowledgePointService {
 
     KnowledgePointEntity findPointEntity(String id) {
         return findPoint(id);
+    }
+
+    private void reparentChildrenToTarget(String sourceId, String targetId, String kbId) {
+        int nextOrder = nextSortOrder(kbId, targetId);
+        for (KnowledgePointEntity child : knowledgePointRepository.findByKbIdOrderBySortOrderAscTitleAsc(kbId)) {
+            if (!sourceId.equals(child.getParentId())) {
+                continue;
+            }
+            child.setParentId(targetId);
+            child.setSortOrder(nextOrder++);
+            knowledgePointRepository.save(child);
+        }
+    }
+
+    private void mergeScalarFields(KnowledgePointEntity source, KnowledgePointEntity target) {
+        String sourceSummary = blankToNull(source.getSummary());
+        String targetSummary = blankToNull(target.getSummary());
+        if (targetSummary == null && sourceSummary != null) {
+            target.setSummary(sourceSummary);
+        } else if (targetSummary != null && sourceSummary != null) {
+            target.setSummary(targetSummary + "\n\n" + sourceSummary);
+        }
+        if (target.getEstimatedHours() == null && source.getEstimatedHours() != null) {
+            target.setEstimatedHours(source.getEstimatedHours());
+        }
+    }
+
+    private void migrateAnchors(String sourceId, String targetId) {
+        Set<String> targetLocators = knowledgePointAnchorRepository
+            .findByKnowledgePointIdOrderByPrimaryAnchorDescCreatedAtAsc(targetId)
+            .stream()
+            .map(KnowledgePointAnchorEntity::getLocator)
+            .collect(Collectors.toSet());
+        boolean targetHasPrimary = knowledgePointAnchorRepository
+            .findByKnowledgePointIdOrderByPrimaryAnchorDescCreatedAtAsc(targetId)
+            .stream()
+            .anyMatch(anchor -> Boolean.TRUE.equals(anchor.getPrimaryAnchor()));
+
+        for (KnowledgePointAnchorEntity anchor : knowledgePointAnchorRepository
+            .findByKnowledgePointIdOrderByPrimaryAnchorDescCreatedAtAsc(sourceId)) {
+            if (targetLocators.contains(anchor.getLocator())) {
+                knowledgePointAnchorRepository.delete(anchor);
+                continue;
+            }
+            anchor.setKnowledgePointId(targetId);
+            if (Boolean.TRUE.equals(anchor.getPrimaryAnchor()) && !targetHasPrimary) {
+                clearPrimaryFlag(targetId);
+                anchor.setPrimaryAnchor(true);
+                targetHasPrimary = true;
+            } else if (Boolean.TRUE.equals(anchor.getPrimaryAnchor())) {
+                anchor.setPrimaryAnchor(false);
+            }
+            knowledgePointAnchorRepository.save(anchor);
+            targetLocators.add(anchor.getLocator());
+        }
+    }
+
+    private void migrateAliases(KnowledgePointEntity source, KnowledgePointEntity target) {
+        Set<String> existingAliases = knowledgePointAliasRepository
+            .findByKnowledgePointIdOrderByAliasAsc(target.getId())
+            .stream()
+            .map(alias -> alias.getAlias().toLowerCase(Locale.ROOT))
+            .collect(Collectors.toCollection(HashSet::new));
+        existingAliases.add(target.getTitle().toLowerCase(Locale.ROOT));
+
+        List<String> candidates = new ArrayList<>();
+        candidates.add(source.getTitle());
+        knowledgePointAliasRepository.findByKnowledgePointIdOrderByAliasAsc(source.getId())
+            .forEach(alias -> candidates.add(alias.getAlias()));
+
+        for (String candidate : candidates) {
+            if (candidate == null || candidate.isBlank()) {
+                continue;
+            }
+            String trimmed = candidate.trim();
+            String normalized = trimmed.toLowerCase(Locale.ROOT);
+            if (existingAliases.contains(normalized)) {
+                continue;
+            }
+            KnowledgePointAliasEntity entity = new KnowledgePointAliasEntity();
+            entity.setId(RelationTypeService.newId("kpal"));
+            entity.setKnowledgePointId(target.getId());
+            entity.setAlias(trimmed);
+            knowledgePointAliasRepository.save(entity);
+            existingAliases.add(normalized);
+        }
+    }
+
+    private void migrateRelations(String kbId, String sourceId, String targetId) {
+        List<KnowledgeRelationEntity> touching = new ArrayList<>();
+        touching.addAll(knowledgeRelationRepository.findByKbIdAndFromPointIdOrderByUpdatedAtDesc(kbId, sourceId));
+        touching.addAll(knowledgeRelationRepository.findByKbIdAndToPointIdOrderByUpdatedAtDesc(kbId, sourceId));
+
+        Set<String> seenIds = new HashSet<>();
+        List<KnowledgeRelationEntity> uniqueTouching = new ArrayList<>();
+        for (KnowledgeRelationEntity relation : touching) {
+            if (seenIds.add(relation.getId())) {
+                uniqueTouching.add(relation);
+            }
+        }
+
+        for (KnowledgeRelationEntity relation : uniqueTouching) {
+            if (sourceId.equals(relation.getFromPointId())) {
+                relation.setFromPointId(targetId);
+            }
+            if (sourceId.equals(relation.getToPointId())) {
+                relation.setToPointId(targetId);
+            }
+            if (isSelfLoopRelation(relation)) {
+                knowledgeRelationRepository.delete(relation);
+            } else {
+                knowledgeRelationRepository.save(relation);
+            }
+        }
+
+        Map<String, KnowledgeRelationEntity> deduped = new HashMap<>();
+        List<KnowledgeRelationEntity> toDelete = new ArrayList<>();
+        for (KnowledgeRelationEntity relation : knowledgeRelationRepository.findByKbIdOrderByUpdatedAtDescCreatedAtDesc(kbId)) {
+            if (isSelfLoopRelation(relation)) {
+                toDelete.add(relation);
+                continue;
+            }
+            String key = relationDedupKey(relation);
+            KnowledgeRelationEntity existing = deduped.get(key);
+            if (existing == null) {
+                deduped.put(key, relation);
+            } else {
+                toDelete.add(relation);
+            }
+        }
+        for (KnowledgeRelationEntity relation : toDelete) {
+            knowledgeRelationRepository.delete(relation);
+        }
+    }
+
+    private static boolean isSelfLoopRelation(KnowledgeRelationEntity relation) {
+        String from = relation.getFromPointId();
+        String to = relation.getToPointId();
+        return from != null && from.equals(to);
+    }
+
+    private static String relationDedupKey(KnowledgeRelationEntity relation) {
+        return relation.getKbId()
+            + "|" + relation.getRelationTypeKey()
+            + "|" + Objects.toString(relation.getFromPointId(), "")
+            + "|" + Objects.toString(relation.getToPointId(), "");
     }
 
     Map<String, String> loadTitles(String kbId, Iterable<String> pointIds) {

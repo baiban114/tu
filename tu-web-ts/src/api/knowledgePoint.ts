@@ -3,7 +3,9 @@ import type {
   KnowledgePoint,
   KnowledgePointAlias,
   KnowledgePointAnchor,
+  KnowledgePointGenerationPreview,
   KnowledgePointGenerationResult,
+  PageKnowledgeContext,
 } from '@/api/types';
 import { request } from './http';
 import { isMockDataSource } from '@/dev/dataSource';
@@ -16,6 +18,9 @@ import {
   deleteKnowledgePointAliasMock,
   deleteKnowledgePointMock,
   generateKnowledgePointsMock,
+  getPageKnowledgeContextMock,
+  mergeKnowledgePointsMock,
+  previewKnowledgePointsMock,
   getKnowledgePointTreeMock,
   listKnowledgePointAliasesMock,
   listKnowledgePointAnchorsMock,
@@ -45,6 +50,11 @@ export async function listKnowledgePointsByLocator(kbId: string, locator: string
   if (isMockDataSource()) return listKnowledgePointsByLocatorMock(kbId, locator);
   const query = new URLSearchParams({ locator });
   return request<KnowledgePoint[]>(`/api/kbs/${kbId}/knowledge-points/by-locator?${query.toString()}`);
+}
+
+export async function getPageKnowledgeContext(kbId: string, pageId: string): Promise<PageKnowledgeContext> {
+  if (isMockDataSource()) return getPageKnowledgeContextMock(kbId, pageId);
+  return request<PageKnowledgeContext>(`/api/kbs/${kbId}/pages/${encodeURIComponent(pageId)}/knowledge-context`);
 }
 
 export async function createKnowledgePoint(
@@ -90,6 +100,17 @@ export async function deleteKnowledgePoint(id: string): Promise<void> {
   await request<void>(`/api/knowledge-points/${id}`, { method: 'DELETE' });
 }
 
+export async function mergeKnowledgePoints(
+  sourcePointId: string,
+  targetPointId: string,
+): Promise<KnowledgePoint> {
+  if (isMockDataSource()) return mergeKnowledgePointsMock(sourcePointId, targetPointId);
+  return request<KnowledgePoint>('/api/knowledge-points/merge', {
+    method: 'POST',
+    body: JSON.stringify({ sourcePointId, targetPointId }),
+  });
+}
+
 export async function listKnowledgePointAnchors(pointId: string): Promise<KnowledgePointAnchor[]> {
   if (isMockDataSource()) return listKnowledgePointAnchorsMock(pointId);
   return request<KnowledgePointAnchor[]>(`/api/knowledge-points/${pointId}/anchors`);
@@ -127,9 +148,20 @@ export async function deleteKnowledgePointAlias(aliasId: string): Promise<void> 
   await request<void>(`/api/knowledge-point-aliases/${aliasId}`, { method: 'DELETE' });
 }
 
-export async function generateKnowledgePoints(
+export async function previewKnowledgePoints(
   kbId: string,
   payload: { sources: string[]; pageIds?: string[] },
+): Promise<KnowledgePointGenerationPreview> {
+  if (isMockDataSource()) return previewKnowledgePointsMock(kbId, payload);
+  return request<KnowledgePointGenerationPreview>(`/api/kbs/${kbId}/knowledge-points/generate/preview`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function generateKnowledgePoints(
+  kbId: string,
+  payload: { sources?: string[]; pageIds?: string[]; locators?: string[] },
 ): Promise<KnowledgePointGenerationResult> {
   if (isMockDataSource()) return generateKnowledgePointsMock(kbId, payload);
   return request<KnowledgePointGenerationResult>(`/api/kbs/${kbId}/knowledge-points/generate`, {

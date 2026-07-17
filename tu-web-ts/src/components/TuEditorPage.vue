@@ -14,6 +14,7 @@ import ExternalResourcePicker from './ExternalResourcePicker.vue'
 import PdfExcerptPicker, { type PdfExcerptPickerMode, type PdfExcerptSelection } from './PdfExcerptPicker.vue'
 import BlockMetadataTagEditor from './BlockMetadataTagEditor.vue'
 import PageTagsBar from './PageTagsBar.vue'
+import PageKnowledgeContextBar from './PageKnowledgeContextBar.vue'
 import TagFilterBar from './TagFilterBar.vue'
 import Toast from './Toast.vue'
 import NoteEditor from './NoteEditor.vue'
@@ -68,7 +69,7 @@ import {
   setActiveTagFilter,
 } from '@/stores/tagFilterSession'
 import { createHeadingBlockId } from '@/utils/headingSource'
-import { registerExternalUrlFromPaste } from '@/api/externalResource'
+import { registerExternalUrlFromPaste, type ResourceExcerpt, type ResourceItem } from '@/api/externalResource'
 import { parseExternalUrl } from '@/utils/externalUrlResource'
 import { getAnnotationSelectionPayload } from '@/editor/annotationText'
 import { useBlockRegistryStore } from '@/stores/blockRegistry'
@@ -89,6 +90,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import type { KnowledgeAnchor } from '@/api/types'
 import {
   buildBlockAnchor,
+  blockAnchor,
   buildSelectionAnchor,
   headingAnchor,
   sectionAnchor,
@@ -558,6 +560,7 @@ interface PendingBasisTarget {
 }
 
 const pendingBasisTarget = ref<PendingBasisTarget | null>(null)
+const pendingMarkExcerptTarget = ref<PendingBasisTarget | null>(null)
 
 const tiptapEditor = computed(() => tuEditorRef.value?.editor ?? null)
 
@@ -927,15 +930,20 @@ const handleMarkResourceExcerptFromSelection = () => {
   const payload = getSelectionAnnotationPayload(selectionFrom.value, selectionTo.value)
   const excerptText = normalizeResourceExcerptSelectionText(payload.selectedText || selectedText.value)
   if (!excerptText) return
-  pendingResourceExcerptText.value = excerptText
-  pendingResourceExcerptTitle.value = buildResourceExcerptTitle(excerptText)
-  resourcePickerMode.value = 'markExcerpt'
-  showResourcePicker.value = true
+  openMarkBlockExcerptPicker(excerptText, buildResourceExcerptTitle(excerptText), {
+    selectedText: excerptText,
+    contextBefore: payload.contextBefore,
+    contextAfter: payload.contextAfter,
+    from: payload.from ?? selectionFrom.value,
+    to: payload.to ?? selectionTo.value,
+    scope: 'text',
+  })
 }
 
-const openMarkBlockExcerptPicker = (text: string, title: string) => {
+const openMarkBlockExcerptPicker = (text: string, title: string, target?: PendingBasisTarget) => {
   const excerptText = normalizeResourceExcerptSelectionText(text)
   if (!excerptText) return
+  pendingMarkExcerptTarget.value = target ?? null
   pendingResourceExcerptText.value = excerptText
   pendingResourceExcerptTitle.value = title || buildResourceExcerptTitle(excerptText)
   resourcePickerMode.value = 'markExcerpt'
@@ -947,8 +955,17 @@ const handleMarkBlockExcerpt = (blockId: string) => {
   if (!editor) return
   const payload = getBlockExcerptContent(editor.state.doc, blockId, tocCollectContext.value)
   if (!payload) return
+  const blockIds = collectBasisBlockIds(editor.state.doc, blockId, tocCollectContext.value)
+  const scope = blockIds.length > 1 ? 'compound' : 'block'
   hideNodeViewToolbar()
-  openMarkBlockExcerptPicker(payload.text, payload.title)
+  openMarkBlockExcerptPicker(payload.text, payload.title, {
+    selectedText: payload.text,
+    contextBefore: '',
+    contextAfter: '',
+    scope,
+    spannedBlockIds: blockIds,
+    spannedBlockMetadata: normalizeSpannedBlockMetadata(blockIds, []),
+  })
 }
 
 const handleMarkNodeViewBlockExcerpt = () => {
@@ -1052,13 +1069,105 @@ const handleBindResourceFromPicker = (payload: { binding: HeadingSourceBinding }
   handleBindHeadingSource(payload)
 }
 
-const handleResourceExcerptCreated = (payload: { excerpt: { title: string } }) => {
+const buildExcerptBinding = (item: ResourceItem, excerpt: ResourceExcerpt): HeadingSourceBinding => ({
+  resourceItemId: item.id,
+  resourceExcerptId: excerpt.id,
+  snapshot: {
+    resourceTitle: item.title,
+    resourceTypeName: item.typeName,
+    workTitle: item.workTitle || undefined,
+    excerptTitle: excerpt.title,
+    excerptLocator: excerpt.locator,
+  },
+})
+
+const saveMarkExcerptAnnotation = (binding: HeadingSourceBinding) => {
+  const target = pendingMarkExcerptTarget.value
+  if (!target) return
+  const now = Date.now()
+  const hasText = !!target.selectedText.trim()
+  const hasSpannedBlocks = (target.spannedBlockIds?.length ?? 0) > 0
+  const scope = target.scope
+  const annotation: TextAnnotation = {
+    id: `excerpt-${now}-${Math.random().toString(36).slice(2, 8)}`,
+    kind: 'excerpt',
+    basisBinding: binding,
+    selectedText: target.selectedText,
+    contextBefore: target.contextBefore,
+    contextAfter: target.contextAfter,
+    note: '',
+    color: '#B3E5FC',
+    createdAt: now,
+    updatedAt: now,
+    from: scope === 'text' && hasText ? target.from : undefined,
+    to: scope === 'text' && hasText ? target.to : undefined,
+    blockId: '',
+    anchorVersion: scope === 'text' && hasText ? 1 : undefined,
+    lastResolvedAt: scope === 'text' && hasText ? now : undefined,
+    unresolved: false,
+    scope,
+    spannedBlockIds: hasSpannedBlocks ? target.spannedBlockIds : undefined,
+    spannedBlockMetadata: hasSpannedBlocks ? target.spannedBlockMetadata : undefined,
+  }
+  localAnnotations.value = [...localAnnotations.value, annotation]
+  applyBlockquoteExcerptBinding(binding, target)
+  emitLocalContentChange()
+  pendingMarkExcerptTarget.value = null
+  showToast(`已标记节选：${binding.snapshot.excerptTitle || binding.snapshot.resourceTitle || '外部资源'}`)
+}
+
+const findBlockquoteBlockIdForTarget = (target: PendingBasisTarget): string | null => {
+  const editor = tuEditorRef.value?.editor
+  if (!editor) return null
+  if (target.scope === 'block' && target.spannedBlockIds?.length === 1) {
+    const blockId = target.spannedBlockIds[0]
+    let found = false
+    editor.state.doc.descendants((node) => {
+      if (node.type.name === 'blockquote' && node.attrs.blockId === blockId) {
+        found = true
+        return false
+      }
+      return true
+    })
+    return found ? blockId : null
+  }
+  if (target.scope === 'text' && typeof target.from === 'number') {
+    let blockId: string | null = null
+    editor.state.doc.descendants((node, pos) => {
+      if (node.type.name !== 'blockquote') return true
+      const innerFrom = pos + 1
+      const innerTo = pos + node.nodeSize - 1
+      if (target.from! >= innerFrom && target.to! <= innerTo) {
+        blockId = String(node.attrs.blockId || '')
+        return false
+      }
+      return true
+    })
+    return blockId
+  }
+  return null
+}
+
+const applyBlockquoteExcerptBinding = (binding: HeadingSourceBinding, target: PendingBasisTarget) => {
+  const blockId = findBlockquoteBlockIdForTarget(target)
+  if (!blockId) return
+  tuEditorRef.value?.applyBlockquoteExcerptBindingByBlockId?.(blockId, binding)
+}
+
+const handleResourceExcerptCreated = (payload: { item: ResourceItem; excerpt: ResourceExcerpt }) => {
+  const hadTarget = !!pendingMarkExcerptTarget.value
+  const binding = buildExcerptBinding(payload.item, payload.excerpt)
+  if (hadTarget) {
+    saveMarkExcerptAnnotation(binding)
+  } else {
+    showToast(`已创建外部资源节选：${payload.excerpt.title}`)
+  }
   showResourcePicker.value = false
   resourcePickerMode.value = 'insert'
   pendingResourceExcerptText.value = ''
   pendingResourceExcerptTitle.value = ''
+  pendingMarkExcerptTarget.value = null
   hasSelection.value = false
-  showToast(`已创建外部资源节选：${payload.excerpt.title}`)
 }
 
 const navigateToHeadingSource = (binding: HeadingSourceBinding) => {
@@ -1096,6 +1205,26 @@ const handleHeadingSourceClick = (
   notePopoverSourceBinding.value = binding
   notePopoverHeadingTitle.value = context.title
   notePopoverRelationAnchor.value = headingAnchor(pageId, context.blockId, context.title)
+  notePopoverAnchor.value = rectFromPoint(context.clientX, context.clientY)
+  notePopoverVisible.value = true
+  updateNotePopoverPosition()
+  knowledgeRelationRefreshKey.value += 1
+}
+
+const handleBlockquoteExcerptClick = (
+  binding: HeadingSourceBinding,
+  context: { blockId: string; title: string; clientX: number; clientY: number },
+) => {
+  const pageId = workspaceStore.currentPageId
+  if (!pageId) {
+    navigateToHeadingSource(binding)
+    return
+  }
+  notePopoverAnnotation.value = null
+  notePopoverAnnotations.value = []
+  notePopoverSourceBinding.value = binding
+  notePopoverHeadingTitle.value = context.title
+  notePopoverRelationAnchor.value = blockAnchor(pageId, context.blockId, context.title)
   notePopoverAnchor.value = rectFromPoint(context.clientX, context.clientY)
   notePopoverVisible.value = true
   updateNotePopoverPosition()
@@ -1344,7 +1473,16 @@ function openMarkExcerptForTocEntry(entryId: string) {
   const flat = collectFlatTocEntries(editor.state.doc, tocCollectContext.value)
   const payload = getTocEntryExcerptContent(editor.state.doc, flat, entryId, tocCollectContext.value)
   if (!payload) return
-  openMarkBlockExcerptPicker(payload.text, payload.title)
+  const blockIds = collectTocEntryBasisBlockIds(editor.state.doc, flat, entryId, tocCollectContext.value)
+  const scope = blockIds.length > 1 ? 'compound' : 'block'
+  openMarkBlockExcerptPicker(payload.text, payload.title, {
+    selectedText: payload.text,
+    contextBefore: '',
+    contextAfter: '',
+    scope,
+    spannedBlockIds: blockIds,
+    spannedBlockMetadata: normalizeSpannedBlockMetadata(blockIds, []),
+  })
 }
 
 function openSetBasisForTocEntry(entryId: string) {
@@ -2160,7 +2298,20 @@ const refGutterDelegate: RefGutterDelegate = {
       tocCollectContext.value,
     )
     if (!payload) return
-    openMarkBlockExcerptPicker(payload.text, payload.title)
+    const blockIds = collectRefInnerBasisBlockIds(
+      host,
+      innerBlockId,
+      innerEditor,
+      tocCollectContext.value,
+    )
+    openMarkBlockExcerptPicker(payload.text, payload.title, {
+      selectedText: payload.text,
+      contextBefore: '',
+      contextAfter: '',
+      scope: blockIds.length > 1 ? 'compound' : 'block',
+      spannedBlockIds: blockIds,
+      spannedBlockMetadata: normalizeSpannedBlockMetadata(blockIds, []),
+    })
   },
   onSetBasis: (host, innerBlockId, innerEditor) => {
     const payload = getRefInnerBlockExcerptContent(
@@ -2958,6 +3109,14 @@ onBeforeUnmount(() => {
       />
     </section>
 
+    <PageKnowledgeContextBar
+      v-if="workspaceStore.currentKbId && workspaceStore.currentPageId"
+      :kb-id="workspaceStore.currentKbId"
+      :page-id="workspaceStore.currentPageId"
+      :navigate="knowledgeNavigateHandlers"
+      :refresh-key="knowledgeRelationRefreshKey"
+    />
+
     <div class="content-shell" :class="{ 'content-shell--toc-open': tocExpanded && tocItems.length > 0 }">
       <div class="content-container">
         <TuEditor
@@ -2989,6 +3148,7 @@ onBeforeUnmount(() => {
           @section-edit-section-tags="handleSectionEditSectionTagsFromGutter"
           @section-ai-marking="handleSectionAiMarkingFromGutter"
           @heading-source-click="handleHeadingSourceClick"
+          @blockquote-excerpt-click="handleBlockquoteExcerptClick"
           @text-tag-span-click="handleTextTagSpanClick"
           @text-tag-spans-mapped="handleTextTagSpansMapped"
           @url-hover-change="handleUrlHoverChange"

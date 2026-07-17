@@ -1,15 +1,18 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue';
-import { ElButton, ElInput, ElMessage, ElScrollbar, ElTree } from 'element-plus';
+import { ElButton, ElInput, ElMessage, ElMessageBox, ElScrollbar, ElTree } from 'element-plus';
 import type { KnowledgePoint } from '@/api/types';
 import { useViewportClampedFixedPanel } from '@/utils/viewportPanel';
 import {
   createKnowledgePoint,
   deleteKnowledgePoint,
+  mergeKnowledgePoints,
   updateKnowledgePoint,
 } from '@/api/knowledgePoint';
+import { openKnowledgePointPicker } from '@/utils/knowledgePointPicker';
 import {
   canDropOnNode,
+  collectSubtreePointIds,
   computeTreeDropTarget,
   flattenKnowledgePoints,
   moveToRootEnd,
@@ -32,6 +35,7 @@ const props = withDefaults(defineProps<{
   filterKeyword?: string;
   showToolbar?: boolean;
   toolbarHint?: string;
+  disabledPointIds?: string[];
   onRefresh?: () => Promise<void>;
 }>(), {
   selectedId: null,
@@ -41,6 +45,7 @@ const props = withDefaults(defineProps<{
   filterKeyword: '',
   showToolbar: true,
   toolbarHint: '',
+  disabledPointIds: () => [],
 });
 
 const emit = defineEmits<{
@@ -75,6 +80,11 @@ const { panelRef: contextMenuRef, position: contextMenuPosition } = useViewportC
 
 const treeProps = { label: 'title', children: 'children' };
 const isDraggable = computed(() => props.draggable ?? props.mode === 'manage');
+const disabledPointIdSet = computed(() => new Set(props.disabledPointIds));
+
+function isPointDisabled(pointId: string) {
+  return disabledPointIdSet.value.has(pointId);
+}
 
 watch(
   () => props.tree,
@@ -116,6 +126,7 @@ function expandTreeNode(nodeId: string) {
 }
 
 function onNodeClick(data: KnowledgePoint) {
+  if (props.mode === 'pick' && isPointDisabled(data.id)) return;
   emit('select', data);
   emit('update:selectedId', data.id);
 }
@@ -215,6 +226,40 @@ async function onDeletePoint() {
     }
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : '删除失败');
+  }
+}
+
+async function onMergePoint() {
+  const source = contextMenu.value.node;
+  if (!source) return;
+  closeContextMenu();
+  const disabledPointIds = collectSubtreePointIds(localTree.value, source.id);
+  const target = await openKnowledgePointPicker({
+    kbId: props.kbId,
+    title: '合并到知识点',
+    confirmText: '确认合并',
+    hint: '选择要保留的目标知识点；源知识点及其子节点将并入目标',
+    allowManage: false,
+    disabledPointIds,
+  });
+  if (!target) return;
+  try {
+    await ElMessageBox.confirm(
+      `将「${source.title}」合并进「${target.title}」。源知识点会被删除，其子节点、证据、别名与关联将迁移到目标。`,
+      '确认合并知识点',
+      { type: 'warning', confirmButtonText: '确认合并', cancelButtonText: '取消' },
+    );
+  } catch {
+    return;
+  }
+  try {
+    const merged = await mergeKnowledgePoints(source.id, target.id);
+    await notifyUpdated();
+    emit('select', merged);
+    emit('update:selectedId', merged.id);
+    ElMessage.success(`已将「${source.title}」合并到「${target.title}」`);
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : '合并失败');
   }
 }
 
@@ -434,7 +479,11 @@ defineExpose({
                 @keyup.esc="cancelRename"
                 @click.stop
               />
-              <span v-else class="kpt-tree-node__label">{{ node.label }}</span>
+              <span
+                v-else
+                class="kpt-tree-node__label"
+                :class="{ 'kpt-tree-node__label--disabled': isPointDisabled(data.id) }"
+              >{{ node.label }}</span>
             </span>
           </template>
         </ElTree>
@@ -472,6 +521,14 @@ defineExpose({
         </button>
         <button type="button" class="kpt-context-menu__item" @click="onRenameFromContextMenu">
           重命名
+        </button>
+        <button
+          v-if="mode === 'manage'"
+          type="button"
+          class="kpt-context-menu__item"
+          @click="onMergePoint"
+        >
+          合并到…
         </button>
         <button
           v-if="mode === 'manage'"
@@ -552,6 +609,11 @@ defineExpose({
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.kpt-tree-node__label--disabled {
+  color: #bfbfbf;
+  cursor: not-allowed;
 }
 
 .kpt-tree-rename-input {

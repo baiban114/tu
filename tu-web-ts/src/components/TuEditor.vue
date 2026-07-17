@@ -27,6 +27,7 @@ import { getAnnotationSelectionPayload } from '@/editor/annotationText'
 import { createGraphFromSource, createGraphSourceMetadata } from '@/utils/graphSources'
 import { createMindmapStarterGraphData } from '@/components/x6'
 import { createHeadingBlockId } from '@/utils/headingSource'
+import { createBlockquoteBlockId } from '@/utils/blockquoteExcerpt'
 import { getContentScrollGutterAnchor } from '@/utils/editorGutterLayout'
 import type { TocCollectContext } from '@/utils/toc/collectFlatTocEntries'
 import { HEADING_SECTION_FOLD_META } from '@/utils/toc/tocSectionFoldActions'
@@ -107,6 +108,7 @@ const emit = defineEmits<{
   'edit-pdf-excerpt-source': [blockId: string]
   'open-tag-editor': [blockId: string]
   'heading-source-click': [binding: HeadingSourceBinding, context: { blockId: string; title: string; clientX: number; clientY: number }]
+  'blockquote-excerpt-click': [binding: HeadingSourceBinding, context: { blockId: string; title: string; clientX: number; clientY: number }]
   'mark-block-excerpt': [blockId: string]
   'set-block-basis': [blockId: string]
   'section-annotate': [entryId: string]
@@ -217,6 +219,11 @@ const compoundAnnotationBadges = computed(() => {
         for (const bid of ann.spannedBlockIds) {
           if (!map[bid]) map[bid] = []
           map[bid].push({ annotationId: ann.id, color: ann.color || '#81C784' })
+        }
+      } else if (ann.kind === 'excerpt' && (ann.scope === 'compound' || ann.scope === 'block') && ann.spannedBlockIds?.length) {
+        for (const bid of ann.spannedBlockIds) {
+          if (!map[bid]) map[bid] = []
+          map[bid].push({ annotationId: ann.id, color: ann.color || '#4FC3F7' })
         }
       } else if ((ann.scope === 'compound' || ann.scope === 'block') && ann.spannedBlockIds?.length) {
         for (const bid of ann.spannedBlockIds) {
@@ -1200,9 +1207,11 @@ const editor = useEditor({
   autofocus: false,
   extensions: getTuEditorExtensions({
     annotations: flattenedAnnotations.value,
+    getAnnotations: () => flattenedAnnotations.value,
     onAnnotationClick: (payload) => emit('annotation-click', payload),
     onAnnotationsMapped: (annotations) => emit('annotations-mapped', annotations),
     onHeadingSourceClick: (binding, context) => emit('heading-source-click', binding, context),
+    onBlockquoteExcerptClick: (binding, context) => emit('blockquote-excerpt-click', binding, context),
     getTocContext: () => tocCollectContext?.value ?? null,
     getFoldRevision: () => getSectionFoldRevision(),
     getSectionTagsMap: () => sectionTagsMapRef?.value ?? {},
@@ -1896,6 +1905,32 @@ defineExpose({
     }).run()
     return true
   },
+  applyBlockquoteExcerptBindingByBlockId: (blockId: string, binding: HeadingSourceBinding) => {
+    const ed = editor.value
+    if (!ed) return false
+    let targetPos = -1
+    let targetAttrs: Record<string, unknown> | null = null
+    ed.state.doc.descendants((node, pos) => {
+      if (node.type.name === 'blockquote' && node.attrs.blockId === blockId) {
+        targetPos = pos
+        targetAttrs = { ...(node.attrs as Record<string, unknown>) }
+        return false
+      }
+      return true
+    })
+    if (targetPos < 0 || !targetAttrs) return false
+    const attrs = targetAttrs as Record<string, unknown>
+    const resolvedBlockId = String(attrs.blockId || blockId || createBlockquoteBlockId())
+    ed.chain().command(({ tr }) => {
+      tr.setNodeMarkup(targetPos, undefined, {
+        ...attrs,
+        blockId: resolvedBlockId,
+        excerptBinding: binding,
+      })
+      return true
+    }).run()
+    return true
+  },
   clearHeadingSourceBinding: () => {
     const found = findHeadingAtSelection()
     const ed = editor.value
@@ -2094,6 +2129,49 @@ defineExpose({
   font-size: 9px;
   font-weight: 700;
   line-height: 14px;
+}
+
+.tu-editor-wrapper :deep(.blockquote-excerpt-meta) {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  margin: 0 0 6px;
+  padding: 4px 8px;
+  border: 1px solid #bae6fd;
+  border-radius: 6px;
+  background: #f0f9ff;
+  color: #0369a1;
+  font-size: 11px;
+  line-height: 1.4;
+  cursor: pointer;
+  text-align: left;
+}
+
+.tu-editor-wrapper :deep(.blockquote-excerpt-meta:hover) {
+  background: #e0f2fe;
+}
+
+.tu-editor-wrapper :deep(.blockquote-excerpt-meta__chip) {
+  display: inline-block;
+  max-width: min(100%, 240px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.75);
+}
+
+.tu-editor-wrapper :deep(.blockquote-excerpt-meta__ai) {
+  margin-left: 2px;
+  padding: 0 4px;
+  border-radius: 4px;
+  background: #0284c7;
+  color: #fff;
+  font-size: 9px;
+  font-weight: 700;
 }
 
 .tu-editor-wrapper :deep(.tu-tiptap-annotation--ai) {

@@ -24,6 +24,16 @@ public interface KnowledgePointAnchorRepository extends JpaRepository<KnowledgeP
         """)
     void deleteByPageLocator(@Param("pageLocator") String pageLocator, @Param("pagePrefix") String pagePrefix);
 
+    @Query("""
+        SELECT a FROM KnowledgePointAnchorEntity a
+        WHERE a.locator = :pageLocator OR a.locator LIKE CONCAT(:pagePrefix, '%')
+        ORDER BY a.updatedAt DESC, a.createdAt ASC
+        """)
+    List<KnowledgePointAnchorEntity> findByPageLocatorPrefix(
+        @Param("pageLocator") String pageLocator,
+        @Param("pagePrefix") String pagePrefix
+    );
+
     @Modifying
     void deleteByKnowledgePointId(String knowledgePointId);
 }

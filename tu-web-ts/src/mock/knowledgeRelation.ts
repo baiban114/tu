@@ -170,3 +170,43 @@ export function deleteKnowledgeRelationMock(id: string): void {
 export function clearKnowledgeRelationsMock(): void {
   localStorage.removeItem(STORAGE_KEY);
 }
+
+function relationDedupKey(relation: KnowledgeRelation): string {
+  return [
+    relation.kbId,
+    relation.relationTypeKey,
+    relation.fromPointId ?? '',
+    relation.toPointId ?? '',
+  ].join('|');
+}
+
+export function mergeKnowledgePointRelationsMock(
+  kbId: string,
+  sourcePointId: string,
+  targetPointId: string,
+): void {
+  const relations = loadRelations().map((relation) => {
+    if (relation.kbId !== kbId) return relation;
+    const next = { ...relation };
+    if (next.fromPointId === sourcePointId) next.fromPointId = targetPointId;
+    if (next.toPointId === sourcePointId) next.toPointId = targetPointId;
+    return next;
+  }).filter((relation) => {
+    if (relation.kbId !== kbId) return true;
+    return !(relation.fromPointId && relation.fromPointId === relation.toPointId);
+  });
+
+  const deduped: KnowledgeRelation[] = [];
+  const seen = new Set<string>();
+  for (const relation of relations) {
+    if (relation.kbId !== kbId) {
+      deduped.push(relation);
+      continue;
+    }
+    const key = relationDedupKey(relation);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(relation);
+  }
+  saveRelations(deduped);
+}

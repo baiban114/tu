@@ -16,10 +16,12 @@ const props = withDefaults(defineProps<{
   selectedId?: string | null;
   hint?: string;
   allowManage?: boolean;
+  disabledPointIds?: string[];
 }>(), {
   selectedId: null,
   hint: '单击节点选中；可在树内右键新建子知识点',
   allowManage: true,
+  disabledPointIds: () => [],
 });
 
 const emit = defineEmits<{
@@ -89,10 +91,12 @@ function syncDraftFromSelectedId() {
 }
 
 function onTreeSelect(point: KnowledgePoint) {
+  if (props.disabledPointIds.includes(point.id)) return;
   emitDraft(point);
 }
 
 function selectSearchItem(item: KnowledgePoint) {
+  if (props.disabledPointIds.includes(item.id)) return;
   emitDraft(item);
   activeTab.value = 'tree';
   pointTreeRef.value?.setCurrentKey(item.id);
@@ -178,6 +182,7 @@ defineExpose({
             :show-toolbar="allowManage"
             :on-refresh="refreshPointTree"
             :toolbar-hint="hint"
+            :disabled-point-ids="disabledPointIds"
             @select="onTreeSelect"
             @updated="onTreeUpdated"
             @update:selected-id="(id) => { draftPointId = id; emit('update:selectedId', id); }"
@@ -200,7 +205,11 @@ defineExpose({
             :key="item.id"
             type="button"
             class="kpp-panel__list-item"
-            :class="{ 'kpp-panel__list-item--active': draftPoint?.id === item.id }"
+            :class="{
+              'kpp-panel__list-item--active': draftPoint?.id === item.id,
+              'kpp-panel__list-item--disabled': disabledPointIds.includes(item.id),
+            }"
+            :disabled="disabledPointIds.includes(item.id)"
             @click="selectSearchItem(item)"
           >
             <span class="kpp-panel__list-item-title">{{ item.title }}</span>
@@ -296,6 +305,11 @@ defineExpose({
 
 .kpp-panel__list-item--active {
   background: #e6f4ff;
+}
+
+.kpp-panel__list-item--disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 .kpp-panel__list-item-title {

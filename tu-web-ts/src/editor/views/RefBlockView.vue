@@ -3,11 +3,14 @@ import { computed, inject, onMounted, provide, ref, unref, watch, type Ref } fro
 import { nodeViewProps, NodeViewWrapper } from '@tiptap/vue-3'
 import ResizableBlockWrapper from '../components/ResizableBlockWrapper.vue'
 import ReferencedBlockRenderer from '@/components/ReferencedBlockRenderer.vue'
+import ExternalResourceExcerptMeta from '@/components/ExternalResourceExcerptMeta.vue'
 import TuEditor from '@/components/TuEditor.vue'
 import X6Component from '@/components/X6Component.vue'
 import TableBlock from '@/components/TableBlock.vue'
 import { getPageContent } from '@/api/page'
 import type { Block, PageContent } from '@/api/types'
+import { tipTapToBlocks } from '@/editor/converters'
+import { isV2PageContent, resolvePageDocument } from '@/editor/pageDocument'
 import { useBlockRegistryStore } from '@/stores/blockRegistry'
 import { useWorkspaceStore } from '@/stores/workspace'
 import {
@@ -183,13 +186,20 @@ const loadPageReference = async () => {
   error.value = ''
   try {
     const pc: PageContent = await getPageContent(refId.value)
-    registryStore.registerPageContent(pc, refId.value, pageTitle.value)
-    pageBlocks.value = pageContentToLegacyBlocks(pc)
+    pageBlocks.value = resolveRefPageBlocks(pc)
   } catch (err) {
     error.value = err instanceof Error ? err.message : '页面内容加载失败'
   } finally {
     loading.value = false
   }
+}
+
+function resolveRefPageBlocks(pc: PageContent): Block[] {
+  if (isV2PageContent(pc)) {
+    return tipTapToBlocks(resolvePageDocument(pc), [])
+  }
+  registryStore.registerPageContent(pc, refId.value, pageTitle.value)
+  return pageContentToLegacyBlocks(pc)
 }
 
 function pageContentToLegacyBlocks(pc: PageContent): Block[] {
@@ -297,11 +307,12 @@ onMounted(() => {
             :editable="false"
             class="ref-page-content__block"
           />
-          <TuEditor
-            v-else-if="getExternalResourceExcerptBlocks(block)"
-            :ref="(el) => setNestedEditorRef(block.id, el)"
-            :blocks="getExternalResourceExcerptBlocks(block)!"
-            :editable="false"
+          <ExternalResourceExcerptMeta
+            v-else-if="block.type === 'externalResource' && block.externalResource"
+            :external-resource="block.externalResource"
+            :body-block-id="block.id"
+            show-body
+            compact
             :line-gutter-actions="true"
             class="ref-page-content__block"
             @line-annotate="(innerBlockId) => forwardRefGutterAction(block.id, innerBlockId, 'annotate')"

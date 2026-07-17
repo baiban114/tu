@@ -41,13 +41,14 @@ test.beforeEach(async ({ page }) => {
   })
 })
 
-test('opens knowledge graph tab and renders knowledge point nodes', async ({ page }) => {
+test('opens knowledge graph tab with empty centered state by default', async ({ page }) => {
   test.setTimeout(60_000)
   await page.goto('/resources?tab=knowledgeGraph')
   await expect(page.getByRole('tab', { name: '知识图谱' })).toBeVisible()
   await expect(page.locator('.kg-panel__toolbar')).toBeVisible()
-  await expect(page.locator('.knowledge-graph-viewer')).toBeVisible()
-  await expect(page.locator('.knowledge-graph-viewer .x6-node')).toHaveCount(2, { timeout: 15000 })
+  await expect(page.getByText('请选择中心知识点，查看其关联子图。')).toBeVisible()
+  await expect(page.getByRole('button', { name: '选择知识点' })).toBeVisible()
+  await expect(page.locator('.knowledge-graph-viewer .x6-node')).toHaveCount(0)
 })
 
 test('navigates from knowledge point manager to centered graph', async ({ page }) => {

@@ -79,6 +79,11 @@ const title = computed(() => {
         ? `依据 ${displayedAnnotations.value.length}`
         : '依据'
     }
+    if (displayedAnnotations.value.every((item) => item.kind === 'excerpt')) {
+      return displayedAnnotations.value.length > 1
+        ? `节选 ${displayedAnnotations.value.length}`
+        : '节选'
+    }
     return displayedAnnotations.value.length > 1
       ? `笔记 ${displayedAnnotations.value.length}`
       : '笔记'
@@ -230,7 +235,10 @@ watch(
             v-for="item in displayedAnnotations"
             :key="item.id"
             class="note-popover__item"
-            :class="{ 'note-popover__item--basis': item.kind === 'basis' }"
+            :class="{
+              'note-popover__item--basis': item.kind === 'basis',
+              'note-popover__item--excerpt': item.kind === 'excerpt',
+            }"
           >
             <div v-if="item.scope !== 'block'" class="note-popover__quote">
               "{{ item.selectedText }}"
@@ -248,11 +256,12 @@ watch(
               </div>
             </div>
 
-            <div v-if="item.kind === 'basis' && item.basisBinding" class="note-popover__basis">
-              <div class="note-popover__basis-label">依据资料</div>
+            <div v-if="(item.kind === 'basis' || item.kind === 'excerpt') && item.basisBinding" class="note-popover__basis">
+              <div class="note-popover__basis-label">{{ item.kind === 'excerpt' ? '已标记节选' : '依据资料' }}</div>
               <button
                 type="button"
                 class="note-popover__basis-link"
+                :class="{ 'note-popover__basis-link--excerpt': item.kind === 'excerpt' }"
                 :title="headingSourceBadgeTitle(item.basisBinding)"
                 @click="emit('navigate-basis', item)"
               >
@@ -260,13 +269,13 @@ watch(
               </button>
             </div>
 
-            <div v-if="item.kind !== 'basis'" class="note-popover__body">
+            <div v-if="item.kind !== 'basis' && item.kind !== 'excerpt'" class="note-popover__body">
               {{ item.note }}
             </div>
 
             <div class="note-popover__actions">
               <button
-                v-if="item.kind === 'basis' && item.basisBinding"
+                v-if="(item.kind === 'basis' || item.kind === 'excerpt') && item.basisBinding"
                 type="button"
                 class="note-popover__edit-btn"
                 @click="emit('navigate-basis', item)"
@@ -290,7 +299,7 @@ watch(
                 转为手动标记
               </button>
               <button type="button" class="note-popover__delete-btn" @click="emit('delete', item)">
-                {{ item.kind === 'basis' ? '解除依据' : '删除' }}
+                {{ item.kind === 'basis' ? '解除依据' : item.kind === 'excerpt' ? '取消节选标记' : '删除' }}
               </button>
             </div>
           </article>
@@ -371,6 +380,15 @@ watch(
 .note-popover__item--source {
   border-color: rgba(76, 175, 80, 0.35);
   background: rgba(165, 214, 167, 0.12);
+}
+
+.note-popover__item--excerpt {
+  border-color: rgba(3, 105, 161, 0.28);
+  background: rgba(179, 229, 252, 0.2);
+}
+
+.note-popover__basis-link--excerpt {
+  color: #0369a1;
 }
 
 .note-popover__quote {

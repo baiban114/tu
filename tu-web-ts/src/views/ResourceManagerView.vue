@@ -73,7 +73,7 @@ import {
   listKnowledgeRelations,
   deleteKnowledgeRelation,
 } from '@/api/knowledgeRelation';
-import type { KnowledgeRelation } from '@/api/types';
+import type { KnowledgeRelation, KnowledgeGraphMode } from '@/api/types';
 import {
   anchorLabel,
   navigateKnowledgeAnchor,
@@ -905,10 +905,11 @@ const graphCenterPointId = computed(() => {
   return typeof raw === 'string' && raw.trim() ? raw.trim() : null;
 });
 
-const graphMode = computed(() => {
+const graphMode = computed((): KnowledgeGraphMode | null => {
   const raw = route.query.graphMode;
-  if (raw === 'full' || raw === 'centered' || raw === 'prerequisite') return raw;
-  return graphCenterPointId.value ? 'centered' : null;
+  if (raw === 'prerequisite') return 'prerequisite';
+  if (graphCenterPointId.value) return 'centered';
+  return null;
 });
 
 async function refreshKnowledgeRelations() {

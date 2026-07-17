@@ -112,8 +112,8 @@ export interface TextAnnotation {
   scope?: 'text' | 'block' | 'compound';
   spannedBlockIds?: string[];
   spannedBlockMetadata?: SpannedBlockInfo[];
-  /** note（默认）或依据标注 */
-  kind?: 'note' | 'basis';
+  /** note（默认）、依据标注、或已标记的资源节选 */
+  kind?: 'note' | 'basis' | 'excerpt';
   /** 依据标注绑定的外部资源节选 */
   basisBinding?: HeadingSourceBinding;
   /** 标记来源；缺省视为 user */
@@ -217,7 +217,7 @@ export interface HeadingSourceBinding {
   /** 标题来源必填；依据标注可仅挂靠资源实体 */
   resourceExcerptId?: string | null;
   snapshot: Pick<ExternalResourceSnapshot,
-    'resourceTitle' | 'resourceTypeName' | 'excerptTitle' | 'excerptLocator'>;
+    'resourceTitle' | 'resourceTypeName' | 'workTitle' | 'excerptTitle' | 'excerptLocator'>;
   /** 标记来源；缺省视为 user */
   markerSource?: KnowledgeMarkerSource;
 }
@@ -454,6 +454,13 @@ export interface KnowledgePoint {
   children?: KnowledgePoint[];
 }
 
+export interface PageKnowledgeContext {
+  pageId: string;
+  pagePoints: KnowledgePoint[];
+  prerequisites: KnowledgePoint[];
+  successors: KnowledgePoint[];
+}
+
 export interface KnowledgePointAlias {
   id: string;
   knowledgePointId: string;
@@ -465,6 +472,20 @@ export interface KnowledgePointGenerationItem {
   pointId: string | null;
   title: string;
   status: 'created' | 'skipped' | 'failed' | string;
+}
+
+export interface KnowledgePointGenerationPreviewItem {
+  locator: string;
+  kind: KnowledgeAnchorKind | string;
+  title: string;
+  pageId: string;
+  pageTitle: string;
+  status: 'would_create' | 'would_skip' | string;
+}
+
+export interface KnowledgePointGenerationPreview {
+  items: KnowledgePointGenerationPreviewItem[];
+  total: number;
 }
 
 export interface KnowledgePointGenerationResult {

@@ -16,6 +16,7 @@ import {
     :confirm-text="knowledgePointPickerState.confirmText"
     :hint="knowledgePointPickerState.hint"
     :allow-manage="knowledgePointPickerState.allowManage"
+    :disabled-point-ids="knowledgePointPickerState.disabledPointIds"
     @select="resolveKnowledgePointPicker"
     @cancel="cancelKnowledgePointPicker"
   />

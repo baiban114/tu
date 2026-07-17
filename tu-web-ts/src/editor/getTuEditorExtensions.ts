@@ -24,6 +24,7 @@ import { BlockquoteNode } from './extensions/BlockquoteNode'
 import { HeadingNode } from './extensions/HeadingNode'
 import { CodeBlockNode } from './extensions/CodeBlockNode'
 import { HeadingSourceDecorations } from './extensions/HeadingSourceDecorations'
+import { BlockquoteExcerptDecorations } from './extensions/BlockquoteExcerptDecorations'
 import { HeadingSectionFold } from './extensions/HeadingSectionFold'
 import { TagContentFilter } from './extensions/TagContentFilter'
 import { TextTagSpanDecorations } from './extensions/TextTagSpanDecorations'
@@ -63,6 +64,11 @@ export interface TuEditorExtensionsConfig {
     binding: HeadingSourceBinding,
     context: { blockId: string; title: string; clientX: number; clientY: number },
   ) => void
+  onBlockquoteExcerptClick: (
+    binding: HeadingSourceBinding,
+    context: { blockId: string; title: string; clientX: number; clientY: number },
+  ) => void
+  getAnnotations: () => TextAnnotation[]
   getTocContext: () => TocCollectContext | null
   getFoldRevision: () => number
   getSectionTagsMap: () => SectionTagsMap
@@ -135,6 +141,10 @@ export function getTuEditorExtensions(config: TuEditorExtensionsConfig): Extensi
     }),
     HeadingSourceDecorations.configure({
       onSourceClick: config.onHeadingSourceClick,
+    }),
+    BlockquoteExcerptDecorations.configure({
+      getAnnotations: config.getAnnotations,
+      onExcerptClick: config.onBlockquoteExcerptClick,
     }),
     HeadingSectionFold.configure({
       getTocContext: config.getTocContext,

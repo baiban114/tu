@@ -149,10 +149,12 @@ test('generates knowledge points from page tree and searches by alias', async ({
   await page.goto('/resources?tab=knowledgePoints')
   await expect(page.getByRole('tab', { name: '知识点' })).toBeVisible()
 
-  await page.getByRole('button', { name: '从结构生成…' }).click()
-  const generateDialog = page.getByRole('dialog', { name: '从结构生成知识点' })
+  await page.getByRole('button', { name: '从定位系统生成…' }).click()
+  const generateDialog = page.getByRole('dialog', { name: '从定位系统生成知识点' })
   await expect(generateDialog).toBeVisible()
-  await generateDialog.getByRole('button', { name: '开始生成' }).click()
+  await generateDialog.getByRole('button', { name: '预览' }).click()
+  await expect(generateDialog.getByText(/共 \d+ 条候选/)).toBeVisible()
+  await generateDialog.getByRole('button', { name: /确认生成 \d+ 条/ }).click()
   await expect(generateDialog).toBeHidden()
 
   const pageAnchors = await page.evaluate(() => {
@@ -212,4 +214,116 @@ test('promotes child knowledge point to sibling via context menu', async ({ page
     return points.find((item) => item.title === '数据结构')?.parentId ?? null
   })
   expect(parentId).toBeNull()
+})
+
+test('merges child knowledge point into parent via context menu', async ({ page }) => {
+  test.setTimeout(60_000)
+  await page.goto('/resources?tab=knowledgePoints')
+  await expect(page.getByRole('tab', { name: '知识点' })).toBeVisible()
+
+  const parentNode = page.locator('.kpt-tree .el-tree-node').filter({ hasText: '基础概念' }).first()
+  await parentNode.locator('.el-tree-node__expand-icon').click()
+  await page.locator('.kpt-tree .el-tree-node__content', { hasText: '数据结构' }).first().click({ button: 'right' })
+  await page.getByRole('button', { name: '合并到…' }).click()
+
+  const pickerDialog = page.getByRole('dialog', { name: '合并到知识点' })
+  await expect(pickerDialog).toBeVisible()
+  await pickerDialog.getByLabel('知识点树').getByText('基础概念', { exact: true }).click()
+  await pickerDialog.getByRole('button', { name: '确认合并' }).click()
+
+  await page.getByRole('dialog', { name: '确认合并知识点' }).getByRole('button', { name: '确认合并' }).click()
+
+  const result = await page.evaluate(() => {
+    const pointsRaw = window.localStorage.getItem('tu-mock-knowledge-points')
+    const aliasesRaw = window.localStorage.getItem('tu-mock-knowledge-point-aliases')
+    if (!pointsRaw || !aliasesRaw) return null
+    const points = JSON.parse(pointsRaw) as Array<{ id: string; title: string; estimatedHours?: number | null }>
+    const aliases = JSON.parse(aliasesRaw) as Array<{ knowledgePointId: string; alias: string }>
+    const target = points.find((item) => item.id === 'kp-demo-1')
+    const sourceGone = !points.some((item) => item.id === 'kp-demo-2')
+    const aliasMerged = aliases.some(
+      (item) => item.knowledgePointId === 'kp-demo-1' && item.alias === '数据结构',
+    )
+    return {
+      sourceGone,
+      aliasMerged,
+      estimatedHours: target?.estimatedHours ?? null,
+    }
+  })
+
+  expect(result?.sourceGone).toBe(true)
+  expect(result?.aliasMerged).toBe(true)
+  expect(result?.estimatedHours).toBe(2)
+  await expect(page.locator('.kpt-tree .el-tree-node__content', { hasText: '数据结构' })).toHaveCount(0)
+})
+
+test('shows page knowledge context bar with page points and prerequisites', async ({ page }) => {
+  test.setTimeout(60_000)
+  await page.goto('/?pageId=p-demo-2')
+  await expect(page.locator('.ProseMirror')).toBeVisible()
+
+  await page.evaluate(() => {
+    const pointsRaw = window.localStorage.getItem('tu-mock-knowledge-points')
+    const points = pointsRaw ? JSON.parse(pointsRaw) as Array<{ id: string; kbId?: string; title?: string; parentId?: string | null; status?: string; sortOrder?: number }> : []
+    if (!points.some((item) => item.id === 'kp-demo-1')) {
+      points.push({
+        id: 'kp-demo-1',
+        kbId: 'kb-demo-1',
+        parentId: null,
+        title: '基础概念',
+        status: 'active',
+        sortOrder: 0,
+      })
+    }
+    if (!points.some((item) => item.id === 'kp-pre')) {
+      points.push({
+        id: 'kp-pre',
+        kbId: 'kb-demo-1',
+        parentId: null,
+        title: '前置概念',
+        status: 'active',
+        sortOrder: 2,
+      })
+    }
+    window.localStorage.setItem('tu-mock-knowledge-points', JSON.stringify(points))
+
+    const anchorsRaw = window.localStorage.getItem('tu-mock-knowledge-point-anchors')
+    const anchors = anchorsRaw ? JSON.parse(anchorsRaw) as Array<Record<string, unknown>> : []
+    if (!anchors.some((item) => item.id === 'kpa-e2e-page-context')) {
+      anchors.push({
+        id: 'kpa-e2e-page-context',
+        knowledgePointId: 'kp-demo-1',
+        kind: 'page',
+        locator: 'page:p-demo-2',
+        role: 'primary',
+        primary: true,
+        snapshot: { title: '基础概念' },
+      })
+    }
+    window.localStorage.setItem('tu-mock-knowledge-point-anchors', JSON.stringify(anchors))
+
+    const relationsRaw = window.localStorage.getItem('tu-mock-knowledge-relations')
+    const relations = relationsRaw ? JSON.parse(relationsRaw) as Array<Record<string, unknown>> : []
+    if (!relations.some((item) => item.id === 'kr-e2e-page-context')) {
+      relations.push({
+        id: 'kr-e2e-page-context',
+        kbId: 'kb-demo-1',
+        relationTypeKey: 'prerequisite',
+        fromPointId: 'kp-demo-1',
+        toPointId: 'kp-pre',
+        sourceProvenance: 'user',
+        status: 'ok',
+      })
+    }
+    window.localStorage.setItem('tu-mock-knowledge-relations', JSON.stringify(relations))
+  })
+
+  await page.reload()
+  await expect(page.locator('.ProseMirror')).toBeVisible()
+
+  const contextBar = page.getByRole('region', { name: '页面知识点关联' })
+  await expect(contextBar).toBeVisible()
+  await expect(contextBar.getByRole('button', { name: '基础概念' })).toBeVisible()
+  await expect(contextBar.getByRole('button', { name: '前置概念' })).toBeVisible()
+  await expect(contextBar.getByText('前驱')).toBeVisible()
 })

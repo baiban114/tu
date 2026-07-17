@@ -181,7 +181,7 @@ const catalog: Record<string, PageHelp> = {
   'resources.knowledgeGraph': {
     id: 'resources.knowledgeGraph',
     title: '知识图谱',
-    summary: '将知识点与关联投影为只读 X6 图：全量、以某点为中心或前置子图。',
+    summary: '将知识点与关联投影为只读 X6 图：以选定知识点为中心展开关联，或查看前置子图。',
     features: [
       '只读图谱浏览与模式切换。',
       '从知识点详情「在图谱中查看 / 前置子图」进入。',

@@ -4,6 +4,7 @@ import Line from './line.vue';
 import TableBlock from './TableBlock.vue';
 import MultiTableBlock from './MultiTableBlock.vue';
 import X6Component from './X6Component.vue';
+import ExternalResourceExcerptMeta from './ExternalResourceExcerptMeta.vue';
 import type { Block, MultiTableData, TableBlockData } from '@/api/types';
 import { computed, ref } from 'vue';
 import { useRefGutterForwarding } from '@/composables/useRefGutterForwarding';
@@ -232,14 +233,15 @@ const startChildResize = (event: MouseEvent, childIndex: number, edge: ResizeEdg
       :timelineData="block.timelineData"
       class="block-content board-content"
     />
-    <TuEditor
-      v-else-if="getExternalResourceExcerptBlocks(block)"
+    <ExternalResourceExcerptMeta
+      v-else-if="block.type === 'externalResource' && block.externalResource"
       :key="`ref-external-resource-${block.id}`"
-      ref="nestedEditorRef"
-      :blocks="getExternalResourceExcerptBlocks(block)!"
-      :editable="editable"
+      :external-resource="block.externalResource"
+      :body-block-id="block.id"
+      show-body
+      compact
       :line-gutter-actions="lineGutterActions"
-      class="block-content referenced-excerpt-editor"
+      class="referenced-external-resource"
       @line-annotate="forwardLineAnnotate"
       @mark-block-excerpt="forwardMarkExcerpt"
       @set-block-basis="forwardSetBasis"
@@ -306,6 +308,10 @@ const startChildResize = (event: MouseEvent, childIndex: number, edge: ResizeEdg
 
 .referenced-excerpt-editor :deep(.tu-editor-content) {
   padding: 0 !important;
+}
+
+.referenced-external-resource {
+  min-width: 0;
 }
 
 .referenced-container {

@@ -12,6 +12,7 @@ import com.tu.backend.knowledgerelation.entity.KnowledgePointEntity;
 import com.tu.backend.knowledgerelation.repository.KnowledgePointAliasRepository;
 import com.tu.backend.knowledgerelation.repository.KnowledgePointAnchorRepository;
 import com.tu.backend.knowledgerelation.repository.KnowledgePointRepository;
+import com.tu.backend.knowledgerelation.repository.KnowledgeRelationRepository;
 import com.tu.backend.knowledge.repository.KnowledgeBaseRepository;
 import java.util.ArrayList;
 import java.util.List;
@@ -41,10 +42,12 @@ class KnowledgePointServiceMoveTest {
     when(pointRepository.save(any(KnowledgePointEntity.class))).thenAnswer(invocation -> invocation.getArgument(0));
     when(aliasRepository.findByKnowledgePointIdOrderByAliasAsc(any())).thenReturn(List.of());
 
+    KnowledgeRelationRepository relationRepository = org.mockito.Mockito.mock(KnowledgeRelationRepository.class);
     KnowledgePointService service = new KnowledgePointService(
         pointRepository,
         anchorRepository,
         aliasRepository,
+        relationRepository,
         kbRepository,
         objectMapper
     );
@@ -77,10 +80,12 @@ class KnowledgePointServiceMoveTest {
     when(pointRepository.save(any(KnowledgePointEntity.class))).thenAnswer(invocation -> invocation.getArgument(0));
     when(aliasRepository.findByKnowledgePointIdOrderByAliasAsc(any())).thenReturn(List.of());
 
+    KnowledgeRelationRepository relationRepository = org.mockito.Mockito.mock(KnowledgeRelationRepository.class);
     KnowledgePointService service = new KnowledgePointService(
         pointRepository,
         anchorRepository,
         aliasRepository,
+        relationRepository,
         kbRepository,
         objectMapper
     );
@@ -110,10 +115,12 @@ class KnowledgePointServiceMoveTest {
         when(pointRepository.findById("kp-child")).thenReturn(Optional.of(child));
         when(pointRepository.findByKbIdOrderBySortOrderAscTitleAsc("kb-1")).thenReturn(all);
 
+    KnowledgeRelationRepository relationRepository = org.mockito.Mockito.mock(KnowledgeRelationRepository.class);
     KnowledgePointService service = new KnowledgePointService(
         pointRepository,
         anchorRepository,
         aliasRepository,
+        relationRepository,
         kbRepository,
         objectMapper
     );
@@ -137,10 +144,12 @@ class KnowledgePointServiceMoveTest {
     when(pointRepository.findById("kp-root")).thenReturn(Optional.of(root));
     when(pointRepository.findByKbIdOrderBySortOrderAscTitleAsc("kb-1")).thenReturn(List.of(root, child));
 
+    KnowledgeRelationRepository relationRepository = org.mockito.Mockito.mock(KnowledgeRelationRepository.class);
     KnowledgePointService service = new KnowledgePointService(
         pointRepository,
         anchorRepository,
         aliasRepository,
+        relationRepository,
         kbRepository,
         objectMapper
     );

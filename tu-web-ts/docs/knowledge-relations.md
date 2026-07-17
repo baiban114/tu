@@ -45,6 +45,8 @@ flowchart LR
 
 `snapshot` JSON 存展示用标题等；跳转以 locator 为准。反查路径：`by-anchor` → 找到关联知识点 → `by-point` 展示点间关系。
 
+**页面级反查**：`GET /api/kbs/{kbId}/pages/{pageId}/knowledge-context` 聚合 `locator = page:{pageId}` 与 `locator LIKE page:{pageId}:%` 的全部证据锚点，并汇总各绑定点的 `prerequisite` 前驱/后继（见 §8）。
+
 ### 3.1 资源内定位（节选 `locator` 字段）
 
 存储于 `external_resource_excerpt.locator`，表示节选在**外部资源**内的位置（与证据层 `resource:{itemId}:excerpt:{excerptId}` 互补）：
@@ -98,6 +100,7 @@ flowchart LR
   - **本节**：节手柄「AI 分析标记（本节）」→ 请求体带 `sectionHeadingBlockId`（本地标题节）或 `sectionEmbedBlockId`（引用组/引用内节）+ `sectionTitle`
   - SSE `POST /api/ai/document-marking/analyze/stream` → `DocumentMarkingReviewPanel` 预览确认 → 前端 `applyAiMarkingSuggestions`
 - Mock：`src/api/aiDocumentMarking.ts` + `src/mock/aiDocumentMarking.ts`
+- Phase 2 设计草案（未实施）：[`ai-document-marking-phase2-design.md`](./ai-document-marking-phase2-design.md) — 文档切片、资源对齐、blockquote 节选写回等；索引 [`.cursor/plans/ai-document-marking-phase2.plan.md`](../../.cursor/plans/ai-document-marking-phase2.plan.md)
 
 ## 7. API
 
@@ -108,14 +111,17 @@ flowchart LR
 | GET | `/api/kbs/{kbId}/knowledge-points/tree` |
 | GET | `/api/kbs/{kbId}/knowledge-points`（分页，`pageSize` 默认 10） |
 | GET | `/api/kbs/{kbId}/knowledge-points/by-locator?locator=…` |
+| GET | `/api/kbs/{kbId}/pages/{pageId}/knowledge-context`（本页绑定点 + `prerequisite` 前驱/后继） |
 | POST | `/api/kbs/{kbId}/knowledge-points` |
 | PATCH/DELETE | `/api/knowledge-points/{id}` |
+| POST | `/api/knowledge-points/merge`（body: `sourcePointId`、`targetPointId`；源并入目标后删除源） |
 | GET/POST/DELETE | `/api/knowledge-points/{id}/anchors` |
 | GET/POST | `/api/knowledge-points/{id}/aliases` |
 | DELETE | `/api/knowledge-point-aliases/{aliasId}` |
-| POST | `/api/kbs/{kbId}/knowledge-points/generate`（body: `sources`: `pageTree` / `documentHeadings`，可选 `pageIds`） |
+| POST | `/api/kbs/{kbId}/knowledge-points/generate/preview`（body: `sources`、`pageIds`；返回 `would_create` / `would_skip` 候选） |
+| POST | `/api/kbs/{kbId}/knowledge-points/generate`（body: `sources` + `pageIds` 全量生成，或 `locators[]` 按预览勾选生成） |
 
-`generate` 仅创建知识点 + `primary` 证据锚点，不创建 `knowledge_relation`、不设置 `parent_id`（扁平生成）。同 locator 已绑定则跳过（幂等）。
+`sources`：`page` / `heading` / `section` / `block`（兼容别名 `pageTree`、`documentHeadings`）。`generate` 仅创建知识点 + `primary` 证据锚点，不创建 `knowledge_relation`、不设置 `parent_id`（扁平生成）。同 locator 已绑定则跳过（幂等）。`block` 来源为顶层非 richtext 块；v2 单文档页若 embed 仅在 Tiptap 节点内，block 候选可能为空。
 
 ### 关系
 
@@ -146,16 +152,19 @@ flowchart LR
 ## 8. UI 约定
 
 - 创建：`SelectionToolbar` →「建立关联」→ 弹窗「关联到知识点」：单选要挂靠的知识点；编辑器带入的可定位内容静默写入 `relation.from`，**不展示**证据栏、不做知识点↔知识点双选
-- 知识点建立（含为内容绑定知识点）：资源管理「知识点」Tab、从结构生成、`createKnowledgePoint + sourceAnchor`；**不在**关联弹窗内提供
+- 知识点建立（含为内容绑定知识点）：资源管理「知识点」Tab、从定位系统生成、`createKnowledgePoint + sourceAnchor`；**不在**关联弹窗内提供
 - 目标知识点可在 Picker 知识点树内直接新建：工具栏 `+` 创建顶层知识点，节点右键「添加子知识点」创建子级；新建知识点不自动绑定当前证据（独立于内容的标签式实体）
 - 知识点树支持重命名：节点右键「重命名」，或选中节点后按 `F2`（管理面板与关联弹窗共用 `KnowledgePointTree`）
-- 管理：资源管理「知识点」Tab（[`KnowledgePointTree.vue`](../src/components/knowledge/KnowledgePointTree.vue) 分类树为主：拖拽调层级、右键新建/重命名/删除；右侧详情展示证据/别名/关联）
-- **知识图谱**：资源管理「知识图谱」Tab（[`KnowledgeGraphPanel.vue`](../src/components/knowledge/KnowledgeGraphPanel.vue)）：全库 / 以选中点为中心 / 前置子图；中心点用通用知识点选择器（见下）
+- 管理：资源管理「知识点」Tab（[`KnowledgePointTree.vue`](../src/components/knowledge/KnowledgePointTree.vue) 分类树为主：拖拽调层级、右键新建/重命名/**合并到…**/删除；右侧详情展示证据/别名/关联）
+- **知识点合并**：树右键「合并到…」→ 选择保留的**目标**知识点（源及其子树不可选）→ 确认后删除源节点；源的直接子节点改挂到目标下，证据/别名/语义边迁移到目标（同 locator 或同类型边去重，源标题写入目标别名）
+- **文档页知识点上下文**：[`PageKnowledgeContextBar.vue`](../src/components/PageKnowledgeContextBar.vue) 挂在 [`TuEditorPage.vue`](../src/components/TuEditorPage.vue) 标题行下方；**本页知识点**仅展示 `page:{pageId}` 页级锚点绑定的知识点（与知识点管理树中可管理的页级绑定一致，不含标题/节/块/标注等子 locator 自动生成的点）；**前驱** / **后继** 仍基于本页全部证据锚点关联的知识点聚合 `prerequisite` 出边 / 入边；点击芯片跳转到该点 primary 证据；关联创建后随 `knowledgeRelationRefreshKey` 刷新
+- **知识图谱**：资源管理「知识图谱」Tab（[`KnowledgeGraphPanel.vue`](../src/components/knowledge/KnowledgeGraphPanel.vue)）：默认「知识点关联」（以中心点展开），需先选择中心知识点；支持「前置子图」；中心点用通用知识点选择器（见下）
 - **知识点选择器（通用）**：[`KnowledgePointPickerPanel.vue`](../src/components/knowledge/KnowledgePointPickerPanel.vue)（树 + 搜索）；[`KnowledgePointPickerDialog.vue`](../src/components/knowledge/KnowledgePointPickerDialog.vue)（弹窗）；全局 `openKnowledgePointPicker()`（[`knowledgePointPicker.ts`](../src/utils/knowledgePointPicker.ts) + [`KnowledgePointPickerHost.vue`](../src/components/knowledge/KnowledgePointPickerHost.vue) 挂载于 `App.vue`）。任意页面可 `await openKnowledgePointPicker({ kbId, title, selectedId })` 或声明式 `<KnowledgePointPickerDialog v-model:visible @select />`
-- **从结构生成**：知识点 Tab 工具栏「从结构生成…」→ 勾选知识库页面树 / 文档标题结构；若工作区有当前页则仅处理该页。完成后刷新分类树
+- **从定位系统生成**：知识点 Tab「从定位系统生成…」→ **Step 1** 选页面范围（整个知识库 / 当前工作区页面 / 自选页面树）→ **预览**（列出范围内全部 page/heading/section/block 候选）→ **Step 2** 表格勾选要生成的项（默认勾选「将新建」）→ **确认生成**。完成后刷新分类树
 - **别名**：选中知识点后在详情区维护别名 chips；列表搜索与 Picker 搜索 Tab 可命中别名（副标题展示匹配别名）
 - 查看：正文内点击标注/依据高亮或标题来源徽章，均打开同一 `NotePopover`（来源、笔记/依据、关联知识点）；资源管理「知识关联」Tab 为全库视图
 - **AI 标记**：文档页工具栏「AI 分析标记」；来源/依据徽章与关系列表显示 `AI` chip；可「转为手动标记」（`markerSource` → `user`）
+- **标记节选**：创建资源库节选后，在文档对应位置写入 `kind=excerpt` 标注，并在 Markdown `>` 引用块（blockquote）上方显示浅蓝元信息条（资源节选 / 标题 / 定位）；点击打开 `NotePopover`。绑定持久化为 `<!--tu:blockquote-excerpt ...-->` 注释 + 节点 `excerptBinding`
 - 跳转：`navigateKnowledgePoint(pointId)` → 取 `is_primary` 证据 → `navigateKnowledgeAnchor(locator)`
 
 ## 9. Phase 2/3

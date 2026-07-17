@@ -8,6 +8,7 @@ export interface OpenKnowledgePointPickerOptions {
   confirmText?: string;
   hint?: string;
   allowManage?: boolean;
+  disabledPointIds?: string[];
 }
 
 export const knowledgePointPickerState = reactive({
@@ -18,6 +19,7 @@ export const knowledgePointPickerState = reactive({
   confirmText: '确定',
   hint: '单击节点选中；可在树内右键新建子知识点',
   allowManage: true,
+  disabledPointIds: [] as string[],
 });
 
 let pendingResolve: ((point: KnowledgePoint | null) => void) | null = null;
@@ -39,6 +41,7 @@ export function openKnowledgePointPicker(
     knowledgePointPickerState.hint = options.hint
       ?? '单击节点选中；可在树内右键新建子知识点';
     knowledgePointPickerState.allowManage = options.allowManage ?? true;
+    knowledgePointPickerState.disabledPointIds = options.disabledPointIds ?? [];
     knowledgePointPickerState.visible = true;
   });
 }

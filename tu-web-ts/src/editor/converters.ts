@@ -6,6 +6,12 @@ import {
   serializeHeadingSourceComment,
 } from '@/utils/headingSource'
 import {
+  BLOCKQUOTE_EXCERPT_COMMENT_RE,
+  createBlockquoteBlockId,
+  parseBlockquoteExcerptComment,
+  serializeBlockquoteExcerptComment,
+} from '@/utils/blockquoteExcerpt'
+import {
   HEADING_FOLD_COMMENT_RE,
   HEADING_ID_COMMENT_RE,
   parseHeadingFoldComment,
@@ -572,18 +578,25 @@ function parseMarkdownBlocks(markdown: string): JSONContent[] {
     const innerLines = para.split('\n')
     let currentLines: string[] = []
     let currentQuoteLines: string[] = []
+    let pendingBlockquoteBlockId: string | undefined
+    let pendingBlockquoteExcerpt: { blockId: string; binding: HeadingSourceBinding } | null = null
 
     const flushCurrentQuote = () => {
       if (currentQuoteLines.length === 0) return
       nodes.push({
         type: 'blockquote',
-        attrs: { blockId: createLineBlockId() },
+        attrs: {
+          blockId: pendingBlockquoteBlockId || pendingBlockquoteExcerpt?.blockId || createLineBlockId(),
+          ...(pendingBlockquoteExcerpt ? { excerptBinding: pendingBlockquoteExcerpt.binding } : {}),
+        },
         content: [{
           type: 'paragraph',
           content: parseInlineMarkdown(currentQuoteLines.join('\n')),
         }],
       })
       currentQuoteLines = []
+      pendingBlockquoteBlockId = undefined
+      pendingBlockquoteExcerpt = null
     }
 
     let pendingHeadingBlockId: string | undefined
@@ -696,6 +709,24 @@ function parseMarkdownBlocks(markdown: string): JSONContent[] {
         continue
       }
 
+      const blockquoteExcerptMatch = line.match(BLOCKQUOTE_EXCERPT_COMMENT_RE)
+      if (blockquoteExcerptMatch) {
+        flushCurrentQuote()
+        if (currentLines.length > 0) {
+          nodes.push({
+            type: 'paragraph',
+            content: parseInlineMarkdown(currentLines.join('\n')),
+          })
+          currentLines = []
+        }
+        const parsedExcerpt = parseBlockquoteExcerptComment(blockquoteExcerptMatch[1])
+        if (parsedExcerpt) {
+          pendingBlockquoteBlockId = parsedExcerpt.blockId
+          pendingBlockquoteExcerpt = parsedExcerpt
+        }
+        continue
+      }
+
       const headingIdMatch = line.match(HEADING_ID_COMMENT_RE)
       if (headingIdMatch) {
         flushCurrentQuote()
@@ -795,7 +826,7 @@ function parseMarkdownBlocks(markdown: string): JSONContent[] {
           type: 'listItem',
           content: [{ type: 'paragraph', content: parseInlineMarkdown(line.replace(/^\d+\.\s/, '')) }],
         })
-      } else if (line.startsWith('> ')) {
+      } else if (/^>\s?/.test(line)) {
         if (currentLines.length > 0) {
           nodes.push({
             type: 'paragraph',
@@ -803,7 +834,7 @@ function parseMarkdownBlocks(markdown: string): JSONContent[] {
           })
           currentLines = []
         }
-        currentQuoteLines.push(line.slice(2))
+        currentQuoteLines.push(line.replace(/^>\s?/, ''))
       } else if (line.startsWith('---')) {
         flushCurrentQuote()
         if (currentLines.length > 0) {
@@ -987,13 +1018,22 @@ function nodeToMarkdown(node: JSONContent): string {
       return (node.content || []).map((item) => '- ' + contentToMarkdown(item.content || [])).join('\n')
     case 'orderedList':
       return (node.content || []).map((item, i) => (i + 1) + '. ' + contentToMarkdown(item.content || [])).join('\n')
-    case 'blockquote':
-      return (node.content || [])
+    case 'blockquote': {
+      const parts: string[] = []
+      const blockId = node.attrs?.blockId as string | undefined
+      const excerptBinding = node.attrs?.excerptBinding as HeadingSourceBinding | null | undefined
+      if (blockId && excerptBinding?.resourceItemId && excerptBinding.resourceExcerptId) {
+        parts.push(serializeBlockquoteExcerptComment(blockId, excerptBinding))
+      }
+      const quoteMd = (node.content || [])
         .map((c) => contentToMarkdown(c.content || [])
           .split('\n')
           .map((line) => '> ' + line)
           .join('\n'))
         .join('\n')
+      parts.push(quoteMd)
+      return parts.join('\n')
+    }
     case 'horizontalRule':
       return '---'
     case 'codeBlock': {

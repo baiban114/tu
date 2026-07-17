@@ -67,6 +67,14 @@ export function isDescendant(
   return false;
 }
 
+export function collectSubtreePointIds(points: KnowledgePoint[], rootId: string): string[] {
+  const flat = flattenKnowledgePoints(points);
+  const movable = flat.map((point) => toMovableNode(point));
+  return flat
+    .filter((point) => point.id === rootId || isDescendant(rootId, point.id, movable))
+    .map((point) => point.id);
+}
+
 export function computeTreeDropTarget<T extends TreeMovableNode>(
   dragging: T,
   drop: T,

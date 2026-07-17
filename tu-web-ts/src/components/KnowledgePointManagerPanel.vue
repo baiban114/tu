@@ -4,18 +4,16 @@ import { useRouter } from 'vue-router';
 import {
   ElButton,
   ElCard,
-  ElCheckbox,
-  ElDialog,
   ElInput,
   ElMessage,
   ElTag,
 } from 'element-plus';
 import type { KnowledgeAnchor, KnowledgeGraphMode, KnowledgePoint, KnowledgePointAlias, KnowledgePointAnchor, KnowledgeRelation } from '@/api/types';
 import KnowledgePointTree from '@/components/knowledge/KnowledgePointTree.vue';
+import KnowledgePointGenerateDialog from '@/components/knowledge/KnowledgePointGenerateDialog.vue';
 import {
   addKnowledgePointAlias,
   deleteKnowledgePointAlias,
-  generateKnowledgePoints,
   getKnowledgePointTree,
   listKnowledgePointAliases,
   listKnowledgePointAnchors,
@@ -46,9 +44,6 @@ const relationsLoading = ref(false);
 const outgoing = ref<KnowledgeRelation[]>([]);
 const incoming = ref<KnowledgeRelation[]>([]);
 const generateDialogVisible = ref(false);
-const generatePageTree = ref(true);
-const generateDocumentHeadings = ref(true);
-const generating = ref(false);
 const aliases = ref<KnowledgePointAlias[]>([]);
 const newAlias = ref('');
 const addingAlias = ref(false);
@@ -140,30 +135,14 @@ function openInKnowledgeGraph(mode: KnowledgeGraphMode = 'centered') {
 }
 
 function openGenerateDialog() {
-  generatePageTree.value = true;
-  generateDocumentHeadings.value = true;
   generateDialogVisible.value = true;
 }
 
-async function handleGenerate() {
-  const sources: string[] = [];
-  if (generatePageTree.value) sources.push('pageTree');
-  if (generateDocumentHeadings.value) sources.push('documentHeadings');
-  if (!sources.length || generating.value) return;
-
-  const pageIds = workspaceStore.currentPageId ? [workspaceStore.currentPageId] : undefined;
-  generating.value = true;
-  try {
-    const result = await generateKnowledgePoints(props.kbId, { sources, pageIds });
-    generateDialogVisible.value = false;
-    ElMessage.success(`生成完成：新建 ${result.created}，跳过 ${result.skipped}，失败 ${result.failed}`);
-    await refreshTree();
-    if (selectedPointId.value) {
-      const refreshed = findPointInTree(pointTree.value, selectedPointId.value);
-      if (refreshed) await refreshDetail(refreshed);
-    }
-  } finally {
-    generating.value = false;
+async function onGenerateCompleted() {
+  await refreshTree();
+  if (selectedPointId.value) {
+    const refreshed = findPointInTree(pointTree.value, selectedPointId.value);
+    if (refreshed) await refreshDetail(refreshed);
   }
 }
 
@@ -220,7 +199,7 @@ async function onTreeUpdated() {
           style="max-width: 220px"
         />
         <ElButton @click="refreshTree">刷新</ElButton>
-        <ElButton @click="openGenerateDialog">从结构生成…</ElButton>
+        <ElButton @click="openGenerateDialog">从定位系统生成…</ElButton>
       </div>
       <div class="kpm-tree-body">
         <KnowledgePointTree
@@ -325,32 +304,12 @@ async function onTreeUpdated() {
       </div>
     </div>
 
-    <ElDialog
-      v-model="generateDialogVisible"
-      title="从结构生成知识点"
-      width="480px"
-      class="tu-dialog-viewport"
-    >
-      <p class="kpm-generate-hint">扁平生成：不设置父节点，仅建立知识点与 primary 证据锚点。</p>
-      <div class="kpm-generate-options">
-        <ElCheckbox v-model="generatePageTree">知识库页面树</ElCheckbox>
-        <ElCheckbox v-model="generateDocumentHeadings">文档标题结构</ElCheckbox>
-      </div>
-      <p v-if="workspaceStore.currentPageId" class="kpm-generate-scope">
-        将仅处理当前选中页面。
-      </p>
-      <template #footer>
-        <ElButton @click="generateDialogVisible = false">取消</ElButton>
-        <ElButton
-          type="primary"
-          :loading="generating"
-          :disabled="!generatePageTree && !generateDocumentHeadings"
-          @click="handleGenerate"
-        >
-          开始生成
-        </ElButton>
-      </template>
-    </ElDialog>
+    <KnowledgePointGenerateDialog
+      v-model:visible="generateDialogVisible"
+      :kb-id="kbId"
+      :current-page-id="workspaceStore.currentPageId"
+      @completed="onGenerateCompleted"
+    />
   </section>
 </template>
 
@@ -464,23 +423,5 @@ async function onTreeUpdated() {
   font-size: 13px;
   padding: 24px;
   text-align: center;
-}
-
-.kpm-generate-hint {
-  margin: 0 0 12px;
-  font-size: 13px;
-  color: #595959;
-}
-
-.kpm-generate-options {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.kpm-generate-scope {
-  margin: 12px 0 0;
-  font-size: 12px;
-  color: #8c8c8c;
 }
 </style>

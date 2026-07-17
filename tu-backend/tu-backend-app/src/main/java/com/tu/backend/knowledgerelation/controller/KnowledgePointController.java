@@ -9,10 +9,14 @@ import com.tu.backend.knowledgerelation.dto.GenerateKnowledgePointsRequest;
 import com.tu.backend.knowledgerelation.dto.KnowledgePointAliasDto;
 import com.tu.backend.knowledgerelation.dto.KnowledgePointAnchorDto;
 import com.tu.backend.knowledgerelation.dto.KnowledgePointDto;
+import com.tu.backend.knowledgerelation.dto.KnowledgePointGenerationPreviewDto;
 import com.tu.backend.knowledgerelation.dto.KnowledgePointGenerationResultDto;
+import com.tu.backend.knowledgerelation.dto.MergeKnowledgePointsRequest;
+import com.tu.backend.knowledgerelation.dto.PageKnowledgeContextDto;
 import com.tu.backend.knowledgerelation.dto.UpdateKnowledgePointRequest;
 import com.tu.backend.knowledgerelation.service.KnowledgePointGenerationService;
 import com.tu.backend.knowledgerelation.service.KnowledgePointService;
+import com.tu.backend.knowledgerelation.service.PageKnowledgeContextService;
 import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -32,13 +36,16 @@ public class KnowledgePointController {
 
     private final KnowledgePointService knowledgePointService;
     private final KnowledgePointGenerationService knowledgePointGenerationService;
+    private final PageKnowledgeContextService pageKnowledgeContextService;
 
     public KnowledgePointController(
         KnowledgePointService knowledgePointService,
-        KnowledgePointGenerationService knowledgePointGenerationService
+        KnowledgePointGenerationService knowledgePointGenerationService,
+        PageKnowledgeContextService pageKnowledgeContextService
     ) {
         this.knowledgePointService = knowledgePointService;
         this.knowledgePointGenerationService = knowledgePointGenerationService;
+        this.pageKnowledgeContextService = pageKnowledgeContextService;
     }
 
     @GetMapping("/kbs/{kbId}/knowledge-points/tree")
@@ -62,6 +69,22 @@ public class KnowledgePointController {
         @RequestParam String locator
     ) {
         return ApiResponse.success(knowledgePointService.findPointsByLocator(kbId, locator));
+    }
+
+    @GetMapping("/kbs/{kbId}/pages/{pageId}/knowledge-context")
+    public ApiResponse<PageKnowledgeContextDto> getPageKnowledgeContext(
+        @PathVariable String kbId,
+        @PathVariable String pageId
+    ) {
+        return ApiResponse.success(pageKnowledgeContextService.getPageKnowledgeContext(kbId, pageId));
+    }
+
+    @PostMapping("/kbs/{kbId}/knowledge-points/generate/preview")
+    public ApiResponse<KnowledgePointGenerationPreviewDto> previewPoints(
+        @PathVariable String kbId,
+        @Valid @RequestBody GenerateKnowledgePointsRequest request
+    ) {
+        return ApiResponse.success(knowledgePointGenerationService.preview(kbId, request));
     }
 
     @PostMapping("/kbs/{kbId}/knowledge-points/generate")
@@ -97,6 +120,13 @@ public class KnowledgePointController {
     public ApiResponse<Void> deletePoint(@PathVariable String id) {
         knowledgePointService.deletePoint(id);
         return ApiResponse.success();
+    }
+
+    @PostMapping("/knowledge-points/merge")
+    public ApiResponse<KnowledgePointDto> mergePoints(@Valid @RequestBody MergeKnowledgePointsRequest request) {
+        return ApiResponse.success(
+            knowledgePointService.mergePoints(request.sourcePointId(), request.targetPointId())
+        );
     }
 
     @GetMapping("/knowledge-points/{id}/anchors")

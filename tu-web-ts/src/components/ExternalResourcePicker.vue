@@ -366,6 +366,11 @@ const selectExcerpt = (excerpt: ResourceExcerpt) => {
     emitBindLike(externalResource)
     return
   }
+  if (isMarkExcerptMode.value) {
+    emit('excerpt-created', { item, excerpt })
+    emit('update:visible', false)
+    return
+  }
   emit('select', {
     title: excerpt.title || item.title,
     externalResource,

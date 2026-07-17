@@ -12,12 +12,14 @@ const props = withDefaults(defineProps<{
   confirmText?: string;
   hint?: string;
   allowManage?: boolean;
+  disabledPointIds?: string[];
 }>(), {
   selectedId: null,
   title: '选择知识点',
   confirmText: '确定',
   hint: '单击节点选中；可在树内右键新建子知识点',
   allowManage: true,
+  disabledPointIds: () => [],
 });
 
 const emit = defineEmits<{
@@ -81,6 +83,7 @@ watch(
       :selected-id="draftPointId"
       :hint="hint"
       :allow-manage="allowManage"
+      :disabled-point-ids="disabledPointIds"
       @select="onDraftSelect"
       @update:selected-id="(id) => { draftPointId = id; }"
     />

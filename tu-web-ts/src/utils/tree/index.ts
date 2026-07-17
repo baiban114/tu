@@ -17,6 +17,7 @@ export {
   computeTreeDropTarget,
   flattenKnowledgePoints,
   isDescendant,
+  collectSubtreePointIds,
   moveToRootEnd,
   normalizeDropType,
   promoteToSiblingAfterParent,

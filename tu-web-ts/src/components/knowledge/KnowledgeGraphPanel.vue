@@ -47,7 +47,9 @@ const graphNodes = ref<KnowledgeGraphNode[]>([]);
 const graphMeta = ref<{ truncated: boolean; warnings: string[]; totalPoints: number; totalRelations: number } | null>(null);
 const relationTypes = ref<RelationTypeDef[]>([]);
 const selectedTypeKeys = ref<string[]>([]);
-const mode = ref<KnowledgeGraphMode>(props.initialMode ?? (props.initialCenterPointId ? 'centered' : 'full'));
+const mode = ref<KnowledgeGraphMode>(
+  props.initialMode === 'prerequisite' ? 'prerequisite' : 'centered',
+);
 const centerPointId = ref(props.initialCenterPointId ?? '');
 const centerPointTitle = ref('');
 const pointTree = ref<KnowledgePoint[]>([]);
@@ -73,9 +75,7 @@ const hoveredPoint = computed(() =>
   graphNodes.value.find((item) => item.id === hoveredPointId.value) ?? null,
 );
 
-const needsCenterPoint = computed(() => mode.value !== 'full');
-
-const centerPointReady = computed(() => !needsCenterPoint.value || Boolean(centerPointId.value.trim()));
+const centerPointReady = computed(() => Boolean(centerPointId.value.trim()));
 
 const activeTypeKeys = computed(() => {
   if (mode.value === 'prerequisite') return ['prerequisite'];
@@ -83,44 +83,37 @@ const activeTypeKeys = computed(() => {
 });
 
 const modeOptions: Array<{ value: KnowledgeGraphMode; label: string }> = [
-  { value: 'full', label: '全库图谱' },
-  { value: 'centered', label: '以选中点为中心' },
+  { value: 'centered', label: '知识点关联' },
   { value: 'prerequisite', label: '前置子图' },
 ];
 
 const emptyState = computed(() => {
   if (!centerPointReady.value) {
     return {
-      description: '请先选择中心知识点，再查看以该点为中心的关联子图。',
+      description: '请选择中心知识点，查看其关联子图。',
       showSelectCenter: true,
       showGotoPoints: true,
-      showSwitchFull: false,
     };
   }
   if (loadError.value) {
     return {
       description: loadError.value,
-      showSelectCenter: needsCenterPoint.value,
+      showSelectCenter: true,
       showGotoPoints: true,
-      showSwitchFull: true,
     };
   }
   if (graphMeta.value?.totalPoints === 0) {
     return {
-      description: '当前知识库还没有知识点。可先在「知识点」Tab 从页面结构生成，或从文档标题/划选内容创建知识点并建立关联。',
+      description: '当前知识库还没有知识点。可先在「知识点」Tab 从定位系统生成，或从文档标题/划选内容创建知识点并建立关联。',
       showSelectCenter: false,
       showGotoPoints: true,
-      showSwitchFull: false,
     };
   }
   if (graphNodes.value.length === 0) {
     return {
-      description: needsCenterPoint.value
-        ? '当前中心点在该深度与筛选下没有可展示的节点。可增大展开深度、调整关系类型，或切换到全库图谱。'
-        : '当前筛选下没有可展示的知识点。请检查关系类型筛选，或确认知识点之间已建立关联。',
-      showSelectCenter: needsCenterPoint.value,
+      description: '当前中心点在该深度与筛选下没有可展示的节点。可增大展开深度或调整关系类型筛选。',
+      showSelectCenter: true,
       showGotoPoints: false,
-      showSwitchFull: needsCenterPoint.value,
     };
   }
   return null;
@@ -173,7 +166,7 @@ async function refreshGraph() {
   try {
     const response = await getKnowledgeGraph(props.kbId, {
       mode: mode.value,
-      centerPointId: mode.value === 'full' ? undefined : centerPointId.value.trim(),
+      centerPointId: centerPointId.value.trim(),
       depth: depth.value,
       direction: mode.value === 'prerequisite' ? direction.value : undefined,
       relationTypeKeys: mode.value === 'prerequisite' ? undefined : activeTypeKeys.value,
@@ -251,8 +244,7 @@ function onCenterPointSelected(point: KnowledgePoint) {
 
 function onModeChange(nextMode: KnowledgeGraphMode) {
   mode.value = nextMode;
-  if (nextMode !== 'full' && !centerPointId.value.trim()) {
-    void openCenterPicker();
+  if (!centerPointId.value.trim()) {
     graphData.value = null;
     graphNodes.value = [];
     lastGraphResponse.value = null;
@@ -278,11 +270,6 @@ function gotoKnowledgePointsTab() {
   void router.push({ path: '/resources', query: { tab: 'knowledgePoints' } });
 }
 
-function switchToFullGraph() {
-  mode.value = 'full';
-  void refreshGraph();
-}
-
 watch(
   () => props.kbId,
   async () => {
@@ -297,8 +284,8 @@ watch(
   (value) => {
     if (!value) return;
     centerPointId.value = value;
-    if (props.initialMode) mode.value = props.initialMode;
-    else if (mode.value === 'full') mode.value = 'centered';
+    if (props.initialMode === 'prerequisite') mode.value = 'prerequisite';
+    else mode.value = 'centered';
     selectedPointId.value = value;
     syncCenterPointTitle();
     void refreshGraph();
@@ -308,7 +295,7 @@ watch(
 watch(
   () => props.initialMode,
   (value) => {
-    if (!value) return;
+    if (!value || value === 'full') return;
     mode.value = value;
     void refreshGraph();
   },
@@ -327,16 +314,14 @@ watch(
         />
       </ElSelect>
 
-      <template v-if="needsCenterPoint">
-        <div class="kg-panel__center">
+      <div class="kg-panel__center">
           <span class="kg-panel__center-label">中心知识点</span>
           <ElTag v-if="centerPointTitle" type="primary" closable @close="clearCenterPoint">
             {{ centerPointTitle }}
           </ElTag>
           <span v-else class="kg-panel__center-placeholder">未选择</span>
           <ElButton type="primary" plain @click="openCenterPicker">选择知识点</ElButton>
-        </div>
-      </template>
+      </div>
 
       <label class="kg-panel__field">
         <span>展开深度</span>
@@ -373,11 +358,11 @@ watch(
     </div>
 
     <ElAlert
-      v-if="needsCenterPoint && !centerPointReady"
+      v-if="!centerPointReady"
       type="info"
       :closable="false"
       show-icon
-      title="「以选中点为中心」和「前置子图」需要先选定一个知识点作为中心。"
+      title="请先选择中心知识点，再查看关联子图。"
       class="kg-panel__alert"
     />
 
@@ -386,7 +371,7 @@ watch(
       type="warning"
       :closable="false"
       show-icon
-      title="图谱节点已达上限，部分知识点未展示。可切换到「以选中点为中心」或提高筛选精度。"
+      title="图谱节点已达上限，部分关联未展示。可缩小展开深度或收紧关系类型筛选。"
       class="kg-panel__alert"
     />
     <ElAlert
@@ -423,12 +408,6 @@ watch(
                 @click="gotoKnowledgePointsTab"
               >
                 去知识点 Tab
-              </ElButton>
-              <ElButton
-                v-if="emptyState?.showSwitchFull"
-                @click="switchToFullGraph"
-              >
-                切换到全库图谱
               </ElButton>
             </div>
           </ElEmpty>
