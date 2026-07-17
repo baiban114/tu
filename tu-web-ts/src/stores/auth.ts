@@ -3,6 +3,7 @@ import { defineStore } from 'pinia';
 import {
   login,
   register,
+  DEV_LOCAL_USER,
   type AuthResponse,
   type AuthUser,
   type LoginPayload,
@@ -71,6 +72,14 @@ export const useAuthStore = defineStore('auth', () => {
     persistUser(null);
   }
 
+  /** Dev-only: seed a local user so per-user UI prefs can persist without login. */
+  function ensureDevAuthUser() {
+    if (!import.meta.env.DEV) return;
+    if (user.value) return;
+    user.value = DEV_LOCAL_USER;
+    persistUser(DEV_LOCAL_USER);
+  }
+
   return {
     user,
     loading,
@@ -79,5 +88,6 @@ export const useAuthStore = defineStore('auth', () => {
     registerUser,
     loginUser,
     logout,
+    ensureDevAuthUser,
   };
 });

@@ -160,6 +160,51 @@ function bfsPrerequisite(center: string, depth: number, maxNodes: number, edges:
   return { pointIds: visited, truncated, cycleDetected };
 }
 
+function buildTaxonomyChildrenByParent(allPoints: KnowledgePoint[]): Map<string, string[]> {
+  const grouped = new Map<string, KnowledgePoint[]>();
+  for (const point of allPoints) {
+    const parentId = point.parentId?.trim();
+    if (!parentId) continue;
+    if (!grouped.has(parentId)) grouped.set(parentId, []);
+    grouped.get(parentId)!.push(point);
+  }
+  const childrenByParent = new Map<string, string[]>();
+  for (const [parentId, children] of grouped.entries()) {
+    childrenByParent.set(
+      parentId,
+      [...children]
+        .sort((a, b) => a.sortOrder - b.sortOrder || a.title.localeCompare(b.title))
+        .map((item) => item.id),
+    );
+  }
+  return childrenByParent;
+}
+
+function expandWithTaxonomyDescendants(
+  selectedIds: Set<string>,
+  allPoints: KnowledgePoint[],
+  maxNodes: number,
+): { pointIds: Set<string>; truncated: boolean } {
+  const childrenByParent = buildTaxonomyChildrenByParent(allPoints);
+  const expanded = new Set(selectedIds);
+  const queue = [...selectedIds];
+  let truncated = false;
+
+  while (queue.length > 0) {
+    const parentId = queue.shift()!;
+    for (const childId of childrenByParent.get(parentId) ?? []) {
+      if (expanded.has(childId)) continue;
+      if (expanded.size >= maxNodes) {
+        truncated = true;
+        return { pointIds: expanded, truncated };
+      }
+      expanded.add(childId);
+      queue.push(childId);
+    }
+  }
+  return { pointIds: expanded, truncated };
+}
+
 export function getKnowledgeGraphMock(kbId: string, params: GetKnowledgeGraphParams = {}): KnowledgeGraphResponse {
   const mode: KnowledgeGraphMode = params.mode ?? 'full';
   const maxNodes = Math.min(Math.max(params.maxNodes ?? DEFAULT_MAX_NODES, 1), 2000);
@@ -210,6 +255,13 @@ export function getKnowledgeGraphMock(kbId: string, params: GetKnowledgeGraphPar
       selectedIds.add(point.id);
     }
     if (allPoints.length > selectedIds.size) truncated = true;
+  }
+
+  const taxonomyExpand = expandWithTaxonomyDescendants(selectedIds, allPoints, maxNodes);
+  selectedIds = taxonomyExpand.pointIds;
+  if (taxonomyExpand.truncated) {
+    truncated = true;
+    warnings.push('taxonomy children truncated due to maxNodes limit');
   }
 
   const nodes = [...selectedIds]

@@ -29,6 +29,7 @@ const props = withDefaults(defineProps<{
   kbId: string;
   tree: KnowledgePoint[];
   selectedId?: string | null;
+  selectedIds?: string[];
   loading?: boolean;
   mode?: 'manage' | 'pick';
   draggable?: boolean;
@@ -39,6 +40,7 @@ const props = withDefaults(defineProps<{
   onRefresh?: () => Promise<void>;
 }>(), {
   selectedId: null,
+  selectedIds: () => [],
   loading: false,
   mode: 'manage',
   draggable: undefined,
@@ -52,15 +54,64 @@ const emit = defineEmits<{
   select: [point: KnowledgePoint];
   updated: [];
   'update:selectedId': [id: string | null];
+  'update:selectedIds': [ids: string[]];
 }>();
 
+function captureExpandedNodeIds(): string[] {
+  const nodesMap = treeRef.value?.store?.nodesMap;
+  if (!nodesMap) return [...expandedNodeIds.value];
+  const fromTree = Object.keys(nodesMap).filter((key) => Boolean(nodesMap[key]?.expanded));
+  return fromTree.length ? fromTree : [...expandedNodeIds.value];
+}
+
+function rememberExpandedNode(nodeId: string) {
+  if (!nodeId) return;
+  expandedNodeIds.value = new Set([...expandedNodeIds.value, nodeId]);
+}
+
+function forgetExpandedNode(nodeId: string) {
+  if (!nodeId) return;
+  const next = new Set(expandedNodeIds.value);
+  next.delete(nodeId);
+  expandedNodeIds.value = next;
+}
+
+function onNodeExpand(data: KnowledgePoint) {
+  rememberExpandedNode(data.id);
+}
+
+function onNodeCollapse(data: KnowledgePoint) {
+  forgetExpandedNode(data.id);
+}
+
+async function restoreExpandedNodeIds(nodeIds?: string[]) {
+  const targets = nodeIds ?? [...expandedNodeIds.value];
+  if (!targets.length || !treeRef.value) return;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    await nextTick();
+    let restored = 0;
+    for (const nodeId of targets) {
+      const node = treeRef.value.getNode(nodeId);
+      if (node && !node.isLeaf) {
+        node.expand();
+        rememberExpandedNode(nodeId);
+        restored += 1;
+      }
+    }
+    if (restored > 0) return;
+  }
+}
+
 async function notifyUpdated() {
+  const expandedSnapshot = captureExpandedNodeIds();
+  expandedNodeIds.value = new Set(expandedSnapshot);
   await props.onRefresh?.();
   emit('updated');
 }
 
 const treeRef = ref<InstanceType<typeof ElTree> | null>(null);
 const localTree = ref<KnowledgePoint[]>([]);
+const expandedNodeIds = ref(new Set<string>());
 const renamingPointId = ref<string | null>(null);
 const renameValue = ref('');
 const renameInputRef = ref<InstanceType<typeof ElInput> | null>(null);
@@ -81,15 +132,44 @@ const { panelRef: contextMenuRef, position: contextMenuPosition } = useViewportC
 const treeProps = { label: 'title', children: 'children' };
 const isDraggable = computed(() => props.draggable ?? props.mode === 'manage');
 const disabledPointIdSet = computed(() => new Set(props.disabledPointIds));
+const selectedIdSet = computed(() => {
+  const ids = props.selectedIds ?? [];
+  if (ids.length) return new Set(ids);
+  return props.selectedId ? new Set([props.selectedId]) : new Set<string>();
+});
 
 function isPointDisabled(pointId: string) {
   return disabledPointIdSet.value.has(pointId);
 }
 
+function findPointById(pointId: string): KnowledgePoint | null {
+  return flattenKnowledgePoints(localTree.value).find((item) => item.id === pointId) ?? null;
+}
+
+function applySelection(ids: string[], focusId?: string | null) {
+  const unique = [...new Set(ids)];
+  const primary = focusId && unique.includes(focusId)
+    ? focusId
+    : unique[unique.length - 1] ?? null;
+  emit('update:selectedIds', unique);
+  emit('update:selectedId', primary);
+  if (primary) {
+    const point = findPointById(primary);
+    if (point) emit('select', point);
+  }
+}
+
+function nodeClass(data: KnowledgePoint) {
+  return {
+    'is-multi-selected': selectedIdSet.value.has(data.id),
+  };
+}
+
 watch(
   () => props.tree,
-  (next) => {
+  async (next) => {
     localTree.value = next;
+    await restoreExpandedNodeIds();
   },
   { immediate: true, deep: true },
 );
@@ -120,15 +200,25 @@ watch(
 );
 
 function expandTreeNode(nodeId: string) {
-  const nodesMap = treeRef.value?.store?.nodesMap;
-  if (!nodesMap?.[nodeId]) return;
-  nodesMap[nodeId].expanded = true;
+  rememberExpandedNode(nodeId);
+  treeRef.value?.getNode(nodeId)?.expand();
 }
 
-function onNodeClick(data: KnowledgePoint) {
+function onNodeClick(data: KnowledgePoint, _node: unknown, _component: unknown, event: Event) {
   if (props.mode === 'pick' && isPointDisabled(data.id)) return;
-  emit('select', data);
-  emit('update:selectedId', data.id);
+  const mouseEvent = event as MouseEvent;
+  const additive = props.mode === 'manage' && Boolean(mouseEvent.ctrlKey || mouseEvent.metaKey);
+  if (!additive) {
+    applySelection([data.id], data.id);
+    return;
+  }
+
+  const current = new Set(selectedIdSet.value);
+  if (current.has(data.id)) current.delete(data.id);
+  else current.add(data.id);
+  const ids = [...current];
+  const focusId = current.has(data.id) ? data.id : ids[ids.length - 1] ?? null;
+  applySelection(ids, focusId);
 }
 
 function flatMovableNodes() {
@@ -158,8 +248,7 @@ async function createPoint(parentId: string | null) {
     await nextTick();
     if (parentId) expandTreeNode(parentId);
     treeRef.value?.setCurrentKey(created.id);
-    emit('select', created);
-    emit('update:selectedId', created.id);
+    applySelection([created.id], created.id);
     if (props.mode === 'manage') {
       onStartRename(created);
     }
@@ -209,6 +298,7 @@ async function onFinishRename(node: KnowledgePoint) {
     await notifyUpdated();
     emit('select', updated);
     emit('update:selectedId', updated.id);
+    emit('update:selectedIds', [updated.id]);
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : '重命名失败');
   }
@@ -221,9 +311,17 @@ async function onDeletePoint() {
   try {
     await deleteKnowledgePoint(node.id);
     await notifyUpdated();
+    const nextIds = (props.selectedIds ?? []).filter((id) => id !== node.id);
     if (props.selectedId === node.id) {
-      emit('update:selectedId', null);
+      const primary = nextIds[nextIds.length - 1] ?? null;
+      emit('update:selectedIds', nextIds);
+      emit('update:selectedId', primary);
+      if (!primary) return;
+      const point = findPointById(primary);
+      if (point) emit('select', point);
+      return;
     }
+    emit('update:selectedIds', nextIds);
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : '删除失败');
   }
@@ -255,8 +353,7 @@ async function onMergePoint() {
   try {
     const merged = await mergeKnowledgePoints(source.id, target.id);
     await notifyUpdated();
-    emit('select', merged);
-    emit('update:selectedId', merged.id);
+    applySelection([merged.id], merged.id);
     ElMessage.success(`已将「${source.title}」合并到「${target.title}」`);
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : '合并失败');
@@ -272,8 +369,7 @@ function onPointTreeContextMenu(event: Event, data: unknown) {
   const e = event as MouseEvent;
   const raw = data as KnowledgePoint;
   const node = flattenKnowledgePoints(localTree.value).find((item) => item.id === raw.id) ?? raw;
-  emit('select', node);
-  emit('update:selectedId', node.id);
+  applySelection([node.id], node.id);
   contextMenu.value = { visible: true, x: e.clientX, y: e.clientY, node };
 }
 
@@ -427,6 +523,10 @@ defineExpose({
   startRename: onStartRename,
   setCurrentKey: (id: string) => treeRef.value?.setCurrentKey(id),
   expandNode: expandTreeNode,
+  clearSelection: () => {
+    emit('update:selectedIds', []);
+    emit('update:selectedId', null);
+  },
 });
 </script>
 
@@ -434,7 +534,7 @@ defineExpose({
   <div class="kpt" @keydown="handleKeydown">
     <div v-if="showToolbar" class="kpt-toolbar">
       <span v-if="toolbarHint" class="kpt-toolbar__hint">{{ toolbarHint }}</span>
-      <span v-else-if="mode === 'manage'" class="kpt-toolbar__hint">拖拽调整层级与顺序</span>
+      <span v-else-if="mode === 'manage'" class="kpt-toolbar__hint">拖拽调整层级与顺序；Ctrl+点击多选</span>
       <ElButton
         link
         size="small"
@@ -458,9 +558,12 @@ defineExpose({
           :draggable="isDraggable"
           :allow-drop="allowDrop"
           :filter-node-method="filterNode"
+          :node-class="nodeClass"
           :current-node-key="selectedId ?? undefined"
           class="kpt-tree"
           @node-click="onNodeClick"
+          @node-expand="onNodeExpand"
+          @node-collapse="onNodeCollapse"
           @node-contextmenu="onPointTreeContextMenu"
           @node-drag-start="onNodeDragStart"
           @node-drag-over="onNodeDragOver"
@@ -482,7 +585,10 @@ defineExpose({
               <span
                 v-else
                 class="kpt-tree-node__label"
-                :class="{ 'kpt-tree-node__label--disabled': isPointDisabled(data.id) }"
+                :class="{
+                  'kpt-tree-node__label--disabled': isPointDisabled(data.id),
+                  'kpt-tree-node__label--selected': selectedIdSet.has(data.id),
+                }"
               >{{ node.label }}</span>
             </span>
           </template>
@@ -591,7 +697,8 @@ defineExpose({
   background: #ebebeb;
 }
 
-.kpt-tree :deep(.el-tree-node.is-current > .el-tree-node__content) {
+.kpt-tree :deep(.el-tree-node.is-current > .el-tree-node__content),
+.kpt-tree :deep(.el-tree-node.is-multi-selected > .el-tree-node__content) {
   background: #e6f4ff;
   color: #1677ff;
 }

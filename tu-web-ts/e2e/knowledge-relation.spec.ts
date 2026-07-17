@@ -216,6 +216,55 @@ test('promotes child knowledge point to sibling via context menu', async ({ page
   expect(parentId).toBeNull()
 })
 
+test('supports ctrl multi-select in manager knowledge point tree', async ({ page }) => {
+  test.setTimeout(60_000)
+  await page.goto('/resources?tab=knowledgePoints')
+  await expect(page.getByRole('tab', { name: '知识点' })).toBeVisible()
+
+  const parentNode = page.locator('.kpt-tree .el-tree-node').filter({ hasText: '基础概念' }).first()
+  await parentNode.locator('.el-tree-node__expand-icon').click()
+
+  await page.locator('.kpt-tree .el-tree-node__content', { hasText: '基础概念' }).first().click()
+  await page.locator('.kpt-tree .el-tree-node__content', { hasText: '数据结构' }).first().click({ modifiers: ['Control'] })
+
+  await expect(page.getByText('已选 2 个知识点')).toBeVisible()
+  await expect(page.getByRole('listitem').filter({ hasText: '基础概念' })).toBeVisible()
+  await expect(page.getByRole('listitem').filter({ hasText: '数据结构' })).toBeVisible()
+
+  const selectedCount = await page.locator('.kpt-tree .kpt-tree-node__label--selected').count()
+  expect(selectedCount).toBe(2)
+
+  await page.getByRole('button', { name: '清除选择' }).click()
+  await expect(page.getByText('已选 2 个知识点')).toHaveCount(0)
+})
+
+test('keeps expanded nodes after tree refresh', async ({ page }) => {
+  test.setTimeout(60_000)
+  await page.goto('/resources?tab=knowledgePoints')
+  await page.evaluate(() => {
+    const points = [
+      { id: 'kp-parent', kbId: 'kb-demo-1', parentId: null, title: '父节点', status: 'active', sortOrder: 0 },
+      { id: 'kp-child-a', kbId: 'kb-demo-1', parentId: 'kp-parent', title: '子A', status: 'active', sortOrder: 0 },
+      { id: 'kp-child-b', kbId: 'kb-demo-1', parentId: 'kp-parent', title: '子B', status: 'active', sortOrder: 1 },
+    ]
+    window.localStorage.setItem('tu-mock-knowledge-points', JSON.stringify(points))
+    window.localStorage.setItem('tu-mock-knowledge-relations', '[]')
+  })
+  await page.reload()
+  await expect(page.getByRole('tab', { name: '知识点' })).toBeVisible()
+
+  const parentNode = page.locator('.kpt-tree .el-tree-node').filter({ hasText: '父节点' }).first()
+  await parentNode.locator('.el-tree-node__expand-icon').click()
+  await expect(page.locator('.kpt-tree .el-tree-node__content', { hasText: '子A' })).toBeVisible()
+  await expect(page.locator('.kpt-tree .el-tree-node__content', { hasText: '子B' })).toBeVisible()
+
+  await page.getByRole('button', { name: '刷新' }).click()
+
+  await expect(page.getByRole('treeitem', { name: '父节点' })).toHaveAttribute('aria-expanded', 'true')
+  await expect(page.locator('.kpt-tree .el-tree-node__content', { hasText: '子A' })).toBeVisible()
+  await expect(page.locator('.kpt-tree .el-tree-node__content', { hasText: '子B' })).toBeVisible()
+})
+
 test('merges child knowledge point into parent via context menu', async ({ page }) => {
   test.setTimeout(60_000)
   await page.goto('/resources?tab=knowledgePoints')

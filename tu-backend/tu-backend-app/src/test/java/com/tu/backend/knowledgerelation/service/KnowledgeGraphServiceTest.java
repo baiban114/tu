@@ -86,6 +86,20 @@ class KnowledgeGraphServiceTest {
     }
 
     @Test
+    void centeredModeIncludesTaxonomyChildrenWithoutSemanticEdges() {
+        when(pointRepository.findByKbIdOrderBySortOrderAscTitleAsc(KB_ID)).thenReturn(List.of(
+            point("kp-parent", "Parent", null, 0),
+            point("kp-child", "Child", "kp-parent", 1)
+        ));
+        when(relationRepository.findByKbIdOrderByUpdatedAtDescCreatedAtDesc(KB_ID)).thenReturn(List.of());
+
+        KnowledgeGraphDto graph = service.getGraph(KB_ID, "centered", "kp-parent", 1, null, null, 500);
+
+        assertThat(graph.nodes()).extracting(node -> node.id()).containsExactlyInAnyOrder("kp-parent", "kp-child");
+        assertThat(graph.edges()).isEmpty();
+    }
+
+    @Test
     void centeredModeReturnsTwoHopNeighborhood() {
         KnowledgeGraphDto graph = service.getGraph(KB_ID, "centered", "kp-a", 2, null, null, 500);
 

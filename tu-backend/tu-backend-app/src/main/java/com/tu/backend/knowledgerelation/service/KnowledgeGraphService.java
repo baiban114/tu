@@ -16,6 +16,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashSet;
@@ -111,6 +112,13 @@ public class KnowledgeGraphService {
                     truncated = true;
                 }
             }
+        }
+
+        TaxonomyExpandResult taxonomyExpand = expandWithTaxonomyDescendants(selectedPointIds, allPoints, safeMaxNodes);
+        selectedPointIds = taxonomyExpand.pointIds();
+        if (taxonomyExpand.truncated()) {
+            truncated = true;
+            warnings.add("taxonomy children truncated due to maxNodes limit");
         }
 
         List<KnowledgeGraphNodeDto> nodes = selectedPointIds.stream()
@@ -222,6 +230,55 @@ public class KnowledgeGraphService {
             }
         }
         return new BfsResult(visited, truncated, cycleDetected);
+    }
+
+    private TaxonomyExpandResult expandWithTaxonomyDescendants(
+        Set<String> selectedPointIds,
+        Map<String, KnowledgePointEntity> allPoints,
+        int maxNodes
+    ) {
+        Map<String, List<String>> childrenByParent = buildTaxonomyChildrenByParent(allPoints);
+        LinkedHashSet<String> expanded = new LinkedHashSet<>(selectedPointIds);
+        ArrayDeque<String> queue = new ArrayDeque<>(selectedPointIds);
+        boolean truncated = false;
+
+        while (!queue.isEmpty()) {
+            String parentId = queue.poll();
+            for (String childId : childrenByParent.getOrDefault(parentId, List.of())) {
+                if (expanded.contains(childId)) {
+                    continue;
+                }
+                if (expanded.size() >= maxNodes) {
+                    truncated = true;
+                    return new TaxonomyExpandResult(expanded, truncated);
+                }
+                expanded.add(childId);
+                queue.add(childId);
+            }
+        }
+        return new TaxonomyExpandResult(expanded, truncated);
+    }
+
+    private Map<String, List<String>> buildTaxonomyChildrenByParent(Map<String, KnowledgePointEntity> allPoints) {
+        Map<String, List<KnowledgePointEntity>> grouped = new HashMap<>();
+        for (KnowledgePointEntity entity : allPoints.values()) {
+            String parentId = normalize(entity.getParentId());
+            if (parentId == null) {
+                continue;
+            }
+            grouped.computeIfAbsent(parentId, key -> new ArrayList<>()).add(entity);
+        }
+        Map<String, List<String>> childrenByParent = new HashMap<>();
+        for (Map.Entry<String, List<KnowledgePointEntity>> entry : grouped.entrySet()) {
+            childrenByParent.put(
+                entry.getKey(),
+                entry.getValue().stream()
+                    .sorted(Comparator.comparing(KnowledgePointEntity::getSortOrder).thenComparing(KnowledgePointEntity::getTitle))
+                    .map(KnowledgePointEntity::getId)
+                    .toList()
+            );
+        }
+        return childrenByParent;
     }
 
     private Map<String, Set<String>> buildUndirectedAdjacency(List<PointEdge> edges) {
@@ -373,5 +430,8 @@ public class KnowledgeGraphService {
     }
 
     private record BfsResult(Set<String> pointIds, boolean truncated, boolean cycleDetected) {
+    }
+
+    private record TaxonomyExpandResult(Set<String> pointIds, boolean truncated) {
     }
 }

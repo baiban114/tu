@@ -26,9 +26,19 @@ import { getKnowledgePointTree } from '@/api/knowledgePoint';
 import { listRelationTypes } from '@/api/knowledgeRelation';
 import KnowledgeGraphViewer from '@/components/knowledge/KnowledgeGraphViewer.vue';
 import { openKnowledgePointPicker } from '@/utils/knowledgePointPicker';
+import { useAuthStore } from '@/stores/auth';
 import { useWorkspaceStore } from '@/stores/workspace';
 import { navigateKnowledgePoint } from '@/utils/knowledgeAnchor';
-import { projectKnowledgeGraphToGraphData } from '@/utils/knowledgeGraphProjection';
+import { enrichKnowledgeGraphWithTaxonomy } from '@/utils/enrichKnowledgeGraphWithTaxonomy';
+import {
+  clearKnowledgeGraphCenterPoint,
+  loadKnowledgeGraphPreferences,
+  saveKnowledgeGraphPreferences,
+} from '@/utils/knowledgeGraphPreferences';
+import {
+  collectKnowledgeGraphContainerPointIds,
+  projectKnowledgeGraphToGraphData,
+} from '@/utils/knowledgeGraphProjection';
 
 const props = defineProps<{
   kbId: string;
@@ -37,6 +47,7 @@ const props = defineProps<{
 }>();
 
 const router = useRouter();
+const authStore = useAuthStore();
 const workspaceStore = useWorkspaceStore();
 
 const viewerRef = ref<InstanceType<typeof KnowledgeGraphViewer> | null>(null);
@@ -50,14 +61,18 @@ const selectedTypeKeys = ref<string[]>([]);
 const mode = ref<KnowledgeGraphMode>(
   props.initialMode === 'prerequisite' ? 'prerequisite' : 'centered',
 );
-const centerPointId = ref(props.initialCenterPointId ?? '');
+const initialCenterFromProps = props.initialCenterPointId?.trim() ?? '';
+const centerPointId = ref(initialCenterFromProps);
 const centerPointTitle = ref('');
 const pointTree = ref<KnowledgePoint[]>([]);
 const depth = ref(2);
 const direction = ref<KnowledgeGraphDirection>('out');
-const selectedPointId = ref<string | null>(null);
+const selectedPointId = ref<string | null>(initialCenterFromProps || null);
+const selectedPointIds = ref<string[]>(initialCenterFromProps ? [initialCenterFromProps] : []);
+const collapsedPointIds = ref<string[]>([]);
 const hoveredPointId = ref<string | null>(null);
 const loadError = ref<string | null>(null);
+const persistReady = ref(false);
 
 const navigateHandlers = computed(() => ({
   router,
@@ -70,6 +85,14 @@ const navigateHandlers = computed(() => ({
 const selectedPoint = computed(() =>
   graphNodes.value.find((item) => item.id === selectedPointId.value) ?? null,
 );
+
+const containerPointIds = computed(() => collectKnowledgeGraphContainerPointIds(graphNodes.value));
+
+const selectedContainerPointIds = computed(() =>
+  selectedPointIds.value.filter((id) => containerPointIds.value.includes(id)),
+);
+
+const hasMultiSelection = computed(() => selectedPointIds.value.length > 1);
 
 const hoveredPoint = computed(() =>
   graphNodes.value.find((item) => item.id === hoveredPointId.value) ?? null,
@@ -119,6 +142,27 @@ const emptyState = computed(() => {
   return null;
 });
 
+function sanitizeCollapsedPointIds(ids: string[]): string[] {
+  const containers = new Set(containerPointIds.value);
+  return ids.filter((id) => containers.has(id));
+}
+
+function buildProjectionOptions(highlightPointId?: string | null) {
+  return {
+    highlightPointId: highlightPointId ?? selectedPointId.value ?? centerPointId.value ?? null,
+    highlightPointIds: selectedPointIds.value,
+    collapsedPointIds: collapsedPointIds.value,
+  };
+}
+
+function applyGraphProjection(highlightPointId?: string | null) {
+  if (!lastGraphResponse.value) return;
+  graphData.value = projectKnowledgeGraphToGraphData(
+    lastGraphResponse.value,
+    buildProjectionOptions(highlightPointId),
+  );
+}
+
 function findPointInTree(nodes: KnowledgePoint[], id: string): KnowledgePoint | null {
   for (const node of nodes) {
     if (node.id === id) return node;
@@ -145,6 +189,61 @@ async function loadPointTree() {
   syncCenterPointTitle();
 }
 
+function validateCenterPointInTree() {
+  const id = centerPointId.value.trim();
+  if (!id) return;
+  if (!findPointInTree(pointTree.value, id)) {
+    centerPointId.value = '';
+    centerPointTitle.value = '';
+    selectedPointId.value = null;
+  }
+}
+
+function applySavedPreferences() {
+  const urlCenter = props.initialCenterPointId?.trim();
+  if (urlCenter) return;
+
+  const userId = authStore.user?.id;
+  if (!userId) return;
+
+  const saved = loadKnowledgeGraphPreferences(userId, props.kbId);
+  if (!saved) return;
+
+  centerPointId.value = saved.centerPointId;
+  mode.value = saved.mode === 'prerequisite' ? 'prerequisite' : 'centered';
+  depth.value = saved.depth;
+  direction.value = saved.direction;
+  if (saved.selectedTypeKeys.length) {
+    selectedTypeKeys.value = saved.selectedTypeKeys;
+  }
+  if (saved.collapsedPointIds?.length) {
+    collapsedPointIds.value = [...saved.collapsedPointIds];
+  }
+  selectedPointId.value = saved.centerPointId;
+  selectedPointIds.value = [saved.centerPointId];
+}
+
+function persistGraphPreferences() {
+  if (!persistReady.value) return;
+  const userId = authStore.user?.id;
+  if (!userId) return;
+
+  const center = centerPointId.value.trim();
+  if (!center) {
+    clearKnowledgeGraphCenterPoint(userId, props.kbId);
+    return;
+  }
+
+  saveKnowledgeGraphPreferences(userId, props.kbId, {
+    centerPointId: center,
+    mode: mode.value,
+    depth: depth.value,
+    direction: direction.value,
+    selectedTypeKeys: selectedTypeKeys.value,
+    collapsedPointIds: collapsedPointIds.value,
+  });
+}
+
 async function loadRelationTypes() {
   relationTypes.value = await listRelationTypes(props.kbId);
   if (!selectedTypeKeys.value.length) {
@@ -164,6 +263,9 @@ async function refreshGraph() {
 
   loading.value = true;
   try {
+    if (!pointTree.value.length) {
+      await loadPointTree();
+    }
     const response = await getKnowledgeGraph(props.kbId, {
       mode: mode.value,
       centerPointId: centerPointId.value.trim(),
@@ -172,18 +274,18 @@ async function refreshGraph() {
       relationTypeKeys: mode.value === 'prerequisite' ? undefined : activeTypeKeys.value,
       maxNodes: 500,
     });
-    graphNodes.value = response.nodes;
-    lastGraphResponse.value = response;
+    const enriched = enrichKnowledgeGraphWithTaxonomy(response, pointTree.value, { maxNodes: 500 });
+    graphNodes.value = enriched.nodes;
+    lastGraphResponse.value = enriched;
     graphMeta.value = {
-      truncated: response.meta.truncated,
-      warnings: response.meta.warnings,
-      totalPoints: response.meta.totalPoints,
-      totalRelations: response.meta.totalRelations,
+      truncated: enriched.meta.truncated,
+      warnings: enriched.meta.warnings,
+      totalPoints: enriched.meta.totalPoints,
+      totalRelations: enriched.meta.totalRelations,
     };
-    graphData.value = projectKnowledgeGraphToGraphData(response, {
-      highlightPointId: selectedPointId.value ?? centerPointId.value ?? null,
-    });
-    if (selectedPointId.value && !response.nodes.some((item) => item.id === selectedPointId.value)) {
+    graphData.value = projectKnowledgeGraphToGraphData(enriched, buildProjectionOptions());
+    collapsedPointIds.value = sanitizeCollapsedPointIds(collapsedPointIds.value);
+    if (selectedPointId.value && !enriched.nodes.some((item) => item.id === selectedPointId.value)) {
       selectedPointId.value = null;
     }
   } catch (error) {
@@ -199,15 +301,65 @@ async function refreshGraph() {
 }
 
 function applyHighlight(pointId: string | null) {
-  if (!lastGraphResponse.value) return;
-  graphData.value = projectKnowledgeGraphToGraphData(lastGraphResponse.value, {
-    highlightPointId: pointId,
-  });
+  applyGraphProjection(pointId);
 }
 
-function onNodeClick(pointId: string) {
-  selectedPointId.value = pointId;
-  applyHighlight(pointId);
+function setNodeSelection(pointId: string, additive = false) {
+  if (additive) {
+    const next = new Set(selectedPointIds.value);
+    if (next.has(pointId)) next.delete(pointId);
+    else next.add(pointId);
+    selectedPointIds.value = [...next];
+    selectedPointId.value = selectedPointIds.value[selectedPointIds.value.length - 1] ?? pointId;
+  } else {
+    selectedPointIds.value = [pointId];
+    selectedPointId.value = pointId;
+  }
+  applyHighlight(selectedPointId.value);
+}
+
+function clearNodeSelection() {
+  selectedPointIds.value = [];
+  selectedPointId.value = null;
+  applyHighlight(null);
+}
+
+function collapseContainers(pointIds: string[]) {
+  const targets = pointIds.filter((id) => containerPointIds.value.includes(id));
+  if (!targets.length) return;
+  collapsedPointIds.value = [...new Set([...collapsedPointIds.value, ...targets])];
+  applyGraphProjection();
+  persistGraphPreferences();
+}
+
+function expandContainers(pointIds: string[]) {
+  if (!pointIds.length) return;
+  const remove = new Set(pointIds);
+  collapsedPointIds.value = collapsedPointIds.value.filter((id) => !remove.has(id));
+  applyGraphProjection();
+  persistGraphPreferences();
+}
+
+function collapseSelectedContainers() {
+  collapseContainers(selectedContainerPointIds.value);
+}
+
+function expandSelectedContainers() {
+  expandContainers(selectedContainerPointIds.value);
+}
+
+function collapseAllContainers() {
+  collapseContainers(containerPointIds.value);
+}
+
+function expandAllContainers() {
+  collapsedPointIds.value = [];
+  applyGraphProjection();
+  persistGraphPreferences();
+}
+
+function onNodeClick(pointId: string, options?: { additive?: boolean }) {
+  setNodeSelection(pointId, Boolean(options?.additive));
 }
 
 function onNodeHover(pointId: string | null) {
@@ -238,12 +390,14 @@ async function openCenterPicker() {
 function onCenterPointSelected(point: KnowledgePoint) {
   centerPointId.value = point.id;
   centerPointTitle.value = point.title;
-  selectedPointId.value = point.id;
-  void refreshGraph();
+  setNodeSelection(point.id);
+  persistGraphPreferences();
+  void loadPointTree().then(() => refreshGraph());
 }
 
 function onModeChange(nextMode: KnowledgeGraphMode) {
   mode.value = nextMode;
+  persistGraphPreferences();
   if (!centerPointId.value.trim()) {
     graphData.value = null;
     graphNodes.value = [];
@@ -259,11 +413,13 @@ function clearCenterPoint() {
   centerPointId.value = '';
   centerPointTitle.value = '';
   selectedPointId.value = null;
+  selectedPointIds.value = [];
   graphData.value = null;
   graphNodes.value = [];
   lastGraphResponse.value = null;
   graphMeta.value = null;
   loadError.value = null;
+  persistGraphPreferences();
 }
 
 function gotoKnowledgePointsTab() {
@@ -273,8 +429,13 @@ function gotoKnowledgePointsTab() {
 watch(
   () => props.kbId,
   async () => {
+    persistReady.value = false;
     await Promise.all([loadRelationTypes(), loadPointTree()]);
+    applySavedPreferences();
+    validateCenterPointInTree();
+    syncCenterPointTitle();
     await refreshGraph();
+    persistReady.value = true;
   },
   { immediate: true },
 );
@@ -286,10 +447,12 @@ watch(
     centerPointId.value = value;
     if (props.initialMode === 'prerequisite') mode.value = 'prerequisite';
     else mode.value = 'centered';
-    selectedPointId.value = value;
+    setNodeSelection(value);
     syncCenterPointTitle();
     void refreshGraph();
+    if (persistReady.value) persistGraphPreferences();
   },
+  { immediate: true },
 );
 
 watch(
@@ -298,8 +461,13 @@ watch(
     if (!value || value === 'full') return;
     mode.value = value;
     void refreshGraph();
+    if (persistReady.value) persistGraphPreferences();
   },
 );
+
+watch([centerPointId, mode, depth, direction, selectedTypeKeys, collapsedPointIds], () => {
+  persistGraphPreferences();
+}, { deep: true });
 </script>
 
 <template>
@@ -342,6 +510,22 @@ watch(
 
       <ElButton :disabled="!centerPointReady" @click="refreshGraph">刷新</ElButton>
       <ElButton :disabled="!graphData?.nodes.length" @click="fitCanvas">适应画布</ElButton>
+
+      <template v-if="containerPointIds.length">
+        <ElButton
+          :disabled="!selectedContainerPointIds.length"
+          @click="collapseSelectedContainers"
+        >
+          收起选中子节点
+        </ElButton>
+        <ElButton
+          :disabled="!selectedContainerPointIds.length"
+          @click="expandSelectedContainers"
+        >
+          展开选中子节点
+        </ElButton>
+        <ElButton @click="expandAllContainers">全部展开</ElButton>
+      </template>
     </div>
 
     <div v-if="mode !== 'prerequisite'" class="kg-panel__filters">
@@ -431,7 +615,33 @@ watch(
 
         <div class="kg-panel__detail">
           <div class="kg-panel__side-title">节点详情</div>
-          <template v-if="selectedPoint">
+          <p v-if="graphData?.nodes.length" class="kg-panel__hint kg-panel__hint--compact">
+            Ctrl+点击可多选；对有分类子节点的节点可批量收起/展开内部子节点。
+          </p>
+          <template v-if="hasMultiSelection">
+            <p class="kg-panel__meta">已选 {{ selectedPointIds.length }} 个节点</p>
+            <p v-if="selectedContainerPointIds.length" class="kg-panel__meta">
+              其中 {{ selectedContainerPointIds.length }} 个含内部子节点
+            </p>
+            <div class="kg-panel__batch-actions">
+              <ElButton
+                size="small"
+                :disabled="!selectedContainerPointIds.length"
+                @click="collapseSelectedContainers"
+              >
+                收起内部子节点
+              </ElButton>
+              <ElButton
+                size="small"
+                :disabled="!selectedContainerPointIds.length"
+                @click="expandSelectedContainers"
+              >
+                展开内部子节点
+              </ElButton>
+              <ElButton size="small" plain @click="clearNodeSelection">清除选择</ElButton>
+            </div>
+          </template>
+          <template v-else-if="selectedPoint">
             <h4>{{ selectedPoint.title }}</h4>
             <p v-if="selectedPoint.summary" class="kg-panel__summary">{{ selectedPoint.summary }}</p>
             <p v-if="selectedPoint.estimatedHours != null" class="kg-panel__meta">
@@ -584,6 +794,18 @@ watch(
 .kg-panel__detail h4 {
   margin: 0 0 8px;
   font-size: 15px;
+}
+
+.kg-panel__hint--compact {
+  margin-bottom: 8px;
+  font-size: 12px;
+}
+
+.kg-panel__batch-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 10px;
 }
 
 .kg-panel__summary,

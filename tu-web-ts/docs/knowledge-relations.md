@@ -155,10 +155,10 @@ flowchart LR
 - 知识点建立（含为内容绑定知识点）：资源管理「知识点」Tab、从定位系统生成、`createKnowledgePoint + sourceAnchor`；**不在**关联弹窗内提供
 - 目标知识点可在 Picker 知识点树内直接新建：工具栏 `+` 创建顶层知识点，节点右键「添加子知识点」创建子级；新建知识点不自动绑定当前证据（独立于内容的标签式实体）
 - 知识点树支持重命名：节点右键「重命名」，或选中节点后按 `F2`（管理面板与关联弹窗共用 `KnowledgePointTree`）
-- 管理：资源管理「知识点」Tab（[`KnowledgePointTree.vue`](../src/components/knowledge/KnowledgePointTree.vue) 分类树为主：拖拽调层级、右键新建/重命名/**合并到…**/删除；右侧详情展示证据/别名/关联）
+- 管理：资源管理「知识点」Tab（[`KnowledgePointTree.vue`](../src/components/knowledge/KnowledgePointTree.vue) 分类树为主：拖拽调层级、**Ctrl+点击多选**、右键新建/重命名/**合并到…**/删除；多选时右侧汇总已选列表，单选展示证据/别名/关联）
 - **知识点合并**：树右键「合并到…」→ 选择保留的**目标**知识点（源及其子树不可选）→ 确认后删除源节点；源的直接子节点改挂到目标下，证据/别名/语义边迁移到目标（同 locator 或同类型边去重，源标题写入目标别名）
 - **文档页知识点上下文**：[`PageKnowledgeContextBar.vue`](../src/components/PageKnowledgeContextBar.vue) 挂在 [`TuEditorPage.vue`](../src/components/TuEditorPage.vue) 标题行下方；**本页知识点**仅展示 `page:{pageId}` 页级锚点绑定的知识点（与知识点管理树中可管理的页级绑定一致，不含标题/节/块/标注等子 locator 自动生成的点）；**前驱** / **后继** 仍基于本页全部证据锚点关联的知识点聚合 `prerequisite` 出边 / 入边；点击芯片跳转到该点 primary 证据；关联创建后随 `knowledgeRelationRefreshKey` 刷新
-- **知识图谱**：资源管理「知识图谱」Tab（[`KnowledgeGraphPanel.vue`](../src/components/knowledge/KnowledgeGraphPanel.vue)）：默认「知识点关联」（以中心点展开），需先选择中心知识点；支持「前置子图」；中心点用通用知识点选择器（见下）
+- **知识图谱**：资源管理「知识图谱」Tab（[`KnowledgeGraphPanel.vue`](../src/components/knowledge/KnowledgeGraphPanel.vue)）：默认「知识点关联」（以中心点展开），需先选择中心知识点；支持「前置子图」；中心点用通用知识点选择器（见下）。子图选点沿语义关系 BFS 后，前端会用与 **KnowledgePointPicker 相同的分类树**（`GET .../knowledge-points/tree` / `parent_id`）并入 taxonomy 子孙并嵌套绘制；语义关系边仍连接具体知识点，不绘制 taxonomy 边。可对含分类子节点的容器**收起/展开内部子节点**（`Ctrl+点击` 多选后批量操作；收起后标题前显示 `▸`，语义边改挂到可见父节点）。中心点、模式、深度、方向、关系类型筛选与收起状态按**当前登录用户 + 知识库**写入 `localStorage` 并在下次打开时恢复（开发模式未登录时自动使用本地开发用户 `dev-local-user`）
 - **知识点选择器（通用）**：[`KnowledgePointPickerPanel.vue`](../src/components/knowledge/KnowledgePointPickerPanel.vue)（树 + 搜索）；[`KnowledgePointPickerDialog.vue`](../src/components/knowledge/KnowledgePointPickerDialog.vue)（弹窗）；全局 `openKnowledgePointPicker()`（[`knowledgePointPicker.ts`](../src/utils/knowledgePointPicker.ts) + [`KnowledgePointPickerHost.vue`](../src/components/knowledge/KnowledgePointPickerHost.vue) 挂载于 `App.vue`）。任意页面可 `await openKnowledgePointPicker({ kbId, title, selectedId })` 或声明式 `<KnowledgePointPickerDialog v-model:visible @select />`
 - **从定位系统生成**：知识点 Tab「从定位系统生成…」→ **Step 1** 选页面范围（整个知识库 / 当前工作区页面 / 自选页面树）→ **预览**（列出范围内全部 page/heading/section/block 候选）→ **Step 2** 表格勾选要生成的项（默认勾选「将新建」）→ **确认生成**。完成后刷新分类树
 - **别名**：选中知识点后在详情区维护别名 chips；列表搜索与 Picker 搜索 Tab 可命中别名（副标题展示匹配别名）

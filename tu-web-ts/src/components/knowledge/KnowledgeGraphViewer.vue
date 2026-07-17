@@ -9,7 +9,7 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{
-  'node-click': [pointId: string];
+  'node-click': [pointId: string, options?: { additive?: boolean }];
   'node-hover': [pointId: string | null];
 }>();
 
@@ -27,8 +27,13 @@ function renderGraphData(data: GraphData | null) {
   if (!graph || !data) return;
   graph.clearCells();
   if (!data.nodes.length) return;
+  const nodes = [...data.nodes].sort((a, b) => {
+    const za = typeof a.zIndex === 'number' ? a.zIndex : 1;
+    const zb = typeof b.zIndex === 'number' ? b.zIndex : 1;
+    return za - zb;
+  });
   graph.fromJSON({
-    nodes: data.nodes as never[],
+    nodes: nodes as never[],
     edges: data.edges as never[],
   });
 }
@@ -69,9 +74,13 @@ function initGraph() {
     },
   });
 
-  graph.on('node:click', ({ node }) => {
+  graph.on('node:click', ({ node, e: clickEvent }) => {
     const pointId = parseKnowledgePointNodeId(node.id);
-    if (pointId) emit('node-click', pointId);
+    if (!pointId) return;
+    const mouseEvent = (clickEvent as { e?: MouseEvent }).e;
+    emit('node-click', pointId, {
+      additive: Boolean(mouseEvent?.ctrlKey || mouseEvent?.metaKey),
+    });
   });
 
   graph.on('node:mouseenter', ({ node }) => {

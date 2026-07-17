@@ -62,6 +62,29 @@ test('navigates from knowledge point manager to centered graph', async ({ page }
   await expect(page).toHaveURL(/centerPointId=kp-demo-1/)
   await expect(page.getByRole('tab', { name: '知识图谱' })).toBeVisible()
   await expect(page.locator('.knowledge-graph-viewer .x6-node')).toHaveCount(2, { timeout: 15000 })
+
+  const nestedInsideParent = await page.evaluate(() => {
+    function findNodeRect(label: string): DOMRect | null {
+      const viewer = document.querySelector('.knowledge-graph-viewer')
+      if (!viewer) return null
+      const texts = Array.from(viewer.querySelectorAll('text'))
+      const match = texts.find((item) => item.textContent?.trim() === label)
+      if (!match) return null
+      const nodeEl = match.closest('.x6-node') as HTMLElement | null
+      return nodeEl?.getBoundingClientRect() ?? null
+    }
+
+    const parent = findNodeRect('基础概念')
+    const child = findNodeRect('数据结构')
+    if (!parent || !child) return false
+    return (
+      child.left >= parent.left
+      && child.top >= parent.top
+      && child.right <= parent.right + 1
+      && child.bottom <= parent.bottom + 1
+    )
+  })
+  expect(nestedInsideParent).toBe(true)
 })
 
 test('opens prerequisite subgraph from knowledge point detail', async ({ page }) => {
@@ -75,5 +98,104 @@ test('opens prerequisite subgraph from knowledge point detail', async ({ page })
   await expect(page).toHaveURL(/graphMode=prerequisite/)
   await expect(page).toHaveURL(/centerPointId=kp-demo-2/)
   await expect(page.locator('.kg-panel__toolbar')).toBeVisible()
+  await expect(page.locator('.knowledge-graph-viewer .x6-node')).toHaveCount(2, { timeout: 15000 })
+})
+
+test('includes taxonomy child inside parent without semantic relation', async ({ page }) => {
+  test.setTimeout(60_000)
+  await page.goto('/resources?tab=knowledgeGraph')
+  await page.evaluate(() => {
+    const points = [
+      {
+        id: 'kp-tax-parent',
+        kbId: 'kb-demo-1',
+        parentId: null,
+        title: '父知识点',
+        status: 'active',
+        sortOrder: 10,
+      },
+      {
+        id: 'kp-tax-child',
+        kbId: 'kb-demo-1',
+        parentId: 'kp-tax-parent',
+        title: '子知识点',
+        status: 'active',
+        sortOrder: 0,
+      },
+    ]
+    window.localStorage.setItem('tu-mock-knowledge-points', JSON.stringify(points))
+    window.localStorage.setItem('tu-mock-knowledge-relations', '[]')
+  })
+
+  await page.goto('/resources?tab=knowledgeGraph&centerPointId=kp-tax-parent')
+  await expect(page.locator('.knowledge-graph-viewer .x6-node')).toHaveCount(2, { timeout: 15000 })
+
+  const nestedInsideParent = await page.evaluate(() => {
+    function findNodeRect(label: string): DOMRect | null {
+      const viewer = document.querySelector('.knowledge-graph-viewer')
+      if (!viewer) return null
+      const texts = Array.from(viewer.querySelectorAll('text'))
+      const match = texts.find((item) => item.textContent?.trim() === label)
+      if (!match) return null
+      const nodeEl = match.closest('.x6-node') as HTMLElement | null
+      return nodeEl?.getBoundingClientRect() ?? null
+    }
+
+    const parent = findNodeRect('父知识点')
+    const child = findNodeRect('子知识点')
+    if (!parent || !child) return false
+    return (
+      child.left >= parent.left
+      && child.top >= parent.top
+      && child.right <= parent.right + 1
+      && child.bottom <= parent.bottom + 1
+    )
+  })
+  expect(nestedInsideParent).toBe(true)
+})
+
+test('collapses embedded taxonomy children for selected container', async ({ page }) => {
+  test.setTimeout(60_000)
+  await page.goto('/resources?tab=knowledgeGraph')
+  await page.evaluate(() => {
+    const points = [
+      {
+        id: 'kp-tax-parent',
+        kbId: 'kb-demo-1',
+        parentId: null,
+        title: '父知识点',
+        status: 'active',
+        sortOrder: 10,
+      },
+      {
+        id: 'kp-tax-child',
+        kbId: 'kb-demo-1',
+        parentId: 'kp-tax-parent',
+        title: '子知识点',
+        status: 'active',
+        sortOrder: 0,
+      },
+    ]
+    window.localStorage.setItem('tu-mock-knowledge-points', JSON.stringify(points))
+    window.localStorage.setItem('tu-mock-knowledge-relations', '[]')
+  })
+
+  await page.goto('/resources?tab=knowledgeGraph&centerPointId=kp-tax-parent')
+  await expect(page.locator('.knowledge-graph-viewer .x6-node')).toHaveCount(2, { timeout: 15000 })
+
+  await page.getByRole('button', { name: '收起选中子节点' }).click()
+  await expect(page.locator('.knowledge-graph-viewer .x6-node')).toHaveCount(1, { timeout: 15000 })
+
+  const collapsedLabel = await page.evaluate(() => {
+    const viewer = document.querySelector('.knowledge-graph-viewer')
+    if (!viewer) return ''
+    const texts = Array.from(viewer.querySelectorAll('text'))
+    return texts.map((item) => item.textContent?.trim() ?? '').join('|')
+  })
+  expect(collapsedLabel).toContain('父知识点')
+  expect(collapsedLabel).toContain('▸')
+  expect(collapsedLabel).not.toContain('子知识点')
+
+  await page.getByRole('button', { name: '全部展开' }).click()
   await expect(page.locator('.knowledge-graph-viewer .x6-node')).toHaveCount(2, { timeout: 15000 })
 })

@@ -8,6 +8,13 @@ export interface AuthUser {
   createdAt?: string | null;
 }
 
+export const DEV_LOCAL_USER: AuthUser = {
+  id: 'dev-local-user',
+  username: 'dev',
+  email: 'dev@local',
+  displayName: '本地开发用户',
+};
+
 export interface AuthResponse {
   user: AuthUser;
   tokenType: string;

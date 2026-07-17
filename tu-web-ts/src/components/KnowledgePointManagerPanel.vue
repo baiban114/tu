@@ -26,6 +26,7 @@ import {
   relationEndpointLabel,
 } from '@/utils/knowledgeAnchor';
 import { useWorkspaceStore } from '@/stores/workspace';
+import { flattenKnowledgePoints } from '@/utils/tree/drag';
 
 const props = defineProps<{
   kbId: string;
@@ -38,6 +39,7 @@ const pointTree = ref<KnowledgePoint[]>([]);
 const treeLoading = ref(false);
 const keyword = ref('');
 const selectedPointId = ref<string | null>(null);
+const selectedPointIds = ref<string[]>([]);
 const selectedPoint = ref<KnowledgePoint | null>(null);
 const anchors = ref<KnowledgePointAnchor[]>([]);
 const relationsLoading = ref(false);
@@ -56,6 +58,13 @@ const navigateHandlers = computed(() => ({
   currentPageId: workspaceStore.currentPageId,
 }));
 
+const hasMultiSelection = computed(() => selectedPointIds.value.length > 1);
+
+const selectedPoints = computed(() => {
+  const idSet = new Set(selectedPointIds.value);
+  return flattenKnowledgePoints(pointTree.value).filter((item) => idSet.has(item.id));
+});
+
 async function refreshTree() {
   treeLoading.value = true;
   try {
@@ -68,6 +77,15 @@ async function refreshTree() {
         selectedPointId.value = null;
         selectedPoint.value = null;
       }
+    }
+    selectedPointIds.value = selectedPointIds.value.filter((id) => Boolean(findPointInTree(pointTree.value, id)));
+    if (!selectedPointIds.value.length) {
+      selectedPointId.value = null;
+      selectedPoint.value = null;
+    } else if (selectedPointId.value && !selectedPointIds.value.includes(selectedPointId.value)) {
+      selectedPointId.value = selectedPointIds.value[selectedPointIds.value.length - 1] ?? null;
+      const fallback = selectedPointId.value ? findPointInTree(pointTree.value, selectedPointId.value) : null;
+      selectedPoint.value = fallback;
     }
   } finally {
     treeLoading.value = false;
@@ -104,6 +122,7 @@ watch(
   () => props.kbId,
   () => {
     selectedPointId.value = null;
+    selectedPointIds.value = [];
     selectedPoint.value = null;
     void refreshTree();
   },
@@ -112,6 +131,25 @@ watch(
 
 function onTreeSelect(point: KnowledgePoint) {
   void refreshDetail(point);
+}
+
+function onSelectedIdChange(id: string | null) {
+  selectedPointId.value = id;
+  if (!id) {
+    selectedPoint.value = null;
+    anchors.value = [];
+    aliases.value = [];
+    outgoing.value = [];
+    incoming.value = [];
+    return;
+  }
+  const point = findPointInTree(pointTree.value, id);
+  if (point) void refreshDetail(point);
+}
+
+function clearSelection() {
+  selectedPointIds.value = [];
+  onSelectedIdChange(null);
 }
 
 function onNavigateAnchor(anchor: KnowledgeAnchor) {
@@ -206,6 +244,7 @@ async function onTreeUpdated() {
           :kb-id="kbId"
           :tree="pointTree"
           :selected-id="selectedPointId"
+          :selected-ids="selectedPointIds"
           :loading="treeLoading"
           mode="manage"
           :filter-keyword="keyword"
@@ -213,13 +252,26 @@ async function onTreeUpdated() {
           toolbar-hint="拖到节点上/下边线调整顺序；拖到父节点行可提升为同级；或右键「提升为同级节点」"
           @select="onTreeSelect"
           @updated="onTreeUpdated"
-          @update:selected-id="(id) => { selectedPointId = id; }"
+          @update:selected-id="onSelectedIdChange"
+          @update:selected-ids="(ids) => { selectedPointIds = ids; }"
         />
       </div>
     </div>
 
     <div class="kpm-detail-panel">
-      <ElCard v-if="selectedPoint" v-loading="relationsLoading" shadow="never" class="kpm-detail">
+      <ElCard v-if="hasMultiSelection" shadow="never" class="kpm-detail">
+        <template #header>
+          <div class="kpm-detail__header">
+            <span>已选 {{ selectedPointIds.length }} 个知识点</span>
+            <ElButton size="small" plain @click="clearSelection">清除选择</ElButton>
+          </div>
+        </template>
+        <ul class="kpm-multi-list">
+          <li v-for="point in selectedPoints" :key="point.id">{{ point.title }}</li>
+        </ul>
+        <p class="kpm-multi-hint">单选节点可查看详情；右键仍对单个节点操作。</p>
+      </ElCard>
+      <ElCard v-else-if="selectedPoint" v-loading="relationsLoading" shadow="never" class="kpm-detail">
         <template #header>
           <div class="kpm-detail__header">
             <span>{{ selectedPoint.title }}</span>
@@ -300,7 +352,7 @@ async function onTreeUpdated() {
         </div>
       </ElCard>
       <div v-else class="kpm-empty-detail">
-        在左侧分类树中选择知识点，或右键新建
+        在左侧分类树中选择知识点（Ctrl+点击可多选），或右键新建
       </div>
     </div>
 
@@ -423,5 +475,19 @@ async function onTreeUpdated() {
   font-size: 13px;
   padding: 24px;
   text-align: center;
+}
+
+.kpm-multi-list {
+  margin: 0;
+  padding-left: 18px;
+  color: #434343;
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.kpm-multi-hint {
+  margin: 12px 0 0;
+  font-size: 12px;
+  color: #8c8c8c;
 }
 </style>
