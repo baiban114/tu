@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from 'vue'
-import { ElDialog, ElEmpty, ElInput, ElScrollbar } from 'element-plus'
+import { ElDialog, ElEmpty, ElInput, ElPagination, ElScrollbar } from 'element-plus'
 import {
   createResourceExcerpt,
   createResourceItem,
@@ -10,12 +10,14 @@ import {
   listResourceTypes,
   supportsResourceExcerpts,
   supportsBookChapters,
+  DOCUMENT_RESOURCE_TYPE_CODE,
   type ResourceChapter,
   type ResourceExcerpt,
   type ResourceItem,
   type ResourceType,
 } from '@/api/externalResource'
-import { MAX_PAGE_SIZE } from '@/constants/pagination'
+import { DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE } from '@/constants/pagination'
+import { clampPage, paginateSlice } from '@/utils/clientPagination'
 import { buildTreeFromFlat } from '@/utils/tree'
 import type { Block, ExternalResourceEmbedData, HeadingSourceBinding } from '@/api/types'
 import { bindingFromExternalResource, basisBindingFromExternalResource } from '@/utils/headingSource'
@@ -39,7 +41,11 @@ export interface ExternalResourcePickerBindSourcePayload {
 
 const props = defineProps<{
   visible: boolean
-  mode?: 'insert' | 'markExcerpt' | 'bindSource' | 'setBasis'
+  mode?: 'insert' | 'markExcerpt' | 'bindSource' | 'setBasis' | 'linkDocument'
+  /** Where a linkDocument confirm attaches: knowledge base list vs a page body. */
+  attachTarget?: 'kb' | 'page'
+  /** Optional label for page target (shown in detail pane). */
+  attachTargetName?: string
   initialExcerptText?: string
   initialExcerptTitle?: string
 }>()
@@ -49,6 +55,7 @@ const emit = defineEmits<{
   (e: 'select', selection: ExternalResourcePickerSelection): void
   (e: 'excerpt-created', payload: ExternalResourcePickerExcerptCreated): void
   (e: 'bind-source', payload: ExternalResourcePickerBindSourcePayload): void
+  (e: 'link-item', item: ResourceItem): void
 }>()
 
 const loading = ref(false)
@@ -56,6 +63,7 @@ const excerptLoading = ref(false)
 const creatingResource = ref(false)
 const error = ref('')
 const keyword = ref('')
+const listPage = ref(0)
 const types = ref<ResourceType[]>([])
 const items = ref<ResourceItem[]>([])
 const excerpts = ref<ResourceExcerpt[]>([])
@@ -83,9 +91,29 @@ const excerptForm = reactive({
 })
 
 const typeById = computed(() => new Map(types.value.map((type) => [type.id, type])))
-const creatableTypes = computed(() => types.value.filter((type) => (
-  type.code !== 'web-link'
-)))
+const isLinkDocumentMode = computed(() => props.mode === 'linkDocument')
+const isAttachToPage = computed(() => isLinkDocumentMode.value && props.attachTarget === 'page')
+const linkConfirmLabel = computed(() => (
+  isAttachToPage.value ? '挂接到此页面下' : '加入当前知识库'
+))
+const linkSectionTitle = computed(() => {
+  if (!isLinkDocumentMode.value) return ''
+  if (isAttachToPage.value) {
+    const name = props.attachTargetName?.trim()
+    return name ? `挂接到「${name}」下` : '挂接到页面下'
+  }
+  return '挂接到知识库'
+})
+const linkHintText = computed(() => {
+  if (isAttachToPage.value) {
+    return '将把该文档资源挂到所选页面在左侧页面列表中的下一层级，打开后只读展示全部节选。'
+  }
+  return '将把该文档资源挂接到当前知识库页面列表顶层，打开后只读展示全部节选。'
+})
+const creatableTypes = computed(() => types.value.filter((type) => {
+  if (isLinkDocumentMode.value) return type.code === DOCUMENT_RESOURCE_TYPE_CODE
+  return type.code !== 'web-link'
+}))
 const resourceFormType = computed(() => typeById.value.get(resourceForm.typeId) || null)
 const selectedItem = computed(() => items.value.find((item) => item.id === selectedItemId.value) || null)
 const selectedItemType = computed(() => selectedItem.value ? typeById.value.get(selectedItem.value.typeId) : null)
@@ -97,6 +125,9 @@ const isSetBasisMode = computed(() => props.mode === 'setBasis')
 const isBindLikeMode = computed(() => isBindSourceMode.value || isSetBasisMode.value)
 const isExcerptOnlyMode = computed(() => isMarkExcerptMode.value || isBindLikeMode.value)
 const dialogTitle = computed(() => {
+  if (isLinkDocumentMode.value) {
+    return isAttachToPage.value ? '挂接文档资源到页面下' : '挂接文档资源到知识库'
+  }
   if (isSetBasisMode.value) return '设置依据'
   if (isBindSourceMode.value) return '标记标题来源'
   if (isMarkExcerptMode.value) return '标记外部资源节选'
@@ -154,7 +185,9 @@ const itemMatchesKeyword = (item: ResourceItem, keywordText: string): boolean =>
 
 const filteredItems = computed(() => {
   const q = keyword.value.trim().toLowerCase()
-  const sourceItems = items.value
+  const sourceItems = isLinkDocumentMode.value
+    ? items.value.filter((item) => typeById.value.get(item.typeId)?.code === DOCUMENT_RESOURCE_TYPE_CODE)
+    : items.value
   if (!q) return sourceItems
   return sourceItems.filter((item) => {
     if (itemMatchesKeyword(item, q)) return true
@@ -162,6 +195,24 @@ const filteredItems = computed(() => {
     return indexedExcerpts.some((excerpt) => excerptMatchesKeyword(excerpt, q))
   })
 })
+
+const pagedFilteredItems = computed(() => {
+  if (!isLinkDocumentMode.value) return filteredItems.value
+  const page = clampPage(listPage.value, filteredItems.value.length, DEFAULT_PAGE_SIZE)
+  return paginateSlice(filteredItems.value, page, DEFAULT_PAGE_SIZE).items
+})
+
+const listTotal = computed(() => filteredItems.value.length)
+
+const searchPlaceholder = computed(() => (
+  isLinkDocumentMode.value
+    ? '搜索文档标题、标识或 URL'
+    : '搜索资源标题、类型、归类、标识或节选'
+))
+
+function onListPageChange(page: number) {
+  listPage.value = Math.max(0, page - 1)
+}
 
 const filteredExcerpts = computed(() => {
   const q = keyword.value.trim().toLowerCase()
@@ -224,11 +275,22 @@ const loadResources = async () => {
     ])
     types.value = nextTypes.items
     items.value = nextItems.items
-    if (!resourceForm.typeId || !nextTypes.items.some((type) => type.id === resourceForm.typeId && type.code !== 'web-link')) {
-      resourceForm.typeId = nextTypes.items.find((type) => type.code !== 'web-link')?.id || ''
+    const preferredCreatable = isLinkDocumentMode.value
+      ? nextTypes.items.find((type) => type.code === DOCUMENT_RESOURCE_TYPE_CODE)
+      : nextTypes.items.find((type) => type.code !== 'web-link')
+    if (!resourceForm.typeId || !nextTypes.items.some((type) => type.id === resourceForm.typeId)) {
+      resourceForm.typeId = preferredCreatable?.id || ''
     }
-    const firstAvailableItem = nextItems.items[0]
-    const selectedStillUsable = nextItems.items.some((item) => (
+    const documentTypeIds = new Set(
+      nextTypes.items
+        .filter((type) => type.code === DOCUMENT_RESOURCE_TYPE_CODE)
+        .map((type) => type.id),
+    )
+    const selectableItems = isLinkDocumentMode.value
+      ? nextItems.items.filter((item) => documentTypeIds.has(item.typeId))
+      : nextItems.items
+    const firstAvailableItem = selectableItems[0]
+    const selectedStillUsable = selectableItems.some((item) => (
       item.id === selectedItemId.value
     ))
     if (!selectedItemId.value || !selectedStillUsable) {
@@ -335,6 +397,11 @@ const selectResource = (item: ResourceItem) => {
   emit('update:visible', false)
 }
 
+const linkDocumentResource = (item: ResourceItem) => {
+  emit('link-item', item)
+  emit('update:visible', false)
+}
+
 const emitBindLike = (externalResource: ExternalResourceEmbedData) => {
   const binding = isSetBasisMode.value
     ? basisBindingFromExternalResource(externalResource)
@@ -419,10 +486,27 @@ const createAndInsertExcerpt = async () => {
 watch(() => props.visible, (visible) => {
   if (!visible) return
   keyword.value = ''
+  listPage.value = 0
   createResourceVisible.value = false
   resetExcerptForm()
   resetResourceForm()
   void loadResources()
+})
+
+watch(keyword, () => {
+  listPage.value = 0
+})
+
+watch(filteredItems, (next) => {
+  if (!isLinkDocumentMode.value) return
+  listPage.value = clampPage(listPage.value, next.length, DEFAULT_PAGE_SIZE)
+  const pageItems = paginateSlice(next, listPage.value, DEFAULT_PAGE_SIZE).items
+  if (selectedItemId.value && !pageItems.some((item) => item.id === selectedItemId.value)) {
+    // Keep selection if still in full list; only auto-pick when current id vanished.
+    if (!next.some((item) => item.id === selectedItemId.value)) {
+      selectedItemId.value = pageItems[0]?.id || next[0]?.id || ''
+    }
+  }
 })
 
 watch(() => [props.initialExcerptText, props.initialExcerptTitle, props.mode], () => {
@@ -444,45 +528,68 @@ watch(selectedItemId, () => {
     destroy-on-close
     @update:model-value="emit('update:visible', $event)"
   >
-    <div class="resource-picker">
+    <div
+      class="resource-picker"
+      :class="{ 'resource-picker--link-document': isLinkDocumentMode }"
+    >
       <el-input
         v-model="keyword"
         class="resource-picker__search"
-        placeholder="搜索资源标题、类型、归类、标识或节选"
+        :placeholder="searchPlaceholder"
         clearable
       />
       <p v-if="error" class="resource-picker__error">{{ error }}</p>
       <div class="resource-picker__layout">
         <section class="resource-picker__list">
           <div class="resource-picker__list-header">
-            <div class="resource-picker__section-title">资源实体</div>
+            <div class="resource-picker__section-title">
+              {{ isLinkDocumentMode ? '文档资源' : '资源实体' }}
+            </div>
             <button type="button" class="resource-picker__secondary" @click="openCreateResource">新增实体</button>
           </div>
           <div class="resource-picker__list-scroll">
             <el-scrollbar>
               <button
-                v-for="item in filteredItems"
+                v-for="item in pagedFilteredItems"
                 :key="item.id"
                 type="button"
                 class="resource-picker__item"
                 :class="{ 'resource-picker__item--active': selectedItemId === item.id }"
                 @click="selectedItemId = item.id"
               >
-                <span>{{ item.title }}</span>
+                <span class="resource-picker__item-title">{{ item.title }}</span>
                 <small>{{ item.typeName }} · {{ item.workTitle || '未归类' }} · {{ item.identityFieldLabel }}: {{ item.identityValue || '未填写' }}</small>
               </button>
-              <el-empty
-                v-if="!loading && filteredItems.length === 0"
-                description="没有找到外部资源"
-                :image-size="64"
-              />
+              <div v-if="!loading && pagedFilteredItems.length === 0" class="resource-picker__empty-slot">
+                <el-empty
+                  :description="isLinkDocumentMode ? '没有找到文档资源' : '没有找到外部资源'"
+                  :image-size="64"
+                />
+              </div>
             </el-scrollbar>
+          </div>
+          <div v-if="isLinkDocumentMode && listTotal > 0" class="resource-picker__list-footer">
+            <el-pagination
+              size="small"
+              background
+              layout="total, prev, pager, next"
+              :total="listTotal"
+              :page-size="DEFAULT_PAGE_SIZE"
+              :current-page="listPage + 1"
+              @current-change="onListPageChange"
+            />
           </div>
         </section>
 
         <section class="resource-picker__detail">
           <div class="resource-picker__detail-scroll">
-          <form v-if="createResourceVisible" class="resource-picker__create-form" @submit.prevent="createAndSelectResource">
+          <form
+            v-if="createResourceVisible"
+            class="resource-picker__create-form"
+            :class="{ 'resource-picker__create-form--fill': isLinkDocumentMode }"
+            @submit.prevent="createAndSelectResource"
+          >
+            <div class="resource-picker__create-form-scroll">
             <div class="resource-picker__section-title">新增资源实体</div>
             <label>
               类型
@@ -516,6 +623,7 @@ watch(selectedItemId, () => {
               备注
               <textarea v-model.trim="resourceForm.note" rows="3" maxlength="1024" placeholder="可选" />
             </label>
+            </div>
             <div class="resource-picker__create-actions">
               <button type="button" @click="cancelCreateResource">取消</button>
               <button type="submit" :disabled="creatingResource || !resourceForm.typeId || !resourceForm.title.trim()">
@@ -524,94 +632,117 @@ watch(selectedItemId, () => {
             </div>
           </form>
           <template v-else-if="selectedItem">
-            <div class="resource-picker__section-title">{{ isSetBasisMode ? '选择依据资料' : isBindSourceMode ? '绑定来源' : '插入' }}</div>
-            <h3>{{ selectedItem.title }}</h3>
-            <p>{{ selectedItem.typeName }} · {{ selectedItem.workTitle || '未归类' }}</p>
-            <p>{{ selectedItem.identityFieldLabel }}: {{ selectedItem.identityValue || '未填写' }}</p>
-            <a v-if="selectedItem.sourceUrl" :href="selectedItem.sourceUrl" target="_blank" rel="noreferrer">{{ selectedItem.sourceUrl }}</a>
-            <button
-              v-if="isSetBasisMode"
-              type="button"
-              class="resource-picker__primary"
-              @click="selectResourceForBasis(selectedItem)"
-            >
-              挂靠此资源实体
-            </button>
-            <button
-              v-else-if="!isExcerptOnlyMode"
-              type="button"
-              class="resource-picker__primary"
-              @click="selectResource(selectedItem)"
-            >
-              插入整个资源
-            </button>
-
-            <div v-if="selectedSupportsExcerpts" class="resource-picker__excerpts">
-              <div class="resource-picker__section-title">{{ isSetBasisMode ? '可选：具体节选' : '资源节选' }}</div>
+            <div class="resource-picker__detail-body">
+              <div class="resource-picker__detail-meta">
+                <div class="resource-picker__section-title">{{ isLinkDocumentMode ? linkSectionTitle : isSetBasisMode ? '选择依据资料' : isBindSourceMode ? '绑定来源' : '插入' }}</div>
+                <h3 class="resource-picker__detail-title">{{ selectedItem.title }}</h3>
+                <p>{{ selectedItem.typeName }} · {{ selectedItem.workTitle || '未归类' }}</p>
+                <p>{{ selectedItem.identityFieldLabel }}: {{ selectedItem.identityValue || '未填写' }}</p>
+                <a v-if="selectedItem.sourceUrl" :href="selectedItem.sourceUrl" target="_blank" rel="noreferrer">{{ selectedItem.sourceUrl }}</a>
+              </div>
               <button
-                v-for="excerpt in filteredExcerpts"
-                :key="excerpt.id"
+                v-if="isSetBasisMode"
                 type="button"
-                class="resource-picker__excerpt"
-                @click="selectExcerpt(excerpt)"
+                class="resource-picker__primary"
+                @click="selectResourceForBasis(selectedItem)"
               >
-                <span>{{ excerpt.title }}</span>
-                <small v-if="excerpt.chapterTitle">章节：{{ excerpt.chapterTitle }}</small>
-                <small v-if="excerpt.locator">{{ resourcePositionDisplay(excerpt.locator) }}</small>
-                <em>{{ excerpt.excerptText }}</em>
+                挂靠此资源实体
               </button>
-              <p v-if="!excerptLoading && filteredExcerpts.length === 0 && !isSetBasisMode" class="resource-picker__empty">
-                {{ keyword.trim() ? '没有匹配的节选' : '暂无节选' }}
-              </p>
-              <p v-else-if="!excerptLoading && filteredExcerpts.length === 0 && isSetBasisMode" class="resource-picker__empty">
-                该资源暂无节选，可直接挂靠上方资源实体。
-              </p>
+              <button
+                v-else-if="!isLinkDocumentMode && !isExcerptOnlyMode"
+                type="button"
+                class="resource-picker__primary"
+                @click="selectResource(selectedItem)"
+              >
+                插入整个资源
+              </button>
 
-              <form v-if="!isSetBasisMode" class="resource-picker__form" @submit.prevent="createAndInsertExcerpt">
-                <div class="resource-picker__form-fields">
-                  <input v-model.trim="excerptForm.title" placeholder="节选标题" required maxlength="255" />
-                  <el-tree-select
-                    v-if="selectedSupportsBookChapters && excerptChapterTreeOptions.length"
-                    v-model="excerptForm.chapterId"
-                    :data="excerptChapterTreeOptions"
-                    check-strictly
-                    clearable
-                    filterable
-                    placeholder="所属章节（可选）"
-                    style="width: 100%"
-                  />
-                  <label class="resource-picker__field-label">资源定位</label>
-                  <ResourcePositionLocatorField
-                    v-model="excerptForm.locator"
-                    :resource-type-code="selectedItemType?.code"
-                  />
-                  <div
-                    class="resource-picker__rich-editor"
-                    @mousedown.stop
-                    @click.stop
-                    @keydown.stop
-                  >
-                    <TuEditor
-                      :blocks="excerptEditorBlocks"
-                      :hover-handle="false"
-                      class="resource-picker__tu-editor"
-                      @update:blocks="handleExcerptEditorUpdate"
+              <div v-if="!isLinkDocumentMode && selectedSupportsExcerpts" class="resource-picker__excerpts">
+                <div class="resource-picker__section-title">{{ isSetBasisMode ? '可选：具体节选' : '资源节选' }}</div>
+                <button
+                  v-for="excerpt in filteredExcerpts"
+                  :key="excerpt.id"
+                  type="button"
+                  class="resource-picker__excerpt"
+                  @click="selectExcerpt(excerpt)"
+                >
+                  <span>{{ excerpt.title }}</span>
+                  <small v-if="excerpt.chapterTitle">章节：{{ excerpt.chapterTitle }}</small>
+                  <small v-if="excerpt.locator">{{ resourcePositionDisplay(excerpt.locator) }}</small>
+                  <em>{{ excerpt.excerptText }}</em>
+                </button>
+                <p v-if="!excerptLoading && filteredExcerpts.length === 0 && !isSetBasisMode" class="resource-picker__empty">
+                  {{ keyword.trim() ? '没有匹配的节选' : '暂无节选' }}
+                </p>
+                <p v-else-if="!excerptLoading && filteredExcerpts.length === 0 && isSetBasisMode" class="resource-picker__empty">
+                  该资源暂无节选，可直接挂靠上方资源实体。
+                </p>
+
+                <form v-if="!isSetBasisMode" class="resource-picker__form" @submit.prevent="createAndInsertExcerpt">
+                  <div class="resource-picker__form-fields">
+                    <input v-model.trim="excerptForm.title" placeholder="节选标题" required maxlength="255" />
+                    <el-tree-select
+                      v-if="selectedSupportsBookChapters && excerptChapterTreeOptions.length"
+                      v-model="excerptForm.chapterId"
+                      :data="excerptChapterTreeOptions"
+                      check-strictly
+                      clearable
+                      filterable
+                      placeholder="所属章节（可选）"
+                      style="width: 100%"
                     />
+                    <label class="resource-picker__field-label">资源定位</label>
+                    <ResourcePositionLocatorField
+                      v-model="excerptForm.locator"
+                      :resource-type-code="selectedItemType?.code"
+                    />
+                    <div
+                      class="resource-picker__rich-editor"
+                      @mousedown.stop
+                      @click.stop
+                      @keydown.stop
+                    >
+                      <TuEditor
+                        :blocks="excerptEditorBlocks"
+                        :hover-handle="false"
+                        class="resource-picker__tu-editor"
+                        @update:blocks="handleExcerptEditorUpdate"
+                      />
+                    </div>
+                    <textarea v-model.trim="excerptForm.note" placeholder="备注，可选" rows="2" maxlength="1024" />
                   </div>
-                  <textarea v-model.trim="excerptForm.note" placeholder="备注，可选" rows="2" maxlength="1024" />
-                </div>
-                <div class="resource-picker__form-actions">
-                  <button type="submit" :disabled="!excerptForm.title.trim()">
-                    {{ isBindSourceMode ? '创建并绑定' : isMarkExcerptMode ? '创建节选' : '创建并插入节选' }}
-                  </button>
-                </div>
-              </form>
+                  <div class="resource-picker__form-actions">
+                    <button type="submit" :disabled="!excerptForm.title.trim()">
+                      {{ isBindSourceMode ? '创建并绑定' : isMarkExcerptMode ? '创建节选' : '创建并插入节选' }}
+                    </button>
+                  </div>
+                </form>
+              </div>
+              <p v-else-if="isBindSourceMode" class="resource-picker__empty">
+                当前资源类型暂不支持创建节选，请选择支持节选的资源实体。
+              </p>
+              <div v-else-if="isLinkDocumentMode" class="resource-picker__fill-hint">
+                <p class="resource-picker__empty">
+                  {{ linkHintText }}
+                </p>
+              </div>
             </div>
-            <p v-else-if="isBindSourceMode" class="resource-picker__empty">
-              当前资源类型暂不支持创建节选，请选择支持节选的资源实体。
-            </p>
           </template>
-          <el-empty v-else description="请选择外部资源" :image-size="64" />
+          <div v-else class="resource-picker__empty-slot">
+            <el-empty description="请选择外部资源" :image-size="64" />
+          </div>
+          </div>
+          <div
+            v-if="isLinkDocumentMode && selectedItem && !createResourceVisible"
+            class="resource-picker__detail-footer"
+          >
+            <button
+              type="button"
+              class="resource-picker__primary resource-picker__primary--block"
+              @click="linkDocumentResource(selectedItem)"
+            >
+              {{ linkConfirmLabel }}
+            </button>
           </div>
         </section>
       </div>
@@ -632,8 +763,11 @@ watch(selectedItemId, () => {
   flex-direction: column;
   gap: 12px;
   flex: 1;
-  min-height: 0;
+  /* Fixed display region: do not grow/shrink with list or detail content length. */
+  height: min(560px, calc(100dvh - 140px));
+  min-height: min(560px, calc(100dvh - 140px));
   max-height: calc(100dvh - 120px);
+  box-sizing: border-box;
 }
 
 .resource-picker__search {
@@ -645,6 +779,8 @@ watch(selectedItemId, () => {
   min-height: 0;
   display: grid;
   grid-template-columns: minmax(240px, 1fr) minmax(280px, 1.1fr);
+  grid-template-rows: minmax(0, 1fr);
+  align-items: stretch;
   gap: 14px;
 }
 
@@ -652,12 +788,14 @@ watch(selectedItemId, () => {
 .resource-picker__detail {
   min-width: 0;
   min-height: 0;
+  height: 100%;
   border: 1px solid #e5e7eb;
   border-radius: 8px;
   padding: 12px;
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  box-sizing: border-box;
 }
 
 .resource-picker__list-scroll,
@@ -671,8 +809,71 @@ watch(selectedItemId, () => {
   height: 100%;
 }
 
+.resource-picker__list-scroll :deep(.el-scrollbar__view) {
+  min-height: 100%;
+  box-sizing: border-box;
+}
+
+.resource-picker__list-footer {
+  flex-shrink: 0;
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid #e5e7eb;
+}
+
 .resource-picker__detail-scroll {
   overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.resource-picker__detail-body {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 100%;
+  box-sizing: border-box;
+}
+
+.resource-picker__detail-meta {
+  flex-shrink: 0;
+}
+
+.resource-picker__fill-hint {
+  flex: 1 1 auto;
+  min-height: 120px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-top: 12px;
+  padding: 16px;
+  border-radius: 8px;
+  background: #f8fafc;
+  border: 1px dashed #e2e8f0;
+  box-sizing: border-box;
+}
+
+.resource-picker__fill-hint .resource-picker__empty {
+  text-align: center;
+  line-height: 1.55;
+}
+
+.resource-picker__detail-footer {
+  flex-shrink: 0;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid #e5e7eb;
+}
+
+.resource-picker__empty-slot {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100%;
+  height: 100%;
+  box-sizing: border-box;
 }
 
 .resource-picker__section-title {
@@ -715,6 +916,17 @@ watch(selectedItemId, () => {
   background: #eff6ff;
 }
 
+.resource-picker__item-title,
+.resource-picker__detail-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.resource-picker__detail-title {
+  margin: 0 0 8px;
+}
+
 .resource-picker__item small,
 .resource-picker__excerpt small,
 .resource-picker__detail p,
@@ -724,8 +936,10 @@ watch(selectedItemId, () => {
   font-size: 12px;
 }
 
-.resource-picker__detail h3 {
-  margin: 0 0 8px;
+.resource-picker__item small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .resource-picker__detail a {
@@ -744,6 +958,12 @@ watch(selectedItemId, () => {
   background: #1677ff;
   color: #fff;
   cursor: pointer;
+}
+
+.resource-picker__primary--block {
+  display: block;
+  width: 100%;
+  margin-top: 0;
 }
 
 .resource-picker__secondary,
@@ -818,6 +1038,29 @@ watch(selectedItemId, () => {
   gap: 10px;
 }
 
+.resource-picker__create-form--fill {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 100%;
+  gap: 0;
+}
+
+.resource-picker__create-form-scroll {
+  display: grid;
+  gap: 10px;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.resource-picker__create-form--fill .resource-picker__create-actions {
+  flex-shrink: 0;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid #e5e7eb;
+}
+
 .resource-picker__create-form label {
   display: grid;
   gap: 5px;
@@ -853,7 +1096,8 @@ watch(selectedItemId, () => {
 }
 
 .resource-picker__rich-editor {
-  min-height: 96px;
+  height: min(180px, 24dvh);
+  min-height: min(180px, 24dvh);
   max-height: min(180px, 24dvh);
   overflow-y: auto;
   border: 1px solid #cbd5e1;
@@ -919,6 +1163,7 @@ watch(selectedItemId, () => {
 @media (max-width: 720px) {
   .resource-picker__layout {
     grid-template-columns: 1fr;
+    grid-template-rows: minmax(220px, 1fr) minmax(220px, 1fr);
   }
 }
 </style>

@@ -22,13 +22,19 @@ import {
   isHeadingPasteContext,
   pastePlainTextInHeading,
 } from '@/editor/pasteInTextblock'
+import {
+  collectPageMetaForRange,
+  parsePageClipboardMeta,
+  TU_PAGE_META_MIME,
+  type TuPageClipboardMeta,
+} from '@/editor/pageMetaClipboard'
 import { resolveClipboardHtmlSource } from '@/editor/extensions/HtmlInlineRender'
 import { getAnnotationSelectionPayload } from '@/editor/annotationText'
 import { createGraphFromSource, createGraphSourceMetadata } from '@/utils/graphSources'
 import { createMindmapStarterGraphData } from '@/components/x6'
 import { createHeadingBlockId } from '@/utils/headingSource'
 import { createBlockquoteBlockId } from '@/utils/blockquoteExcerpt'
-import { getContentScrollGutterAnchor } from '@/utils/editorGutterLayout'
+import { EDITOR_GUTTER_BTN_SIZE, getContentScrollGutterAnchor, getHandleTriggerBounds } from '@/utils/editorGutterLayout'
 import type { TocCollectContext } from '@/utils/toc/collectFlatTocEntries'
 import { HEADING_SECTION_FOLD_META } from '@/utils/toc/tocSectionFoldActions'
 import { textTagSpanDecorationsMetaKey } from '@/editor/extensions/TextTagSpanDecorations'
@@ -124,6 +130,7 @@ const emit = defineEmits<{
   'url-hover-change': [target: UrlHoverTarget | null]
   'text-tag-span-click': [spanId: string]
   'text-tag-spans-mapped': [spans: TextTagSpan[]]
+  'page-meta-paste': [meta: TuPageClipboardMeta]
 }>()
 
 const editorEl = ref<HTMLElement | null>(null)
@@ -160,16 +167,20 @@ const handleMenuVisible = ref(false)
 let hideHandleTimer: ReturnType<typeof setTimeout> | null = null
 
 const handleFixedLeft = ref(0)
+const handleTriggerLeft = ref(0)
+const handleTriggerWidth = ref(EDITOR_GUTTER_BTN_SIZE)
 const handleTarget = ref<EditorHandleTarget | null>(null)
 let hoveredLineEl: HTMLElement | null = null
 let scrollContainer: HTMLElement | null = null
 
 const handlePositionStyle = computed<CSSProperties>(() => ({
   position: 'fixed',
-  left: `${handleFixedLeft.value}px`,
+  left: `${handleTriggerLeft.value}px`,
   top: `${handleTop.value}px`,
+  width: `${handleTriggerWidth.value}px`,
   height: `${handleHeight.value}px`,
-  transform: 'translateX(-50%)',
+  transform: 'none',
+  ['--hover-handle-dot-left' as string]: `${handleFixedLeft.value - handleTriggerLeft.value}px`,
 }))
 
 const lineGutterActionsEnabled = computed(() => props.lineGutterActions ?? props.editable)
@@ -761,6 +772,7 @@ const updatePdfExcerptBlock = (
 }
 
 const handleScrollInEditor = () => {
+  if (activeHoverHighlight) refreshHoverHighlight()
   if (!handleVisible.value || !hoveredLineEl || !editorEl.value) return
   if (!document.contains(hoveredLineEl)) {
     clearHandleState()
@@ -784,16 +796,110 @@ const clearHandleState = () => {
   handleTarget.value = null
   hoveredPos.value = null
   hoveredLineEl = null
+  pointerOnHandleControl = false
+  clearHoverHighlight()
+}
+
+type HoverHighlightTarget =
+  | { kind: 'section'; entryId: string }
+  | { kind: 'line'; pos: number }
+
+const hoverHighlightBox = ref<{ top: number; left: number; width: number; height: number } | null>(null)
+let activeHoverHighlight: HoverHighlightTarget | null = null
+/** 指针是否正在折叠钮 / 手柄圆点上（仅此时允许区域高亮） */
+let pointerOnHandleControl = false
+
+function measureSectionHighlightBox(entryId: string): { top: number; left: number; width: number; height: number } | null {
+  const ed = editor.value
+  const range = getSectionRange(entryId)
+  if (!ed || ed.isDestroyed || !range) return null
+
+  let top = Infinity
+  let bottom = -Infinity
+  let left = Infinity
+  let right = -Infinity
+  let found = false
+
+  ed.state.doc.forEach((_node, offset) => {
+    const nodeFrom = offset
+    const nodeTo = offset + _node.nodeSize
+    if (nodeTo <= range.from || nodeFrom >= range.to) return
+    const dom = ed.view.nodeDOM(nodeFrom)
+    if (!(dom instanceof HTMLElement)) return
+    const rect = dom.getBoundingClientRect()
+    found = true
+    top = Math.min(top, rect.top)
+    bottom = Math.max(bottom, rect.bottom)
+    left = Math.min(left, rect.left)
+    right = Math.max(right, rect.right)
+  })
+
+  if (!found || bottom <= top || right <= left) return null
+  return {
+    top,
+    left,
+    width: right - left,
+    height: bottom - top,
+  }
+}
+
+function measureLineHighlightBox(pos: number): { top: number; left: number; width: number; height: number } | null {
+  const ed = editor.value
+  if (!ed || ed.isDestroyed) return null
+  const resolved = ed.state.doc.resolve(Math.min(Math.max(pos, 0), ed.state.doc.content.size))
+  if (resolved.depth < 1) return null
+  const dom = ed.view.nodeDOM(resolved.before(1))
+  if (!(dom instanceof HTMLElement)) return null
+  const rect = dom.getBoundingClientRect()
+  if (rect.width <= 0 || rect.height <= 0) return null
+  return {
+    top: rect.top,
+    left: rect.left,
+    width: rect.width,
+    height: rect.height,
+  }
+}
+
+function measureHoverHighlightBox(target: HoverHighlightTarget) {
+  return target.kind === 'section'
+    ? measureSectionHighlightBox(target.entryId)
+    : measureLineHighlightBox(target.pos)
+}
+
+function refreshHoverHighlight() {
+  if (!activeHoverHighlight) {
+    hoverHighlightBox.value = null
+    return
+  }
+  hoverHighlightBox.value = measureHoverHighlightBox(activeHoverHighlight)
+  if (!hoverHighlightBox.value) {
+    activeHoverHighlight = null
+  }
+}
+
+function clearHoverHighlight() {
+  activeHoverHighlight = null
+  hoverHighlightBox.value = null
+}
+
+function setHoverHighlight(target: HoverHighlightTarget) {
+  if (!pointerOnHandleControl) return
+  activeHoverHighlight = target
+  hoverHighlightBox.value = measureHoverHighlightBox(target)
+  if (!hoverHighlightBox.value) {
+    activeHoverHighlight = null
+  }
 }
 
 const scheduleHideHandle = () => {
   if (hideHandleTimer) return
+  // 0ms：仅衔接相邻命中区 leave→enter；便利性靠横向扩大的触发条，不再用长延迟
   hideHandleTimer = setTimeout(() => {
     if (!handleMenuVisible.value) {
       clearHandleState()
     }
     hideHandleTimer = null
-  }, 200)
+  }, 0)
 }
 
 const clearHideHandle = () => {
@@ -809,14 +915,20 @@ const handleEditorMouseMove = (event: MouseEvent) => {
 
   const wrapperRect = editorEl.value.getBoundingClientRect()
   const gutter = getContentScrollGutterAnchor(editorEl.value)
+  const trigger = gutter ? getHandleTriggerBounds(gutter) : null
   const isInsideEditor = event.clientX >= wrapperRect.left
     && event.clientX <= wrapperRect.right
     && event.clientY >= wrapperRect.top
     && event.clientY <= wrapperRect.bottom
+  // 装订线触发区：手柄条（延伸到折叠钮左缘）+ 折叠钮本身，直到正文左缘
+  const gutterRight = trigger
+    ? Math.max(trigger.right + EDITOR_GUTTER_BTN_SIZE, wrapperRect.left)
+    : wrapperRect.left
   const isInLeftGutter = Boolean(
     gutter
-    && event.clientX >= gutter.rect.left
-    && event.clientX < wrapperRect.left
+    && trigger
+    && event.clientX >= trigger.left
+    && event.clientX < gutterRight
     && event.clientY >= wrapperRect.top
     && event.clientY <= wrapperRect.bottom,
   )
@@ -860,13 +972,16 @@ function showHandle(target: EditorHandleTarget, anchorEl: HTMLElement) {
 
   const wrapperRect = editorEl.value.getBoundingClientRect()
   const gutter = getContentScrollGutterAnchor(editorEl.value)
+  const trigger = gutter ? getHandleTriggerBounds(gutter) : null
   const lineRect = anchorEl.getBoundingClientRect()
 
   handleTarget.value = target
   hoveredLineEl = anchorEl
-  handleFixedLeft.value = gutter?.hoverLeft ?? (wrapperRect.left - 24)
+  handleFixedLeft.value = trigger?.dotCenterX ?? (wrapperRect.left - 24)
+  handleTriggerLeft.value = trigger?.left ?? (handleFixedLeft.value - EDITOR_GUTTER_BTN_SIZE / 2)
+  handleTriggerWidth.value = trigger?.width ?? EDITOR_GUTTER_BTN_SIZE
   handleTop.value = lineRect.top
-  handleHeight.value = Math.max(28, lineRect.height)
+  handleHeight.value = Math.max(EDITOR_GUTTER_BTN_SIZE, lineRect.height)
   if (target.kind === 'line') {
     hoveredPos.value = target.pos
   } else {
@@ -877,6 +992,10 @@ function showHandle(target: EditorHandleTarget, anchorEl: HTMLElement) {
   }
   handleVisible.value = true
   clearHideHandle()
+  // 手柄因正文/装订线出现时清高亮；指针仍在折叠钮/圆点上时保留
+  if (!pointerOnHandleControl) {
+    clearHoverHighlight()
+  }
 }
 
 // Lasso mousedown: capture phase so it fires BEFORE ProseMirror's handler and @*.stop
@@ -986,6 +1105,49 @@ const handleSectionGutterHover = (entryId: string) => {
 
 const handleSectionGutterLeave = (event?: MouseEvent) => {
   if (event && isHandleInteractionTarget(event.relatedTarget)) return
+  scheduleHideHandle()
+}
+
+function onSectionHandlePointerEnter(entryId: string) {
+  pointerOnHandleControl = true
+  setHoverHighlight({ kind: 'section', entryId })
+}
+
+function onSectionHandlePointerLeave(event?: MouseEvent) {
+  const rel = event?.relatedTarget
+  if (rel instanceof HTMLElement && rel.closest('.hover-handle__dot')) return
+  pointerOnHandleControl = false
+  clearHoverHighlight()
+}
+
+function onHoverHandleEnter() {
+  clearHideHandle()
+}
+
+function onHoverHandleGripEnter() {
+  pointerOnHandleControl = true
+  const target = handleTarget.value
+  if (!target) return
+  if (target.kind === 'section') {
+    setHoverHighlight({ kind: 'section', entryId: target.entryId })
+    return
+  }
+  setHoverHighlight({ kind: 'line', pos: target.pos })
+}
+
+function onHoverHandleGripLeave(event: MouseEvent) {
+  const rel = event.relatedTarget
+  if (rel instanceof HTMLElement && rel.closest('.heading-section-fold-gutter__btn')) return
+  pointerOnHandleControl = false
+  clearHoverHighlight()
+}
+
+function onHoverHandleLeave(event: MouseEvent) {
+  if (handleMenuVisible.value) return
+  const rel = event.relatedTarget
+  if (rel instanceof HTMLElement && rel.closest('.heading-section-fold-gutter__btn')) return
+  pointerOnHandleControl = false
+  clearHoverHighlight()
   scheduleHideHandle()
 }
 
@@ -1201,6 +1363,21 @@ function findClipboardImageFile(clipboard: DataTransfer | null): File | null {
   return findClipboardImageFileOnly(clipboard)
 }
 
+function writePageMetaToClipboard(view: { state: { doc: import('@tiptap/pm/model').Node; selection: { from: number; to: number } } }, event: Event) {
+  const clipboardEvent = event as ClipboardEvent
+  if (!clipboardEvent.clipboardData) return
+  const { from, to } = view.state.selection
+  const meta = collectPageMetaForRange(
+    view.state.doc,
+    from,
+    to,
+    sectionTagsMapRef?.value ?? {},
+    sectionTagAnchorsRef?.value ?? {},
+  )
+  if (!meta) return
+  clipboardEvent.clipboardData.setData(TU_PAGE_META_MIME, JSON.stringify(meta))
+}
+
 const editor = useEditor({
   content: resolveEditorContent(),
   editable: props.editable,
@@ -1281,13 +1458,24 @@ const editor = useEditor({
     transformPastedHTML(html) {
       return sanitizePastedHtml(html)
     },
+    handleDOMEvents: {
+      copy(view, event) {
+        writePageMetaToClipboard(view, event)
+        return false
+      },
+      cut(view, event) {
+        writePageMetaToClipboard(view, event)
+        return false
+      },
+    },
     handlePaste: (_view, event) => {
       if (!props.editable || !editor.value) return false
 
       const html = event.clipboardData?.getData('text/html') ?? ''
       const plain = event.clipboardData?.getData('text/plain') ?? ''
+      const pageMeta = parsePageClipboardMeta(event.clipboardData?.getData(TU_PAGE_META_MIME))
 
-      if (isHeadingPasteContext(editor.value) && plain) {
+      if (isHeadingPasteContext(editor.value) && plain && !html.trim()) {
         pastePlainTextInHeading(editor.value, plain)
         return true
       }
@@ -1298,6 +1486,7 @@ const editor = useEditor({
           : plain.trim()
         const handled = insertHtmlFromClipboard(editor.value, sourceHtml, getTuEditorSchemaExtensions())
         if (handled) {
+          if (pageMeta) emit('page-meta-paste', pageMeta)
           return true
         }
         return false
@@ -1966,6 +2155,8 @@ defineExpose({
       :wrapper-el="editorEl"
       @section-gutter-hover="handleSectionGutterHover"
       @section-gutter-leave="(event) => handleSectionGutterLeave(event)"
+      @section-handle-pointer-enter="onSectionHandlePointerEnter"
+      @section-handle-pointer-leave="onSectionHandlePointerLeave"
     />
     <div
       v-if="slashMenuVisible && filteredSlashOptions.length > 0"
@@ -1993,7 +2184,20 @@ defineExpose({
       :menu-gap="4"
       @select="(key: string) => handleHandleSelect(key as LineHandleAction)"
       @menu-visibility-change="handleHandleMenuVisibilityChange"
-      @mouseenter="clearHideHandle"
+      @mouseenter="onHoverHandleEnter"
+      @mouseleave="onHoverHandleLeave"
+      @grip-enter="onHoverHandleGripEnter"
+      @grip-leave="onHoverHandleGripLeave"
+    />
+    <div
+      v-if="hoverHighlightBox"
+      class="section-hover-highlight-overlay"
+      :style="{
+        top: `${hoverHighlightBox.top}px`,
+        left: `${hoverHighlightBox.left}px`,
+        width: `${hoverHighlightBox.width}px`,
+        height: `${hoverHighlightBox.height}px`,
+      }"
     />
     <div
       v-if="lassoRect"
@@ -2068,6 +2272,15 @@ defineExpose({
   display: none !important;
 }
 
+.section-hover-highlight-overlay {
+  position: fixed;
+  z-index: 4;
+  pointer-events: none;
+  border-radius: 8px;
+  background: rgba(22, 119, 255, 0.08);
+  box-shadow: inset 3px 0 0 #1677ff;
+}
+
 .tu-editor-wrapper :deep(.tag-filter--hidden) {
   display: none !important;
 }
@@ -2096,32 +2309,48 @@ defineExpose({
 .tu-editor-wrapper :deep(.tu-editor-content h3) { font-size: 1.25em; }
 .tu-editor-wrapper :deep(.tu-editor-content h4) { font-size: 1.1em; }
 
-.tu-editor-wrapper :deep(.heading-source-badge) {
-  display: inline-flex;
+.tu-editor-wrapper :deep(.heading-section-meta) {
+  display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  margin-left: 8px;
-  padding: 1px 8px;
-  border: 1px solid #bfdbfe;
-  border-radius: 999px;
-  background: #eff6ff;
-  color: #075985;
+  gap: 6px;
+  width: 100%;
+  margin: 2px 0 8px;
+  padding: 4px 8px;
+  border: 1px solid #bae6fd;
+  border-radius: 6px;
+  background: #f0f9ff;
+  color: #0369a1;
   font-size: 11px;
-  font-weight: 500;
   line-height: 1.4;
-  vertical-align: middle;
+  text-align: left;
+  box-sizing: border-box;
+}
+
+.tu-editor-wrapper :deep(button.heading-section-meta) {
   cursor: pointer;
-  white-space: nowrap;
-  max-width: 180px;
+}
+
+.tu-editor-wrapper :deep(button.heading-section-meta:hover) {
+  background: #e0f2fe;
+}
+
+.tu-editor-wrapper :deep(.heading-section-meta--ai) {
+  border-color: #93c5fd;
+}
+
+.tu-editor-wrapper :deep(.heading-section-meta__chip) {
+  display: inline-block;
+  max-width: min(100%, 240px);
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.75);
 }
 
-.tu-editor-wrapper :deep(.heading-source-badge:hover) {
-  background: #dbeafe;
-}
-
-.tu-editor-wrapper :deep(.heading-source-badge__ai) {
-  margin-left: 4px;
+.tu-editor-wrapper :deep(.heading-section-meta__ai) {
   padding: 0 4px;
   border-radius: 4px;
   background: #1677ff;
@@ -2129,6 +2358,30 @@ defineExpose({
   font-size: 9px;
   font-weight: 700;
   line-height: 14px;
+}
+
+.tu-editor-wrapper :deep(.heading-section-meta__tag) {
+  display: inline-block;
+  max-width: min(100%, 160px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--tag-chip-color, #1677ff) 35%, #fff);
+  background: color-mix(in srgb, var(--tag-chip-color, #1677ff) 12%, #fff);
+  color: color-mix(in srgb, var(--tag-chip-color, #1677ff) 75%, #000);
+}
+
+.tu-editor-wrapper :deep(.heading-section-meta__tag-more) {
+  color: #64748b;
+  font-size: 11px;
+}
+
+/* 兼容旧选择器 / e2e：来源元数据条同时带 heading-source-badge */
+.tu-editor-wrapper :deep(.heading-source-badge.heading-section-meta) {
+  max-width: none;
+  white-space: normal;
 }
 
 .tu-editor-wrapper :deep(.blockquote-excerpt-meta) {

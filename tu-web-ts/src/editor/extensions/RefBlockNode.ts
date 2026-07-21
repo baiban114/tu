@@ -1,6 +1,7 @@
 ﻿import { Node, mergeAttributes } from '@tiptap/core'
 import { VueNodeViewRenderer } from '@tiptap/vue-3'
 import RefBlockView from '../views/RefBlockView.vue'
+import { jsonDomAttribute } from '../jsonDomAttribute'
 import { stopNonHandleNodeViewDragEvent } from './nodeViewDragHandle'
 
 export const RefBlockNode = Node.create({
@@ -20,7 +21,7 @@ export const RefBlockNode = Node.create({
       refType: { default: 'block' },
       width: { default: null },
       height: { default: null },
-      metadata: { default: {} },
+      metadata: jsonDomAttribute('metadata', 'data-metadata', {}),
       sectionCollapsed: { default: false },
     }
   },

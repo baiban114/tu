@@ -209,6 +209,17 @@ ResourceType (根下第一层，或虚拟根「外部资源」)
 - 图书章节挂在 **ResourceItem** 级；节选 `chapterId` 可选，未关联时归入「未归类节选」或（无章节时）直接挂在实体下。
 - 不在 v1 展示 `ResourceItemRelation` 边（属图结构，可后续用「关系」面板）。
 
+### 7.2 知识库页面列表中的资源文档（只读）
+
+本知识库可通过 `kb_resource_link` **显式挂接** `document` 型 `ResourceItem`。挂接后：
+
+- 左侧页面树（`LeftPanel`）合并虚拟节点：`nodeKind: 'resource-document'`，id 为 `ri:{resourceItemId}`（`mergeResourceDocumentsIntoPageTree`）。无 `parentPageId` 时挂在库根；有 `parentPageId` 时挂在该页面下一层级（与子页面同级）。
+- 点击后拉取该资源全部节选（按 `sortOrder`），合成一篇只读 `PageContent`（`synthesizeResourceDocumentContent`），主区用 `TuEditorPage editable=false` 展示。
+- **不是**真实 `Page`：不走 `GET /pages/{id}/content`，不写 ES/RAG，不可拖拽改层级/删除/保存。
+- 挂接入口：资源管理 / 「+」→「挂接到知识库」（库根）；**文档页右键**「挂接文档资源」→ 挂到该页树层级下（`parentPageId`）。
+
+API：`GET/POST/DELETE /api/kbs/{kbId}/resource-links`。
+
 ---
 
 ## 8. UI 组件（v1：多级列表）
@@ -257,11 +268,14 @@ toggle: (node: TreeNode, expanded: boolean) => void
 ### 9.2 页面目录
 
 - **不替换** `el-tree`。
+- 展开/收起状态按知识库写入 `localStorage`（`tu:page-tree-prefs`）：含目录节点展开 id，以及「展开目录」后的文档大纲挂载状态；切换知识库或刷新后恢复。
 - 可选：`pagesToTreeNodes` + `toMarkdownOutline` / `toFlatWithPath` 用于导出、调试工具。
 
 ### 9.3 TOC（页面侧栏目录）
 
 采集逻辑见 [`utils/toc/headings.ts`](../src/utils/toc/headings.ts)，由 [`TuEditorPage.vue`](../src/components/TuEditorPage.vue) 渲染。
+
+侧栏目录节点展开/收起与面板开合按**页面**写入 `localStorage`（`tu:page-toc-prefs`）；切换页面或刷新后恢复。本地标题优先用稳定 `blockId` 作为展开键。
 
 **纳入目录：**
 

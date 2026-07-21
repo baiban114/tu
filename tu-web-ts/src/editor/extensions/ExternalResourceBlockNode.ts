@@ -1,7 +1,15 @@
 import { Node, mergeAttributes } from '@tiptap/core'
 import { VueNodeViewRenderer } from '@tiptap/vue-3'
 import ExternalResourceBlockView from '../views/ExternalResourceBlockView.vue'
+import { jsonDomAttribute } from '../jsonDomAttribute'
 import { stopNonHandleNodeViewDragEvent } from './nodeViewDragHandle'
+
+const DEFAULT_EXTERNAL_RESOURCE = {
+  resourceItemId: '',
+  resourceExcerptId: null as string | null,
+  mode: 'resource' as const,
+  snapshot: { resourceTitle: '' },
+}
 
 export const ExternalResourceBlockNode = Node.create({
   name: 'externalResourceBlock',
@@ -18,15 +26,8 @@ export const ExternalResourceBlockNode = Node.create({
       headingLevel: { default: 0 },
       width: { default: null },
       height: { default: null },
-      externalResource: {
-        default: {
-          resourceItemId: '',
-          resourceExcerptId: null,
-          mode: 'resource',
-          snapshot: { resourceTitle: '' },
-        },
-      },
-      metadata: { default: {} },
+      externalResource: jsonDomAttribute('externalResource', 'data-external-resource', DEFAULT_EXTERNAL_RESOURCE),
+      metadata: jsonDomAttribute('metadata', 'data-metadata', {}),
       sectionCollapsed: { default: false },
     }
   },

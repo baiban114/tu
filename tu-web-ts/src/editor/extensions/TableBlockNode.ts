@@ -1,6 +1,7 @@
 import { Node, mergeAttributes } from '@tiptap/core'
 import { VueNodeViewRenderer } from '@tiptap/vue-3'
 import TableBlockView from '../views/TableBlockView.vue'
+import { jsonDomAttribute } from '../jsonDomAttribute'
 import { stopNonHandleNodeViewDragEvent } from './nodeViewDragHandle'
 
 export const TableBlockNode = Node.create({
@@ -18,8 +19,8 @@ export const TableBlockNode = Node.create({
       headingLevel: { default: 0 },
       width: { default: null },
       height: { default: null },
-      tableData: { default: { headers: [], rows: [] } },
-      metadata: { default: {} },
+      tableData: jsonDomAttribute('tableData', 'data-table-data', { headers: [], rows: [] }),
+      metadata: jsonDomAttribute('metadata', 'data-metadata', {}),
     }
   },
 

@@ -21,15 +21,29 @@ import type { KnowledgeBase, PageType } from '@/api/types';
 import {
   isDocumentPage,
   isOutlineTreeNode,
+  isResourceDocumentTreeNode,
   isVirtualPageTreeExtra,
   mergeDocumentOutlinesIntoPageTree,
+  mergeResourceDocumentsIntoPageTree,
   type PageTreeDisplayItem,
 } from '@/utils/tree';
 import { canDropOnNode, computeTreeDropTarget, normalizeDropType, type TreeDropType } from '@/utils/tree/drag';
+import {
+  loadPageTreePreferences,
+  savePageTreePreferences,
+} from '@/utils/pageTreePreferences';
 import AuthPanel from './AuthPanel.vue';
 import GlobalSearchBox from './GlobalSearchBox.vue';
 import MarkdownImportButton from './MarkdownImportButton.vue';
 import RoadmapImportButton from './RoadmapImportButton.vue';
+import ExternalResourcePicker from './ExternalResourcePicker.vue';
+import { createKbResourceLink, deleteKbResourceLink } from '@/api/kbResourceLink';
+import type { ResourceItem } from '@/api/externalResource';
+import { parseResourceDocumentTreeId } from '@/utils/resourceDocumentContent';
+
+type LinkDocumentAttachTarget =
+  | { kind: 'kb' }
+  | { kind: 'page'; pageId: string; pageTitle: string };
 
 const store = useWorkspaceStore();
 const outlineCacheStore = useOutlineCacheStore();
@@ -37,8 +51,10 @@ const outlineCacheStore = useOutlineCacheStore();
 const treeRef = ref<InstanceType<typeof ElTree>>()
 const pageTreeFocusRef = ref<HTMLElement | null>(null)
 const allTreeExpanded = ref(false)
+const expandedNodeIds = ref<Set<string>>(new Set())
 const expandedOutlinePageIds = ref<Set<string>>(new Set())
 const outlineLoadingPageIds = ref<Set<string>>(new Set())
+const pageTreePrefsReady = ref(false)
 
 const selectedPageIds = ref<Set<string>>(new Set())
 const selectionAnchorId = ref<string | null>(null)
@@ -144,6 +160,7 @@ function getPagesToDelete(): PageItem[] {
       : new Set<string>();
 
   return getTopLevelSelectedIds(ids)
+    .filter((id) => !id.startsWith('ri:'))
     .map((id) => findPageById(id))
     .filter((page): page is PageItem => page != null);
 }
@@ -231,21 +248,23 @@ function handlePageDeleteKeydown(event: KeyboardEvent) {
 }
 
 watch(
-  () => store.currentPageId,
-  (pageId) => {
+  () => store.currentViewKey,
+  (viewKey) => {
     if (selectedPageIds.value.size <= 1) {
-      selectedPageIds.value = pageId ? new Set([pageId]) : new Set();
-      if (pageId) selectionAnchorId.value = pageId;
+      selectedPageIds.value = viewKey ? new Set([viewKey]) : new Set();
+      if (viewKey) selectionAnchorId.value = viewKey;
     }
   },
 );
 
 watch(
   () => store.currentKbId,
-  () => {
+  (kbId) => {
     selectedPageIds.value = new Set();
     selectionAnchorId.value = null;
+    loadPrefsForKb(kbId);
   },
+  { immediate: true },
 );
 
 onMounted(() => {
@@ -254,13 +273,15 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   document.removeEventListener('keydown', handlePageDeleteKeydown, true);
-  document.removeEventListener('click', closeContextMenu);
+  document.removeEventListener('pointerdown', onPageMenuOutsidePointerDown, true);
   document.removeEventListener('keydown', closeContextMenuOnEscape);
-  document.removeEventListener('click', closeKbContextMenu);
+  document.removeEventListener('pointerdown', onDocumentClickCloseKbMenu, true);
   document.removeEventListener('keydown', closeKbContextMenuOnEscape);
 });
 
 async function onSelectKb(kbId: string) {
+  closeContextMenu();
+  closeKbContextMenu();
   if (store.currentKbId === kbId) return;
   await store.selectKb(kbId);
 }
@@ -296,11 +317,13 @@ async function onDeleteKb(id: string, name: string) {
 function onKbContextMenu(event: MouseEvent, kb: KnowledgeBase) {
   event.preventDefault();
   event.stopPropagation();
+  closeContextMenu();
   kbContextMenu.value = { visible: true, x: event.clientX, y: event.clientY, kb };
 }
 
 function closeKbContextMenu() {
-  kbContextMenu.value.visible = false;
+  if (!kbContextMenu.value.visible && !kbContextMenu.value.kb) return;
+  kbContextMenu.value = { visible: false, x: 0, y: 0, kb: null };
 }
 
 function closeKbContextMenuOnEscape(event: KeyboardEvent) {
@@ -349,15 +372,18 @@ const treeProps = {
   children: 'children',
 };
 
-const displayPageTree = computed(() => mergeDocumentOutlinesIntoPageTree(store.pageTree, {
-  isOutlineExpanded: (pageId) => expandedOutlinePageIds.value.has(pageId),
-  getOutlineNodes: (pageId) => (
-    outlineCacheStore.pages.has(pageId)
-      ? outlineCacheStore.getPageNodes(pageId) ?? []
-      : undefined
-  ),
-  isOutlineLoading: (pageId) => outlineLoadingPageIds.value.has(pageId),
-}));
+const displayPageTree = computed(() => {
+  const withOutlines = mergeDocumentOutlinesIntoPageTree(store.pageTree as PageTreeDisplayItem[], {
+    isOutlineExpanded: (pageId) => expandedOutlinePageIds.value.has(pageId),
+    getOutlineNodes: (pageId) => (
+      outlineCacheStore.pages.has(pageId)
+        ? outlineCacheStore.getPageNodes(pageId) ?? []
+        : undefined
+    ),
+    isOutlineLoading: (pageId) => outlineLoadingPageIds.value.has(pageId),
+  });
+  return mergeResourceDocumentsIntoPageTree(withOutlines, store.linkedResourceDocuments);
+});
 
 function isPageOutlineExpanded(pageId: string): boolean {
   return expandedOutlinePageIds.value.has(pageId);
@@ -386,14 +412,106 @@ async function loadPageOutline(pageId: string) {
   }
 }
 
+function isPersistableExpandedNode(data: PageTreeDisplayItem): boolean {
+  return !isOutlineTreeNode(data) && data.nodeKind !== 'outline-placeholder';
+}
+
+function persistPageTreePrefs() {
+  const kbId = store.currentKbId;
+  if (!pageTreePrefsReady.value || !kbId) return;
+  savePageTreePreferences(kbId, {
+    expandedNodeIds: [...expandedNodeIds.value],
+    expandedOutlinePageIds: [...expandedOutlinePageIds.value],
+  });
+}
+
+function rememberExpandedNode(nodeId: string) {
+  if (!nodeId) return;
+  if (expandedNodeIds.value.has(nodeId)) return;
+  expandedNodeIds.value = new Set([...expandedNodeIds.value, nodeId]);
+  persistPageTreePrefs();
+}
+
+function forgetExpandedNode(nodeId: string) {
+  if (!nodeId || !expandedNodeIds.value.has(nodeId)) return;
+  const next = new Set(expandedNodeIds.value);
+  next.delete(nodeId);
+  expandedNodeIds.value = next;
+  persistPageTreePrefs();
+}
+
+function captureExpandedNodeIds(): string[] {
+  const nodesMap = treeRef.value?.store?.nodesMap;
+  if (!nodesMap) return [...expandedNodeIds.value];
+  return Object.keys(nodesMap).filter((key) => {
+    const node = nodesMap[key];
+    if (!node?.expanded || node.isLeaf) return false;
+    return isPersistableExpandedNode(node.data as PageTreeDisplayItem);
+  });
+}
+
+function syncExpandedNodeIdsFromTree() {
+  expandedNodeIds.value = new Set(captureExpandedNodeIds());
+  persistPageTreePrefs();
+}
+
+function loadPrefsForKb(kbId: string | null) {
+  pageTreePrefsReady.value = false;
+  if (!kbId) {
+    expandedNodeIds.value = new Set();
+    expandedOutlinePageIds.value = new Set();
+    allTreeExpanded.value = false;
+    return;
+  }
+  const prefs = loadPageTreePreferences(kbId);
+  expandedNodeIds.value = new Set(prefs.expandedNodeIds);
+  expandedOutlinePageIds.value = new Set(prefs.expandedOutlinePageIds);
+  allTreeExpanded.value = false;
+  pageTreePrefsReady.value = true;
+}
+
+async function restoreExpandedNodes() {
+  const nodeIds = [...expandedNodeIds.value];
+  const outlineIds = [...expandedOutlinePageIds.value];
+  if (!nodeIds.length && !outlineIds.length) return;
+
+  for (const pageId of outlineIds) {
+    await loadPageOutline(pageId);
+  }
+
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    await nextTick();
+    if (!treeRef.value) return;
+    let restored = 0;
+    for (const nodeId of nodeIds) {
+      const node = treeRef.value.getNode(nodeId);
+      if (node && !node.isLeaf) {
+        node.expand();
+        restored += 1;
+      }
+    }
+    if (restored > 0 || attempt === 2) return;
+  }
+}
+
+watch(
+  displayPageTree,
+  () => {
+    void restoreExpandedNodes();
+  },
+  { flush: 'post' },
+);
+
 async function expandPageOutlineInTree(pageId: string) {
   closeContextMenu();
   const next = new Set(expandedOutlinePageIds.value);
   next.add(pageId);
   expandedOutlinePageIds.value = next;
+  persistPageTreePrefs();
   await loadPageOutline(pageId);
   await nextTick();
   getElTreeNode(pageId)?.expand();
+  rememberExpandedNode(pageId);
 }
 
 function collapsePageOutlineInTree(pageId: string) {
@@ -401,7 +519,9 @@ function collapsePageOutlineInTree(pageId: string) {
   const next = new Set(expandedOutlinePageIds.value);
   next.delete(pageId);
   expandedOutlinePageIds.value = next;
+  persistPageTreePrefs();
   getElTreeNode(pageId)?.collapse();
+  forgetExpandedNode(pageId);
 }
 
 async function onTogglePageOutlineFromContextMenu() {
@@ -415,16 +535,35 @@ async function onTogglePageOutlineFromContextMenu() {
 }
 
 async function onPageTreeNodeExpand(data: PageTreeDisplayItem) {
+  if (isPersistableExpandedNode(data)) {
+    rememberExpandedNode(data.id);
+  }
   if (isVirtualPageTreeExtra(data) || !isDocumentPage(data)) return;
   if (!isPageOutlineExpanded(data.id)) return;
   await loadPageOutline(data.id);
+}
+
+function onPageTreeNodeCollapse(data: PageTreeDisplayItem) {
+  if (!isPersistableExpandedNode(data)) return;
+  forgetExpandedNode(data.id);
 }
 
 function allowDrag(node: any) {
   return !isVirtualPageTreeExtra(node.data as PageTreeDisplayItem);
 }
 
-const contextMenu = ref({ visible: false, x: 0, y: 0, node: null as PageItem | null });
+const contextMenu = ref({ visible: false, x: 0, y: 0, node: null as PageTreeDisplayItem | null });
+const showLinkDocumentPicker = ref(false);
+const linkDocumentAttachTarget = ref<LinkDocumentAttachTarget>({ kind: 'kb' });
+
+const linkDocumentAttachTargetProp = computed(() => (
+  linkDocumentAttachTarget.value.kind === 'page' ? 'page' : 'kb'
+));
+const linkDocumentAttachTargetName = computed(() => (
+  linkDocumentAttachTarget.value.kind === 'page'
+    ? linkDocumentAttachTarget.value.pageTitle
+    : undefined
+));
 
 // 知识库右键菜单：单独维护，避免与页面菜单混淆
 const kbContextMenu = ref({ visible: false, x: 0, y: 0, kb: null as KnowledgeBase | null });
@@ -435,6 +574,12 @@ const { panelRef: kbContextMenuRef, position: kbContextMenuPosition } = useViewp
   visible: computed(() => kbContextMenu.value.visible),
   getSourcePoint: () => kbContextMenuSourcePoint.value,
 });
+
+function onDocumentClickCloseKbMenu(event: Event) {
+  const target = event.target;
+  if (target instanceof Element && target.closest('[data-kb-context-menu]')) return;
+  closeKbContextMenu();
+}
 
 // 知识库内联重命名状态（与页面重命名状态 renamingId 区分）
 const renamingKbId = ref<string | null>(null);
@@ -447,10 +592,13 @@ watch(
   () => kbContextMenu.value.visible,
   (visible) => {
     if (visible) {
-      document.addEventListener('click', closeKbContextMenu);
-      document.addEventListener('keydown', closeKbContextMenuOnEscape);
+      void nextTick(() => {
+        if (!kbContextMenu.value.visible) return;
+        document.addEventListener('pointerdown', onDocumentClickCloseKbMenu, true);
+        document.addEventListener('keydown', closeKbContextMenuOnEscape);
+      });
     } else {
-      document.removeEventListener('click', closeKbContextMenu);
+      document.removeEventListener('pointerdown', onDocumentClickCloseKbMenu, true);
       document.removeEventListener('keydown', closeKbContextMenuOnEscape);
     }
   },
@@ -468,7 +616,8 @@ function onNodeContextMenu(event: Event, data: unknown) {
   (event as MouseEvent).preventDefault();
   const e = event as MouseEvent;
   const node = data as PageTreeDisplayItem;
-  if (isVirtualPageTreeExtra(node)) return;
+  if (isOutlineTreeNode(node) || node.nodeKind === 'outline-placeholder') return;
+  closeKbContextMenu();
   if (!isPageSelected(node.id) && !(e.ctrlKey || e.metaKey || e.shiftKey)) {
     setSingleSelection(node.id);
   }
@@ -476,27 +625,51 @@ function onNodeContextMenu(event: Event, data: unknown) {
 }
 
 function closeContextMenu() {
-  contextMenu.value.visible = false;
+  if (!contextMenu.value.visible && !contextMenu.value.node) return;
+  contextMenu.value = { visible: false, x: 0, y: 0, node: null };
 }
 
 function closeContextMenuOnEscape(event: KeyboardEvent) {
   if (event.key === 'Escape') closeContextMenu();
 }
 
+/** 捕获阶段关闭：el-tree 节点 @click.stop，冒泡阶段收不到 click。 */
+function onPageMenuOutsidePointerDown(event: Event) {
+  const target = event.target;
+  if (target instanceof Element && target.closest('[data-page-tree-context-menu]')) return;
+  closeContextMenu();
+}
+
 watch(
   () => contextMenu.value.visible,
   (visible) => {
     if (visible) {
-      document.addEventListener('click', closeContextMenu);
-      document.addEventListener('keydown', closeContextMenuOnEscape);
+      // nextTick：避开打开菜单的同一轮指针事件误关
+      void nextTick(() => {
+        if (!contextMenu.value.visible) return;
+        document.addEventListener('pointerdown', onPageMenuOutsidePointerDown, true);
+        document.addEventListener('keydown', closeContextMenuOnEscape);
+      });
     } else {
-      document.removeEventListener('click', closeContextMenu);
+      document.removeEventListener('pointerdown', onPageMenuOutsidePointerDown, true);
       document.removeEventListener('keydown', closeContextMenuOnEscape);
     }
   },
 );
 
 function onNodeClick(data: PageTreeDisplayItem, _node: unknown, _instance: unknown, event: MouseEvent) {
+  closeContextMenu();
+  closeKbContextMenu();
+
+  if (isResourceDocumentTreeNode(data)) {
+    const resourceItemId = data.resourceMeta?.resourceItemId;
+    if (!resourceItemId) return;
+    setSingleSelection(data.id);
+    void store.selectKbLinkedResource(resourceItemId);
+    focusPageTree();
+    return;
+  }
+
   const pageId = isVirtualPageTreeExtra(data)
     ? (data.outlineMeta?.pageId || data.parentId || undefined)
     : data.id;
@@ -506,7 +679,7 @@ function onNodeClick(data: PageTreeDisplayItem, _node: unknown, _instance: unkno
   const range = event.shiftKey;
 
   if (range) {
-    const anchor = selectionAnchorId.value ?? store.currentPageId ?? pageId;
+    const anchor = selectionAnchorId.value ?? store.currentViewKey ?? pageId;
     selectionAnchorId.value = anchor;
     selectVisibleRange(anchor, pageId);
     void store.selectPage(pageId);
@@ -527,6 +700,13 @@ function onNodeClick(data: PageTreeDisplayItem, _node: unknown, _instance: unkno
   focusPageTree();
 }
 
+/** 左键点页面树任意处（含选中其他页）时关掉右键菜单；右键留给 contextmenu。 */
+function onPageTreeHostPointerDown(event: PointerEvent) {
+  if (event.button !== 0) return;
+  closeContextMenu();
+  closeKbContextMenu();
+}
+
 async function onCreateChild(parentId: string, pageType: PageType = 'document') {
   closeContextMenu();
   await store.addPage(parentId, undefined, pageType);
@@ -545,12 +725,87 @@ function createSuccessMessage(pageType: PageType): string {
 }
 
 function onCreateRootCommand(command: string | number | object) {
+  if (command === 'link-document') {
+    openLinkDocumentPickerToKb();
+    return;
+  }
   const pageType = command === 'mindmap'
     ? 'mindmap'
     : command === 'x6board'
       ? 'x6board'
       : 'document';
   void onCreateRootPage(pageType);
+}
+
+function openLinkDocumentPickerToKb() {
+  closeContextMenu();
+  if (!store.currentKbId) {
+    ElMessage.warning('请先选择知识库');
+    return;
+  }
+  linkDocumentAttachTarget.value = { kind: 'kb' };
+  showLinkDocumentPicker.value = true;
+}
+
+function openLinkDocumentPickerToPage(page: PageTreeDisplayItem) {
+  closeContextMenu();
+  if (!store.currentKbId) {
+    ElMessage.warning('请先选择知识库');
+    return;
+  }
+  if (!isDocumentPage(page)) {
+    ElMessage.warning('仅文档页支持挂接资源到正文');
+    return;
+  }
+  linkDocumentAttachTarget.value = {
+    kind: 'page',
+    pageId: page.id,
+    pageTitle: page.title || '未命名页面',
+  };
+  showLinkDocumentPicker.value = true;
+}
+
+async function onLinkDocumentResource(item: ResourceItem) {
+  const kbId = store.currentKbId;
+  if (!kbId) {
+    ElMessage.warning('请先选择知识库');
+    return;
+  }
+  const target = linkDocumentAttachTarget.value;
+  try {
+    await createKbResourceLink(kbId, {
+      resourceItemId: item.id,
+      parentPageId: target.kind === 'page' ? target.pageId : null,
+    });
+    await store.refreshLinkedResourceDocuments();
+    if (target.kind === 'page') {
+      ElMessage.success(`已将「${item.title}」挂接到「${target.pageTitle}」下`);
+    } else {
+      ElMessage.success(`已将「${item.title}」加入当前知识库`);
+    }
+    await store.selectKbLinkedResource(item.id);
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : '挂接文档资源失败');
+  }
+}
+
+async function onUnlinkDocumentResource(node: PageTreeDisplayItem) {
+  closeContextMenu();
+  const kbId = store.currentKbId;
+  const resourceItemId = node.resourceMeta?.resourceItemId
+    ?? parseResourceDocumentTreeId(node.id);
+  if (!kbId || !resourceItemId) return;
+  try {
+    await deleteKbResourceLink(kbId, resourceItemId);
+    await store.refreshLinkedResourceDocuments();
+    ElMessage.success(`已将「${node.title}」从当前知识库移除`);
+    if (store.currentResourceItemId === resourceItemId) {
+      const firstPage = store.pageTree[0];
+      if (firstPage) await store.selectPage(firstPage.id);
+    }
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : '移出文档资源失败');
+  }
 }
 
 async function onDeletePage(node: PageItem) {
@@ -635,6 +890,7 @@ function expandAllTree() {
     }
   }
   allTreeExpanded.value = true
+  syncExpandedNodeIdsFromTree()
 }
 
 function collapseAllTree() {
@@ -647,6 +903,8 @@ function collapseAllTree() {
     }
   }
   allTreeExpanded.value = false
+  expandedNodeIds.value = new Set()
+  persistPageTreePrefs()
 }
 </script>
 
@@ -751,6 +1009,7 @@ function collapseAllTree() {
                 <el-dropdown-item command="document">文档</el-dropdown-item>
                 <el-dropdown-item command="mindmap">思维导图</el-dropdown-item>
                 <el-dropdown-item command="x6board">画板</el-dropdown-item>
+                <el-dropdown-item divided command="link-document">挂接到知识库</el-dropdown-item>
               </el-dropdown-menu>
             </template>
           </el-dropdown>
@@ -761,11 +1020,12 @@ function collapseAllTree() {
         ref="pageTreeFocusRef"
         class="page-tree-scroll-host"
         tabindex="-1"
+        @pointerdown="onPageTreeHostPointerDown"
       >
       <el-scrollbar class="page-tree-scroll">
         <el-tree
           ref="treeRef"
-          v-if="store.pageTree.length > 0"
+          v-if="displayPageTree.length > 0"
           :data="displayPageTree"
           :props="treeProps"
           node-key="id"
@@ -773,9 +1033,10 @@ function collapseAllTree() {
           :allow-drag="allowDrag"
           :allow-drop="allowDrop"
           :highlight-current="true"
-          :current-node-key="store.currentPageId ?? undefined"
+          :current-node-key="store.currentViewKey ?? undefined"
           @node-click="onNodeClick"
           @node-expand="onPageTreeNodeExpand"
+          @node-collapse="onPageTreeNodeCollapse"
           @node-contextmenu="onNodeContextMenu"
           @node-drop="onNodeDrop"
           class="page-tree"
@@ -784,9 +1045,12 @@ function collapseAllTree() {
             <span
               class="tree-node"
               :class="{
-                'tree-node--selected': !isVirtualPageTreeExtra(data) && isPageSelected(data.id),
+                'tree-node--selected': (
+                  isResourceDocumentTreeNode(data) || !isVirtualPageTreeExtra(data)
+                ) && isPageSelected(data.id),
                 'tree-node--outline': isOutlineTreeNode(data),
                 'tree-node--outline-placeholder': data.nodeKind === 'outline-placeholder',
+                'tree-node--resource-document': isResourceDocumentTreeNode(data),
               }"
             >
               <span
@@ -798,6 +1062,21 @@ function collapseAllTree() {
                   class="node-icon__outline"
                   :title="outlineLevelLabel(data.outlineMeta?.level)"
                 >{{ outlineLevelLabel(data.outlineMeta?.level) }}</span>
+                <svg
+                  v-else-if="isResourceDocumentTreeNode(data)"
+                  class="node-icon__resource"
+                  viewBox="0 0 12 12"
+                  fill="none"
+                >
+                  <path
+                    d="M3 1.5h4.5L10.5 4.5V10.5H3V1.5Z"
+                    stroke="currentColor"
+                    stroke-width="1.2"
+                    stroke-linejoin="round"
+                  />
+                  <path d="M7.5 1.5V4.5H10.5" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round" />
+                  <path d="M5 7h2.5M5 9h2.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" />
+                </svg>
                 <svg
                   v-else-if="data.pageType === 'mindmap'"
                   class="node-icon__mindmap"
@@ -823,7 +1102,7 @@ function collapseAllTree() {
                 <span v-else class="node-icon__doc">📄</span>
               </span>
               <el-input
-                v-if="!isOutlineTreeNode(data) && renamingId === data.id"
+                v-if="!isVirtualPageTreeExtra(data) && renamingId === data.id"
                 ref="renameInputRef"
                 v-model="renameValue"
                 size="small"
@@ -863,36 +1142,55 @@ function collapseAllTree() {
       <div
         v-if="contextMenu.visible && contextMenu.node"
         ref="contextMenuRef"
+        data-page-tree-context-menu
         class="context-menu"
         :style="{ left: `${contextMenuPosition.left}px`, top: `${contextMenuPosition.top}px` }"
+        @pointerdown.stop
         @mousedown.stop
         @click.stop
       >
-        <div class="context-menu-item" @click="onCreateChild(contextMenu.node!.id, 'document')">
-          文档
-        </div>
-        <div class="context-menu-item" @click="onCreateChild(contextMenu.node!.id, 'mindmap')">
-          思维导图
-        </div>
-        <div class="context-menu-item" @click="onCreateChild(contextMenu.node!.id, 'x6board')">
-          画板
-        </div>
-        <div class="context-menu-item" @click="onStartRename(contextMenu.node!)">
-          重命名
-        </div>
-        <template v-if="contextMenu.node && isDocumentPage(contextMenu.node)">
-          <div class="context-menu-divider" />
-          <div class="context-menu-item" @click="onTogglePageOutlineFromContextMenu">
-            {{ isPageOutlineExpanded(contextMenu.node.id) ? '收起目录' : '展开目录' }}
+        <template v-if="isResourceDocumentTreeNode(contextMenu.node)">
+          <div
+            class="context-menu-item context-menu-item--danger"
+            @click="onUnlinkDocumentResource(contextMenu.node!)"
+          >
+            移出当前知识库
           </div>
         </template>
-        <div class="context-menu-divider" />
-        <div
-          class="context-menu-item context-menu-item--danger"
-          @click="selectedPageCount > 1 && contextMenu.node && isPageSelected(contextMenu.node.id) ? onDeleteSelectedPages() : onDeletePage(contextMenu.node!)"
-        >
-          {{ selectedPageCount > 1 && contextMenu.node && isPageSelected(contextMenu.node.id) ? `删除 ${selectedPageCount} 个页面` : '删除' }}
-        </div>
+        <template v-else>
+          <div class="context-menu-item" @click="onCreateChild(contextMenu.node!.id, 'document')">
+            文档
+          </div>
+          <div class="context-menu-item" @click="onCreateChild(contextMenu.node!.id, 'mindmap')">
+            思维导图
+          </div>
+          <div class="context-menu-item" @click="onCreateChild(contextMenu.node!.id, 'x6board')">
+            画板
+          </div>
+          <div
+            v-if="isDocumentPage(contextMenu.node)"
+            class="context-menu-item"
+            @click="openLinkDocumentPickerToPage(contextMenu.node!)"
+          >
+            挂接文档资源
+          </div>
+          <div class="context-menu-item" @click="onStartRename(contextMenu.node!)">
+            重命名
+          </div>
+          <template v-if="contextMenu.node && isDocumentPage(contextMenu.node)">
+            <div class="context-menu-divider" />
+            <div class="context-menu-item" @click="onTogglePageOutlineFromContextMenu">
+              {{ isPageOutlineExpanded(contextMenu.node.id) ? '收起目录' : '展开目录' }}
+            </div>
+          </template>
+          <div class="context-menu-divider" />
+          <div
+            class="context-menu-item context-menu-item--danger"
+            @click="selectedPageCount > 1 && contextMenu.node && isPageSelected(contextMenu.node.id) ? onDeleteSelectedPages() : onDeletePage(contextMenu.node!)"
+          >
+            {{ selectedPageCount > 1 && contextMenu.node && isPageSelected(contextMenu.node.id) ? `删除 ${selectedPageCount} 个页面` : '删除' }}
+          </div>
+        </template>
       </div>
     </Teleport>
 
@@ -900,8 +1198,10 @@ function collapseAllTree() {
       <div
         v-if="kbContextMenu.visible && kbContextMenu.kb"
         ref="kbContextMenuRef"
+        data-kb-context-menu
         class="context-menu"
         :style="{ left: `${kbContextMenuPosition.left}px`, top: `${kbContextMenuPosition.top}px` }"
+        @pointerdown.stop
         @mousedown.stop
         @click.stop
       >
@@ -932,6 +1232,15 @@ function collapseAllTree() {
         </el-button>
       </template>
     </el-dialog>
+
+    <ExternalResourcePicker
+      :visible="showLinkDocumentPicker"
+      mode="linkDocument"
+      :attach-target="linkDocumentAttachTargetProp"
+      :attach-target-name="linkDocumentAttachTargetName"
+      @update:visible="showLinkDocumentPicker = $event"
+      @link-item="onLinkDocumentResource"
+    />
   </div>
 </template>
 
@@ -1104,6 +1413,17 @@ function collapseAllTree() {
   color: #94a3b8;
 }
 
+.node-icon__resource {
+  display: block;
+  width: 14px;
+  height: 14px;
+  color: #64748b;
+}
+
+.tree-node--resource-document .node-label {
+  color: #475569;
+}
+
 .node-outline-loading {
   flex: 0 0 auto;
   margin-left: 4px;
@@ -1202,6 +1522,8 @@ function collapseAllTree() {
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
   padding: 4px 0;
   min-width: 140px;
+  /* 空白区域穿透，避免挡住下方页面节点导致无法点选/关菜单 */
+  pointer-events: none;
 }
 
 .context-menu-item {
@@ -1209,6 +1531,7 @@ function collapseAllTree() {
   font-size: 13px;
   cursor: pointer;
   transition: background 0.12s;
+  pointer-events: auto;
 }
 
 .context-menu-item:hover {
@@ -1223,6 +1546,7 @@ function collapseAllTree() {
   height: 1px;
   background: #f0f0f0;
   margin: 4px 0;
+  pointer-events: none;
 }
 
 .empty-hint {

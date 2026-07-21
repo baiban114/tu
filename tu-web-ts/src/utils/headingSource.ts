@@ -38,6 +38,7 @@ export function bindingFromExternalResource(data: ExternalResourceEmbedData): He
     snapshot: {
       resourceTitle: snapshot.resourceTitle,
       resourceTypeName: snapshot.resourceTypeName,
+      workTitle: snapshot.workTitle,
       excerptTitle: snapshot.excerptTitle,
       excerptLocator: snapshot.excerptLocator,
     },
@@ -54,6 +55,7 @@ export function basisBindingFromExternalResource(data: ExternalResourceEmbedData
     snapshot: {
       resourceTitle: snapshot.resourceTitle,
       resourceTypeName: snapshot.resourceTypeName,
+      workTitle: snapshot.workTitle,
       excerptTitle: snapshot.excerptTitle,
       excerptLocator: snapshot.excerptLocator,
     },
@@ -75,6 +77,7 @@ export function parseHeadingSourceComment(attrsStr: string): { blockId: string; 
       snapshot: {
         resourceTitle: attrs['resource-title'] || '',
         resourceTypeName: attrs.type || undefined,
+        workTitle: attrs['work-title'] || undefined,
         excerptTitle: attrs.title || undefined,
         excerptLocator: attrs.locator || undefined,
       },
@@ -95,6 +98,7 @@ export function serializeHeadingSourceComment(blockId: string, binding: HeadingS
   if (snapshot.excerptTitle) parts.push(`title="${escapeAttr(snapshot.excerptTitle)}"`)
   if (snapshot.excerptLocator) parts.push(`locator="${escapeAttr(snapshot.excerptLocator)}"`)
   if (snapshot.resourceTypeName) parts.push(`type="${escapeAttr(snapshot.resourceTypeName)}"`)
+  if (snapshot.workTitle) parts.push(`work-title="${escapeAttr(snapshot.workTitle)}"`)
   if (snapshot.resourceTitle) parts.push(`resource-title="${escapeAttr(snapshot.resourceTitle)}"`)
   if (binding.markerSource === 'ai') parts.push('marker="ai"')
   return `<!--tu:heading-source ${parts.join(' ')}-->`
@@ -113,9 +117,31 @@ export function headingSourceBadgeTitle(binding: HeadingSourceBinding): string {
   const snapshot = binding.snapshot
   const parts = [
     snapshot.resourceTitle,
+    snapshot.workTitle,
     snapshot.resourceTypeName,
     snapshot.excerptTitle,
     snapshot.excerptLocator ? resourcePositionDisplay(snapshot.excerptLocator) : '',
   ].filter(Boolean)
   return parts.join(' · ') || (binding.resourceExcerptId ? '外部资源节选' : '外部资源')
+}
+
+/** 正文标题节元数据条 chips（与引用块节选条同构：类型 / 归类 / 定位） */
+export function headingSourceMetaChips(binding: HeadingSourceBinding): string[] {
+  const snapshot = binding.snapshot
+  const chips = ['来源']
+  if (snapshot.resourceTypeName) chips.push(snapshot.resourceTypeName)
+  if (snapshot.workTitle) chips.push(snapshot.workTitle)
+  else if (snapshot.resourceTitle) chips.push(snapshot.resourceTitle)
+  if (snapshot.excerptLocator) chips.push(resourcePositionDisplay(snapshot.excerptLocator))
+  if (snapshot.excerptTitle) {
+    const last = chips[chips.length - 1]
+    if (snapshot.excerptTitle !== last && snapshot.excerptTitle !== snapshot.workTitle) {
+      chips.push(snapshot.excerptTitle)
+    }
+  }
+  return chips
+}
+
+export function isAiHeadingSource(binding: HeadingSourceBinding): boolean {
+  return effectiveMarkerSource(binding.markerSource) === 'ai'
 }

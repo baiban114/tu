@@ -404,6 +404,12 @@ onBeforeUnmount(() => {
   cleanupDocumentDragListener();
 });
 
+function allowDrag(node: any) {
+  const data = node.data as KnowledgePoint;
+  if (renamingPointId.value === data.id) return false;
+  return true;
+}
+
 function allowDrop(draggingNode: any, dropNode: any, dropType: TreeDropType) {
   return canDropOnNode(draggingNode.data.id, dropNode.data.id, dropType, flatMovableNodes());
 }
@@ -556,6 +562,7 @@ defineExpose({
           :props="treeProps"
           highlight-current
           :draggable="isDraggable"
+          :allow-drag="allowDrag"
           :allow-drop="allowDrop"
           :filter-node-method="filterNode"
           :node-class="nodeClass"
@@ -571,8 +578,14 @@ defineExpose({
         >
           <template #default="{ node, data }">
             <span class="kpt-tree-node">
+            <span
+              v-if="renamingPointId === data.id"
+              class="kpt-tree-rename-wrap"
+              @mousedown.stop
+              @click.stop
+              @dragstart.stop.prevent
+            >
               <ElInput
-                v-if="renamingPointId === data.id"
                 ref="renameInputRef"
                 v-model="renameValue"
                 size="small"
@@ -580,8 +593,8 @@ defineExpose({
                 @blur="onFinishRename(data)"
                 @keyup.enter="onFinishRename(data)"
                 @keyup.esc="cancelRename"
-                @click.stop
               />
+            </span>
               <span
                 v-else
                 class="kpt-tree-node__label"
@@ -723,8 +736,18 @@ defineExpose({
   cursor: not-allowed;
 }
 
+.kpt-tree-rename-wrap {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+}
+
 .kpt-tree-rename-input {
   width: 100%;
+}
+
+.kpt-tree-rename-input :deep(.el-input__inner) {
+  user-select: text;
 }
 
 .kpt-empty {

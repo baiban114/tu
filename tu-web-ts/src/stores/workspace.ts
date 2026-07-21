@@ -17,7 +17,10 @@ import {
   movePage,
   renamePage,
 } from '@/api/page';
+import { getResourceItem, listResourceExcerpts, type ResourceExcerpt } from '@/api/externalResource';
+import { listKbResourceLinks, type KbResourceLink } from '@/api/kbResourceLink';
 import type { Block, GraphData, PageContent, PageItem, PageType } from '@/api/types';
+import { MAX_PAGE_SIZE } from '@/constants/pagination';
 import {
   createInitialPageContent,
   createPageContentFromEmbed,
@@ -27,6 +30,12 @@ import {
   normalizePageType,
   removeEmbedFromPageContent,
 } from '@/utils/boardPageContent';
+import {
+  synthesizeResourceDocumentContent,
+  resourceDocumentTreeId,
+  parseResourceDocumentTreeId,
+  isResourceDocumentTreeId,
+} from '@/utils/resourceDocumentContent';
 import type { ImportRoadmapPayload } from '@/api/types';
 import { useBlockRegistryStore } from '@/stores/blockRegistry';
 import { blockSyncManager } from '@/utils/blockSyncManager';
@@ -37,6 +46,8 @@ import {
   serializePageContentToMarkdown,
 } from '@/utils/markdownImport';
 import { parseGraphToSourcePatch } from '@/utils/graphSources';
+
+type WorkspaceViewMode = 'page' | 'resource-document';
 
 type LocalFileSaveStatus = 'idle' | 'pending' | 'saving' | 'saved' | 'error' | 'unsupported';
 
@@ -99,23 +110,39 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   const kbList = ref<KnowledgeBase[]>([]);
   const currentKbId = ref<string | null>(null);
   const pageTree = ref<PageItem[]>([]);
+  const linkedResourceDocuments = ref<KbResourceLink[]>([]);
   const currentPageId = ref<string | null>(null);
+  const currentResourceItemId = ref<string | null>(null);
+  const viewMode = ref<WorkspaceViewMode>('page');
   const pageContent = ref<PageContent | null>(null);
   const currentPageTitleOverride = ref<string | null>(null);
   const loading = ref(false);
   const localFileBindings = ref<Record<string, LocalFileBinding>>({});
   const registryStore = useBlockRegistryStore();
 
+  const isResourceDocumentView = computed(() => viewMode.value === 'resource-document');
+
   const currentLocalFileBinding = computed(() => {
+    if (isResourceDocumentView.value) return null;
     const pageId = currentPageId.value;
     if (!pageId) return null;
     return localFileBindings.value[pageId] ?? null;
   });
 
   const currentPageTitle = computed(() => {
+    if (isResourceDocumentView.value) {
+      return (currentPageTitleOverride.value ?? '').trim() || '未命名文档资源';
+    }
     const pageId = currentPageId.value;
     if (!pageId) return '';
     return (currentPageTitleOverride.value ?? findPageTitle(pageId)).trim() || UNTITLED_PAGE_TITLE;
+  });
+
+  const currentViewKey = computed(() => {
+    if (isResourceDocumentView.value && currentResourceItemId.value) {
+      return resourceDocumentTreeId(currentResourceItemId.value);
+    }
+    return currentPageId.value;
   });
 
   function clearBindingTimer(binding: LocalFileBinding | undefined) {
@@ -137,11 +164,36 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   function resetWorkspaceState() {
     currentKbId.value = null;
     currentPageId.value = null;
+    currentResourceItemId.value = null;
+    viewMode.value = 'page';
     currentPageTitleOverride.value = null;
     pageTree.value = [];
+    linkedResourceDocuments.value = [];
     pageContent.value = null;
     blockSyncManager.setPageId(null);
     registryStore.clear();
+  }
+
+  async function loadLinkedResourceDocuments(kbId: string) {
+    try {
+      linkedResourceDocuments.value = await listKbResourceLinks(kbId);
+    } catch (error) {
+      console.warn('Failed to load KB resource links', error);
+      linkedResourceDocuments.value = [];
+    }
+  }
+
+  async function fetchAllResourceExcerpts(resourceItemId: string): Promise<ResourceExcerpt[]> {
+    const all: ResourceExcerpt[] = [];
+    let page = 0;
+    for (;;) {
+      const result = await listResourceExcerpts(resourceItemId, { page, pageSize: MAX_PAGE_SIZE });
+      all.push(...result.items);
+      if (all.length >= result.total || result.items.length === 0) break;
+      page += 1;
+      if (page > 100) break;
+    }
+    return all;
   }
 
   async function loadKbList() {
@@ -171,8 +223,9 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   }
 
   async function flushCurrentPageIndexBestEffort() {
+    if (viewMode.value === 'resource-document') return;
     const pageId = currentPageId.value;
-    if (!pageId) return;
+    if (!pageId || isResourceDocumentTreeId(pageId)) return;
     try {
       await flushPageIndex(pageId);
     } catch (error) {
@@ -184,13 +237,26 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     await flushCurrentPageIndexBestEffort();
     currentKbId.value = kbId;
     currentPageId.value = null;
+    currentResourceItemId.value = null;
+    viewMode.value = 'page';
     currentPageTitleOverride.value = null;
     blockSyncManager.setPageId(null);
     pageContent.value = null;
     registryStore.clear();
-    pageTree.value = await getPageTree(kbId);
+    const [tree] = await Promise.all([
+      getPageTree(kbId),
+      loadLinkedResourceDocuments(kbId),
+    ]);
+    pageTree.value = tree;
 
     const preferredPageId = options?.preferredPageId;
+    if (preferredPageId && parseResourceDocumentTreeId(preferredPageId)) {
+      const resourceItemId = parseResourceDocumentTreeId(preferredPageId)!;
+      if (linkedResourceDocuments.value.some((link) => link.resourceItemId === resourceItemId)) {
+        await selectKbLinkedResource(resourceItemId);
+        return;
+      }
+    }
     const restoredPageId = preferredPageId && findPageInTree(pageTree.value, preferredPageId)
       ? preferredPageId
       : null;
@@ -201,9 +267,16 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   }
 
   async function selectPage(pageId: string) {
+    if (isResourceDocumentTreeId(pageId)) {
+      const resourceItemId = parseResourceDocumentTreeId(pageId);
+      if (resourceItemId) await selectKbLinkedResource(resourceItemId);
+      return;
+    }
     if (currentPageId.value && currentPageId.value !== pageId) {
       await flushCurrentPageIndexBestEffort();
     }
+    viewMode.value = 'page';
+    currentResourceItemId.value = null;
     currentPageId.value = pageId;
     currentPageTitleOverride.value = null;
     blockSyncManager.setPageId(pageId);
@@ -219,6 +292,35 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     } finally {
       loading.value = false;
     }
+  }
+
+  async function selectKbLinkedResource(resourceItemId: string) {
+    await flushCurrentPageIndexBestEffort();
+    viewMode.value = 'resource-document';
+    currentResourceItemId.value = resourceItemId;
+    currentPageId.value = null;
+    blockSyncManager.setPageId(null);
+    loading.value = true;
+    try {
+      const [item, excerpts] = await Promise.all([
+        getResourceItem(resourceItemId),
+        fetchAllResourceExcerpts(resourceItemId),
+      ]);
+      const content = synthesizeResourceDocumentContent(item, excerpts);
+      pageContent.value = content;
+      currentPageTitleOverride.value = item.title;
+      registryStore.clear();
+      if (currentKbId.value) {
+        persistSelection(currentKbId.value, resourceDocumentTreeId(resourceItemId));
+      }
+    } finally {
+      loading.value = false;
+    }
+  }
+
+  async function refreshLinkedResourceDocuments() {
+    if (!currentKbId.value) return;
+    await loadLinkedResourceDocuments(currentKbId.value);
   }
 
   function findPageInTree(nodes: PageItem[], pageId: string): PageItem | null {
@@ -408,6 +510,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   }
 
   async function saveCurrentPage(content: PageContent) {
+    if (viewMode.value === 'resource-document') return;
     if (!currentPageId.value) return;
 
     const pageId = currentPageId.value;
@@ -643,7 +746,12 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     kbList,
     currentKbId,
     pageTree,
+    linkedResourceDocuments,
     currentPageId,
+    currentResourceItemId,
+    currentViewKey,
+    viewMode,
+    isResourceDocumentView,
     pageContent,
     currentPageTitle,
     currentPageType,
@@ -656,6 +764,8 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     reloadWorkspace,
     selectKb,
     selectPage,
+    selectKbLinkedResource,
+    refreshLinkedResourceDocuments,
     saveCurrentPage,
     addKb,
     removeKb,

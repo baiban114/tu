@@ -1,16 +1,17 @@
 import Blockquote from '@tiptap/extension-blockquote'
 import type { HeadingSourceBinding } from '@/api/types'
+import { jsonDomAttribute } from '../jsonDomAttribute'
 
 export const BlockquoteNode = Blockquote.extend({
   addAttributes() {
     return {
       ...this.parent?.(),
       blockId: { default: '' },
-      excerptBinding: {
-        default: null,
-        parseHTML: () => null,
-        renderHTML: () => ({}),
-      },
+      excerptBinding: jsonDomAttribute<HeadingSourceBinding | null>(
+        'excerptBinding',
+        'data-excerpt-binding',
+        null,
+      ),
     }
   },
 })

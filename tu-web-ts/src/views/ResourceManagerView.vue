@@ -48,6 +48,10 @@ import {
   type UrlClusterRule,
   type VariantKind,
 } from '@/api/externalResource';
+import {
+  createKbResourceLink,
+  deleteKbResourceLink,
+} from '@/api/kbResourceLink';
 import { DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE } from '@/constants/pagination';
 import { parseExternalUrl } from '@/utils/externalUrlResource';
 import { recognizeExcerptFieldsFromUrl } from '@/utils/excerptUrlRecognition';
@@ -83,7 +87,6 @@ import AppHelpButton from '@/components/AppHelpButton.vue';
 import KnowledgePointManagerPanel from '@/components/KnowledgePointManagerPanel.vue';
 import KnowledgeGraphPanel from '@/components/knowledge/KnowledgeGraphPanel.vue';
 import {
-  resourcesToTreeNodes,
   resourceWorksToTreeNodes,
   buildTreeFromFlat,
   type ResourceTreeMeta,
@@ -168,10 +171,6 @@ const mergeWorkDialogVisible = ref(false);
 const mergeWorkSourceItem = ref<ResourceItem | null>(null);
 const mergeWorkSelectedId = ref('');
 const mergeWorkSubmitting = ref(false);
-const resourceTreeSelectedId = ref<string | null>(null);
-const resourceTreeExcerpts = ref<Record<string, ResourceExcerpt[]>>({});
-const resourceTreeChapters = ref<Record<string, ResourceChapter[]>>({});
-const resourceTreeLoading = ref(false);
 const chaptersLoading = ref(false);
 const chapters = ref<ResourceChapter[]>([]);
 const excerpts = ref<ResourceExcerpt[]>([]);
@@ -286,17 +285,6 @@ const worksForFilter = computed(() => {
   return visibleWorks.filter((work) => work.typeId === selectedTypeId.value);
 });
 const worksForItemForm = computed(() => allWorks.value.filter((work) => work.typeId === itemForm.typeId));
-
-const showResourceTree = computed(() => activeTab.value !== 'objects' && activeTab.value !== 'orphaned');
-
-const resourceTreeNodes = computed(() => resourcesToTreeNodes({
-  types: allTypes.value,
-  works: allWorks.value,
-  items: itemSelectOptions.value,
-  excerptsByItemId: resourceTreeExcerpts.value,
-  chaptersByItemId: resourceTreeChapters.value,
-  filterTypeId: selectedTypeId.value || undefined,
-}));
 
 const selectedChapterItem = computed(() => (
   itemSelectOptions.value.find((item) => item.id === selectedChapterItemId.value) || null
@@ -521,8 +509,7 @@ async function applyResourceDeepLink() {
   await openExcerptPanel(item);
 
   if (!excerptId) return;
-  const excerpt = excerpts.value.find((entry) => entry.id === excerptId)
-    ?? resourceTreeExcerpts.value[item.id]?.find((entry) => entry.id === excerptId);
+  const excerpt = excerpts.value.find((entry) => entry.id === excerptId);
   if (excerpt) {
     editExcerpt(excerpt);
   }
@@ -598,39 +585,6 @@ async function confirmAction(message: string, title = '确认操作') {
   });
 }
 
-async function loadTreeExcerpts(items: ResourceItem[]) {
-  resourceTreeLoading.value = true;
-  try {
-    const excerptItems = items.filter((item) => supportsResourceExcerpts(typeById.value.get(item.typeId)?.code));
-    if (excerptItems.length === 0) {
-      resourceTreeExcerpts.value = {};
-      resourceTreeChapters.value = {};
-      return;
-    }
-    const bookItems = excerptItems.filter((item) => supportsBookChapters(typeById.value.get(item.typeId)?.code));
-    const [excerptEntries, chapterEntries] = await Promise.all([
-      Promise.all(
-        excerptItems.map(async (item) => {
-          const result = await listResourceExcerpts(item.id, { page: 0, pageSize: MAX_PAGE_SIZE });
-          return [item.id, result.items] as const;
-        }),
-      ),
-      Promise.all(
-        bookItems.map(async (item) => {
-          const chapterList = await listResourceChapters(item.id);
-          return [item.id, chapterList] as const;
-        }),
-      ),
-    ]);
-    resourceTreeExcerpts.value = Object.fromEntries(excerptEntries);
-    resourceTreeChapters.value = Object.fromEntries(chapterEntries);
-  } catch (error) {
-    showError(error);
-  } finally {
-    resourceTreeLoading.value = false;
-  }
-}
-
 async function loadLookupData() {
   const [typesResult, worksResult, itemsResult] = await Promise.all([
     listResourceTypes({ page: 0, pageSize: MAX_PAGE_SIZE }),
@@ -640,7 +594,6 @@ async function loadLookupData() {
   allTypes.value = typesResult.items;
   allWorks.value = worksResult.items;
   itemSelectOptions.value = itemsResult.items;
-  await loadTreeExcerpts(itemsResult.items);
 }
 
 async function refreshTypesTable() {
@@ -757,6 +710,52 @@ function supportsExcerptItem(item: ResourceItem): boolean {
 
 function supportsBookChapterItem(item: ResourceItem): boolean {
   return supportsBookChapters(typeById.value.get(item.typeId)?.code);
+}
+
+function isDocumentResourceItem(item: ResourceItem): boolean {
+  return typeById.value.get(item.typeId)?.code === DOCUMENT_RESOURCE_TYPE_CODE;
+}
+
+const linkedResourceItemIds = computed(() => (
+  new Set(workspaceStore.linkedResourceDocuments.map((link) => link.resourceItemId))
+));
+
+function isLinkedToCurrentKb(item: ResourceItem): boolean {
+  return linkedResourceItemIds.value.has(item.id);
+}
+
+async function linkDocumentToCurrentKb(item: ResourceItem) {
+  const kbId = workspaceStore.currentKbId;
+  if (!kbId) {
+    ElMessage.warning('请先在工作区选择知识库');
+    return;
+  }
+  if (!isDocumentResourceItem(item)) {
+    ElMessage.warning('仅文档型资源可加入知识库页面列表');
+    return;
+  }
+  try {
+    await createKbResourceLink(kbId, { resourceItemId: item.id });
+    await workspaceStore.refreshLinkedResourceDocuments();
+    showSuccess(`已将「${item.title}」加入当前知识库`);
+  } catch (error) {
+    showError(error);
+  }
+}
+
+async function unlinkDocumentFromCurrentKb(item: ResourceItem) {
+  const kbId = workspaceStore.currentKbId;
+  if (!kbId) {
+    ElMessage.warning('请先在工作区选择知识库');
+    return;
+  }
+  try {
+    await deleteKbResourceLink(kbId, item.id);
+    await workspaceStore.refreshLinkedResourceDocuments();
+    showSuccess(`已将「${item.title}」从当前知识库移除`);
+  } catch (error) {
+    showError(error);
+  }
 }
 
 const excerptSelectedTypeCode = computed(() => {
@@ -1084,10 +1083,6 @@ async function saveItem() {
   }
 }
 
-async function refreshResourceTreeData() {
-  await loadTreeExcerpts(itemSelectOptions.value);
-}
-
 async function saveExcerpt() {
   if (!selectedExcerptItem.value) return;
   try {
@@ -1109,7 +1104,6 @@ async function saveExcerpt() {
     await loadExcerpts(selectedExcerptItem.value.id, excerptPage.value);
     excerptPanelRoute.value = 'list';
     resetExcerptForm();
-    await refreshResourceTreeData();
     await refreshReferences();
   } catch (error) {
     showError(error);
@@ -1134,7 +1128,6 @@ async function saveChapter() {
       showSuccess('章节已创建');
     }
     await loadChapters(selectedChapterItem.value.id);
-    await refreshResourceTreeData();
     resetChapterForm();
   } catch (error) {
     showError(error);
@@ -1142,7 +1135,6 @@ async function saveChapter() {
 }
 
 function editChapter(chapter: ResourceChapter) {
-  resourceTreeSelectedId.value = `rc:${chapter.id}`;
   Object.assign(chapterForm, {
     id: chapter.id,
     title: chapter.title,
@@ -1164,7 +1156,6 @@ async function removeChapter(chapter: ResourceChapter) {
     if (selectedExcerptItem.value?.id === chapter.resourceItemId) {
       await loadExcerpts(chapter.resourceItemId, excerptPage.value);
     }
-    await refreshResourceTreeData();
     if (chapterForm.id === chapter.id) resetChapterForm();
   } catch (error) {
     if (error !== 'cancel' && error !== 'close') showError(error);
@@ -1190,13 +1181,11 @@ async function saveReference() {
 }
 
 function editType(type: ResourceType) {
-  resourceTreeSelectedId.value = `rt:${type.id}`;
   Object.assign(typeForm, type);
   activeTab.value = 'types';
 }
 
 function editWork(work: ResourceWork) {
-  resourceTreeSelectedId.value = `rw:${work.id}`;
   Object.assign(workForm, {
     id: work.id,
     typeId: work.typeId,
@@ -1250,7 +1239,6 @@ async function removeItemRelation(relation: ResourceItemRelation) {
 }
 
 function editItem(item: ResourceItem) {
-  resourceTreeSelectedId.value = `ri:${item.id}`;
   Object.assign(itemForm, {
     id: item.id,
     typeId: item.typeId,
@@ -1389,7 +1377,6 @@ async function removeUrlRule(rule: UrlClusterRule) {
 }
 
 function editExcerpt(excerpt: ResourceExcerpt) {
-  resourceTreeSelectedId.value = `re:${excerpt.id}`;
   excerptPanelRoute.value = 'edit';
   Object.assign(excerptForm, {
     id: excerpt.id,
@@ -1555,7 +1542,6 @@ async function removeExcerpt(excerpt: ResourceExcerpt) {
     if (selectedExcerptItem.value) {
       await loadExcerpts(selectedExcerptItem.value.id, excerptPage.value);
     }
-    await refreshResourceTreeData();
     await refreshReferences();
   } catch (error) {
     if (error !== 'cancel' && error !== 'close') showError(error);
@@ -1587,75 +1573,6 @@ function onMergeWorkTreeSelect(node: TreeNode) {
   const meta = node.meta as ResourceTreeMeta | undefined;
   if (meta?.layer === 'work') {
     mergeWorkSelectedId.value = meta.entityId;
-  }
-}
-
-async function onResourceTreeSelect(node: TreeNode) {
-  resourceTreeSelectedId.value = node.id;
-  const meta = node.meta as ResourceTreeMeta | undefined;
-  if (!meta || meta.layer === 'root') return;
-
-  switch (meta.layer) {
-    case 'type': {
-      const type = allTypes.value.find((entry) => entry.id === meta.entityId);
-      if (!type) return;
-      selectedTypeId.value = type.id;
-      selectedWorkId.value = '';
-      activeTab.value = 'types';
-      editType(type);
-      break;
-    }
-    case 'work': {
-      const work = allWorks.value.find((entry) => entry.id === meta.entityId);
-      if (!work) return;
-      selectedTypeId.value = work.typeId;
-      selectedWorkId.value = work.id;
-      activeTab.value = 'works';
-      editWork(work);
-      break;
-    }
-    case 'unassigned': {
-      if (meta.typeId) selectedTypeId.value = meta.typeId;
-      selectedWorkId.value = '';
-      activeTab.value = 'items';
-      itemsPage.value = 0;
-      void refreshItems();
-      break;
-    }
-    case 'item': {
-      const item = itemSelectOptions.value.find((entry) => entry.id === meta.entityId);
-      if (!item) return;
-      selectedTypeId.value = item.typeId;
-      selectedWorkId.value = item.workId || '';
-      activeTab.value = 'items';
-      editItem(item);
-      break;
-    }
-    case 'chapter': {
-      const item = itemSelectOptions.value.find((entry) => entry.id === meta.itemId);
-      if (!item || !meta.entityId) return;
-      await openChapterPanel(item);
-      const chapter = chapters.value.find((entry) => entry.id === meta.entityId)
-        ?? resourceTreeChapters.value[item.id]?.find((entry) => entry.id === meta.entityId);
-      if (chapter) editChapter(chapter);
-      break;
-    }
-    case 'unassigned_excerpts': {
-      const item = itemSelectOptions.value.find((entry) => entry.id === meta.itemId);
-      if (!item) return;
-      await openExcerptPanel(item);
-      break;
-    }
-    case 'excerpt': {
-      const item = itemSelectOptions.value.find((entry) => entry.id === meta.itemId);
-      if (!item || !meta.entityId) return;
-      await openExcerptPanel(item);
-      const excerpt = resourceTreeExcerpts.value[item.id]?.find((entry) => entry.id === meta.entityId);
-      if (excerpt) editExcerpt(excerpt);
-      break;
-    }
-    default:
-      break;
   }
 }
 
@@ -1809,6 +1726,11 @@ function truncateText(value: string, max = 80) {
 }
 
 onMounted(async () => {
+  if (!workspaceStore.currentKbId) {
+    await workspaceStore.reloadWorkspace();
+  } else {
+    await workspaceStore.refreshLinkedResourceDocuments();
+  }
   await refreshAll();
   await refreshReferences();
   await loadOrphanedAnnotations();
@@ -1877,26 +1799,7 @@ watch(
       </el-form>
     </el-card>
 
-    <div
-      class="resource-workspace"
-      :class="{ 'resource-workspace--with-tree': showResourceTree }"
-    >
-      <el-card v-if="showResourceTree" v-loading="resourceTreeLoading" shadow="never" class="resource-tree-card">
-        <template #header>
-          <div class="list-card-header">
-            <span>资源结构</span>
-            <span class="row-meta">类型 → 归类 → 实体 → 章节 → 节选</span>
-          </div>
-        </template>
-        <TreeListPanel
-          :nodes="resourceTreeNodes"
-          :selected-id="resourceTreeSelectedId"
-          :default-expand-depth="selectedTypeId ? 2 : 1"
-          @select="onResourceTreeSelect"
-        />
-      </el-card>
-
-      <div class="resource-main">
+    <div class="resource-workspace">
     <el-tabs v-model="activeTab" class="resource-tabs" @tab-change="onTabChange">
       <el-tab-pane label="引用管理" name="references" />
       <el-tab-pane label="资源实体" name="items" />
@@ -2248,11 +2151,26 @@ watch(
                 <span v-else class="row-meta">-</span>
               </template>
             </el-table-column>
-            <el-table-column label="操作" width="380" fixed="right">
+            <el-table-column label="操作" width="480" fixed="right">
               <template #default="{ row }">
                 <el-space wrap>
                   <el-button v-if="supportsBookChapterItem(row)" size="small" @click="openChapterPanel(row)">章节</el-button>
                   <el-button v-if="supportsExcerptItem(row)" size="small" @click="openExcerptPanel(row)">节选</el-button>
+                  <el-button
+                    v-if="isDocumentResourceItem(row) && !isLinkedToCurrentKb(row)"
+                    size="small"
+                    type="primary"
+                    plain
+                    :disabled="!workspaceStore.currentKbId"
+                    @click="linkDocumentToCurrentKb(row)"
+                  >加入当前知识库</el-button>
+                  <el-button
+                    v-else-if="isDocumentResourceItem(row)"
+                    size="small"
+                    plain
+                    :disabled="!workspaceStore.currentKbId"
+                    @click="unlinkDocumentFromCurrentKb(row)"
+                  >移出当前知识库</el-button>
                   <el-button size="small" @click="editItem(row)">编辑</el-button>
                   <el-button size="small" @click="openMergeWorkDialog(row)">合并归类</el-button>
                   <el-button size="small" @click="splitItemWork(row)">拆分</el-button>
@@ -2935,7 +2853,6 @@ watch(
         </el-button>
       </template>
     </el-dialog>
-      </div>
     </div>
   </main>
 </template>
@@ -2988,29 +2905,6 @@ watch(
 }
 
 .resource-workspace {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  gap: 16px;
-  align-items: start;
-}
-
-.resource-workspace--with-tree {
-  grid-template-columns: minmax(240px, 280px) minmax(0, 1fr);
-}
-
-.resource-tree-card {
-  position: sticky;
-  top: 12px;
-  min-width: 0;
-}
-
-.resource-tree-card :deep(.el-card__body) {
-  padding: 4px 0 8px;
-  max-height: calc(100vh - 280px);
-  overflow-y: auto;
-}
-
-.resource-main {
   min-width: 0;
 }
 
@@ -3380,18 +3274,6 @@ watch(
 
   .resource-header {
     flex-direction: column;
-  }
-
-  .resource-workspace--with-tree {
-    grid-template-columns: 1fr;
-  }
-
-  .resource-tree-card {
-    position: static;
-  }
-
-  .resource-tree-card :deep(.el-card__body) {
-    max-height: 240px;
   }
 
   .resource-layout,

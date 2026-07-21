@@ -86,6 +86,10 @@ function updatePageTags(tags: BlockTag[]) {
   void refreshKbTagPool()
 }
 
+function removePageTag(tag: BlockTag) {
+  updatePageTags(pageTags.value.filter((item) => item.id !== tag.id))
+}
+
 onBeforeUnmount(() => {
   if (saveTimer !== null) window.clearTimeout(saveTimer)
 })
@@ -98,6 +102,7 @@ onBeforeUnmount(() => {
         :tags="pageTags"
         editable
         @edit="openPageTagEditor"
+        @remove="removePageTag"
       />
     </section>
     <X6BoardBlock

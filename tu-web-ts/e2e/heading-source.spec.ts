@@ -161,8 +161,8 @@ test('binds heading source, persists after reload, and indexes mock references',
 
   await bindHeadingSourceFromSectionHandle(page)
 
-  await expect(page.locator('.heading-source-badge')).toBeVisible()
-  await expect(page.locator('.heading-source-badge')).toContainText('关于结构化笔记')
+  await expect(page.locator('.heading-section-meta.heading-source-badge')).toBeVisible()
+  await expect(page.locator('.heading-section-meta')).toContainText('关于结构化笔记')
   await expect(page.locator('.page-toc__source')).toBeVisible()
   await page.waitForTimeout(700)
   await waitForHeadingSourceInContent(page)
@@ -170,7 +170,7 @@ test('binds heading source, persists after reload, and indexes mock references',
   expect(excerptTitle).toContain('关于结构化笔记')
 
   await page.reload()
-  await expect(page.locator('.heading-source-badge')).toBeVisible()
+  await expect(page.locator('.heading-section-meta.heading-source-badge')).toBeVisible()
   await expect(page.locator('.page-toc__source')).toBeVisible()
 })
 
@@ -179,8 +179,8 @@ test('clears heading source from section handle menu', async ({ page }) => {
   await expect(page.locator('.ProseMirror')).toBeVisible()
 
   await bindHeadingSourceFromSectionHandle(page)
-  await expect(page.locator('.heading-source-badge')).toBeVisible()
+  await expect(page.locator('.heading-section-meta.heading-source-badge')).toBeVisible()
 
   await openSectionHandleMenu(page, '解除来源')
-  await expect(page.locator('.heading-source-badge')).toHaveCount(0)
+  await expect(page.locator('.heading-section-meta.heading-source-badge')).toHaveCount(0)
 })

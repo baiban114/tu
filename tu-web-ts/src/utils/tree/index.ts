@@ -38,11 +38,13 @@ export {
 
 export { pagesToTreeNodes, flatPagesToTreeNodes, type PageTreeMeta } from './adapters/pages';
 export { tocToTreeNodes, type TocTreeItem, type TocTreeMeta } from './adapters/toc';
+export { mergeResourceDocumentsIntoPageTree } from './adapters/resourceDocuments';
 export {
   contentOutlineToTreeNodes,
   isDocumentPage,
   isOutlinePlaceholderNode,
   isOutlineTreeNode,
+  isResourceDocumentTreeNode,
   isVirtualPageTreeExtra,
   mergeDocumentOutlinesIntoPageTree,
   outlineNodeTreeId,

@@ -1,6 +1,7 @@
 ﻿import { Node, mergeAttributes } from '@tiptap/core'
 import { VueNodeViewRenderer } from '@tiptap/vue-3'
 import X6BlockView from '../views/X6BlockView.vue'
+import { jsonDomAttribute } from '../jsonDomAttribute'
 import { stopNonHandleNodeViewDragEvent } from './nodeViewDragHandle'
 
 export const X6BlockNode = Node.create({
@@ -18,8 +19,8 @@ export const X6BlockNode = Node.create({
       headingLevel: { default: 0 },
       width: { default: null },
       height: { default: null },
-      graphData: { default: { nodes: [], edges: [] } },
-      metadata: { default: {} },
+      graphData: jsonDomAttribute('graphData', 'data-graph-data', { nodes: [], edges: [] }),
+      metadata: jsonDomAttribute('metadata', 'data-metadata', {}),
     }
   },
 

@@ -30,6 +30,8 @@ const props = defineProps<{
 const emit = defineEmits<{
   'section-gutter-hover': [entryId: string]
   'section-gutter-leave': [event?: MouseEvent]
+  'section-handle-pointer-enter': [entryId: string]
+  'section-handle-pointer-leave': [event?: MouseEvent]
 }>()
 
 const tocCollectContext = inject<ComputedRef<TocCollectContext> | undefined>('tocCollectContext', undefined)
@@ -62,6 +64,7 @@ function showToggleForEntry(entryId: string) {
 
 function scheduleHideToggleForEntry(entryId: string, event?: MouseEvent) {
   clearHideVisibleTimer()
+  // 0ms：与手柄触发条无缝衔接，不再用延迟跨空隙
   hideVisibleTimer = setTimeout(() => {
     hideVisibleTimer = null
     if (visibleEntryId.value === entryId) {
@@ -69,7 +72,7 @@ function scheduleHideToggleForEntry(entryId: string, event?: MouseEvent) {
     }
     emit('section-gutter-leave', event)
     sectionHandleBridge?.onSectionGutterLeave(event)
-  }, 120)
+  }, 0)
 }
 
 function isToggleVisible(entryId: string): boolean {
@@ -82,8 +85,16 @@ function clearHoverListeners() {
   }
 }
 
+function onFoldButtonEnter(entryId: string) {
+  showToggleForEntry(entryId)
+  emit('section-handle-pointer-enter', entryId)
+}
+
 function onFoldButtonLeave(entryId: string, event: MouseEvent) {
   const rel = event.relatedTarget
+  // 只有移到节操作手柄时保留高亮；移到正文等其它区域都清掉
+  if (rel instanceof HTMLElement && rel.closest('.hover-handle__dot')) return
+  emit('section-handle-pointer-leave', event)
   if (rel instanceof HTMLElement) {
     if (rel.closest('.hover-handle')) return
     if (rel.closest('.ProseMirror')) return
@@ -274,7 +285,7 @@ onBeforeUnmount(() => {
     :aria-label="toggle.collapsed ? '展开本节' : '收起本节'"
     :tabindex="isToggleVisible(toggle.entryId) ? 0 : -1"
     @mousedown.prevent
-    @mouseenter="showToggleForEntry(toggle.entryId)"
+    @mouseenter="onFoldButtonEnter(toggle.entryId)"
     @mouseleave="(event) => onFoldButtonLeave(toggle.entryId, event)"
     @click.stop="toggleFold(toggle.entryId)"
   >

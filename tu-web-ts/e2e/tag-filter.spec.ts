@@ -68,7 +68,7 @@ test('hides untagged section body when filtering by section tag', async ({ page 
   await page.goto('/')
   await seedTagFilterPage(page)
   await expect(page.locator('.tu-editor-page .ProseMirror')).toBeVisible()
-  await expect(page.locator('.tag-filter-bar__chip', { hasText: '设计' })).toBeVisible({ timeout: 15_000 })
+  await expect(page.locator('.page-tags-bar .tag-chip', { hasText: '设计' })).toBeVisible({ timeout: 15_000 })
 
   const editor = page.locator('.tu-editor-page .ProseMirror')
   const hiddenParagraph = editor.getByText('实现节正文应被隐藏')
@@ -76,8 +76,8 @@ test('hides untagged section body when filtering by section tag', async ({ page 
   await expect(hiddenParagraph).toBeVisible()
   await expect(visibleParagraph).toBeVisible()
 
-  await page.locator('.tag-filter-bar__chip', { hasText: '设计' }).click()
-  await expect(page.locator('.tag-filter-bar__chip--active', { hasText: '设计' })).toBeVisible()
+  await page.locator('.page-tags-bar .tag-chip', { hasText: '设计' }).click()
+  await expect(page.locator('.page-tags-bar .tag-chip--active', { hasText: '设计' })).toBeVisible()
 
   await expect(visibleParagraph).toBeVisible()
   await expect(hiddenParagraph).toBeHidden({ timeout: 10_000 })

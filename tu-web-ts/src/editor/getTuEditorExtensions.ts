@@ -140,6 +140,7 @@ export function getTuEditorExtensions(config: TuEditorExtensionsConfig): Extensi
       onAnnotationsMapped: config.onAnnotationsMapped,
     }),
     HeadingSourceDecorations.configure({
+      getSectionTagsMap: config.getSectionTagsMap,
       onSourceClick: config.onHeadingSourceClick,
     }),
     BlockquoteExcerptDecorations.configure({

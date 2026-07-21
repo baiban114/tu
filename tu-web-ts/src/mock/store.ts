@@ -61,6 +61,7 @@ import type {
   UpdateUrlClusterRulePayload,
   UrlClusterRule,
 } from '@/api/externalResource';
+import type { CreateKbResourceLinkPayload, KbResourceLink } from '@/api/kbResourceLink';
 
 interface MockState {
   knowledgeBases: KnowledgeBase[];
@@ -73,6 +74,7 @@ interface MockState {
   resourceExcerpts: ResourceExcerpt[];
   urlClusterRules: UrlClusterRule[];
   resourceItemRelations: ResourceItemRelation[];
+  kbResourceLinks: KbResourceLink[];
   contentTreeHours: Record<string, number | null>;
 }
 
@@ -265,9 +267,26 @@ const initialState: MockState = {
       workIdSource: 'manual',
       variantKind: 'edition',
     },
+    {
+      id: 'ri-doc-demo',
+      typeId: 'rt-document',
+      typeName: '文档',
+      identityFieldKey: 'sourceUrl',
+      identityFieldLabel: '源 URL / 文件标识',
+      workId: null,
+      workTitle: null,
+      title: '示例文档资源',
+      identityValue: 'https://example.com/docs/demo',
+      sourceUrl: 'https://example.com/docs/demo',
+      note: 'Mock 文档资源，可挂接到知识库',
+      titleSource: 'manual',
+      workIdSource: 'auto',
+      variantKind: null,
+    },
   ],
   urlClusterRules: [...BUILTIN_URL_CLUSTER_RULES],
   resourceItemRelations: [],
+  kbResourceLinks: [],
   resourceChapters: [
     {
       id: 'rc-book-demo-1',
@@ -292,6 +311,26 @@ const initialState: MockState = {
       excerptText: '好的笔记系统应当让来源、节选和自己的思考保持清晰关系。',
       note: 'Mock 默认节选',
       sortOrder: 0,
+    },
+    {
+      id: 're-doc-demo-1',
+      resourceItemId: 'ri-doc-demo',
+      resourceItemTitle: '示例文档资源',
+      title: '开篇',
+      chapterId: null,
+      chapterTitle: null,
+      excerptText: '这是挂接到知识库后只读展示的文档节选正文。',
+      sortOrder: 0,
+    },
+    {
+      id: 're-doc-demo-2',
+      resourceItemId: 'ri-doc-demo',
+      resourceItemTitle: '示例文档资源',
+      title: '第二节',
+      chapterId: null,
+      chapterTitle: null,
+      excerptText: '第二节内容：节选会按顺序拼接成一篇只读文档。',
+      sortOrder: 1,
     },
   ],
   contentTreeHours: {},
@@ -325,6 +364,7 @@ function loadState(): MockState {
       resourceExcerpts: Array.isArray(parsed.resourceExcerpts) ? parsed.resourceExcerpts : cloneState(initialState.resourceExcerpts),
       urlClusterRules: Array.isArray(parsed.urlClusterRules) ? parsed.urlClusterRules : cloneState(initialState.urlClusterRules),
       resourceItemRelations: Array.isArray(parsed.resourceItemRelations) ? parsed.resourceItemRelations : cloneState(initialState.resourceItemRelations),
+      kbResourceLinks: Array.isArray(parsed.kbResourceLinks) ? parsed.kbResourceLinks : cloneState(initialState.kbResourceLinks),
       contentTreeHours: parsed.contentTreeHours && typeof parsed.contentTreeHours === 'object'
         ? parsed.contentTreeHours
         : cloneState(initialState.contentTreeHours),
@@ -604,6 +644,90 @@ export function listResourceItemsMock(
 
 export function getResourceItemMock(id: string): ResourceItem {
   return cloneState(hydrateResourceItem(getResourceItemOrThrow(id)));
+}
+
+export function listKbResourceLinksMock(kbId: string): KbResourceLink[] {
+  const links = state.kbResourceLinks
+    .filter((link) => link.kbId === kbId)
+    .sort((a, b) => a.sortOrder - b.sortOrder || a.title.localeCompare(b.title));
+  return cloneState(links.map((link) => hydrateKbResourceLink(link)));
+}
+
+export function createKbResourceLinkMock(
+  kbId: string,
+  payload: CreateKbResourceLinkPayload,
+): KbResourceLink {
+  const resourceItemId = payload.resourceItemId?.trim() || '';
+  if (!resourceItemId) throw new Error('resourceItemId is required');
+  if (!state.knowledgeBases.some((kb) => kb.id === kbId)) {
+    throw new Error('knowledge base not found');
+  }
+  const parentPageId = payload.parentPageId?.trim() || null;
+  if (parentPageId) {
+    const page = state.pages.find((entry) => entry.id === parentPageId);
+    if (!page || page.kbId !== kbId) {
+      throw new Error('page not found in this knowledge base');
+    }
+  }
+  const item = hydrateResourceItem(getResourceItemOrThrow(resourceItemId));
+  const type = getResourceTypeOrThrow(item.typeId);
+  if (type.code !== 'document') {
+    throw new Error('only document resources can be linked to a knowledge base');
+  }
+  const existing = state.kbResourceLinks.find(
+    (link) => link.kbId === kbId && link.resourceItemId === resourceItemId,
+  );
+  if (existing) {
+    existing.parentPageId = parentPageId;
+    persistState();
+    return cloneState(hydrateKbResourceLink(existing));
+  }
+  const maxOrder = Math.max(
+    -1,
+    ...state.kbResourceLinks.filter((link) => link.kbId === kbId).map((link) => link.sortOrder),
+  );
+  const link: KbResourceLink = {
+    id: nextId('krl'),
+    kbId,
+    resourceItemId,
+    parentPageId,
+    sortOrder: maxOrder + 1,
+    title: item.title,
+    typeId: item.typeId,
+    typeCode: type.code,
+    typeName: type.name,
+    sourceUrl: item.sourceUrl ?? null,
+    note: item.note ?? null,
+  };
+  state.kbResourceLinks.push(link);
+  persistState();
+  return cloneState(link);
+}
+
+export function deleteKbResourceLinkMock(kbId: string, resourceItemId: string): void {
+  const before = state.kbResourceLinks.length;
+  state.kbResourceLinks = state.kbResourceLinks.filter(
+    (link) => !(link.kbId === kbId && link.resourceItemId === resourceItemId),
+  );
+  if (state.kbResourceLinks.length === before) {
+    throw new Error('resource link not found');
+  }
+  persistState();
+}
+
+function hydrateKbResourceLink(link: KbResourceLink): KbResourceLink {
+  const item = state.resourceItems.find((entry) => entry.id === link.resourceItemId);
+  if (!item) return link;
+  const type = state.resourceTypes.find((entry) => entry.id === item.typeId);
+  return {
+    ...link,
+    title: item.title,
+    typeId: item.typeId,
+    typeCode: type?.code ?? link.typeCode,
+    typeName: type?.name ?? link.typeName,
+    sourceUrl: item.sourceUrl ?? null,
+    note: item.note ?? null,
+  };
 }
 
 export function createResourceItemMock(payload: CreateResourceItemPayload): ResourceItem {

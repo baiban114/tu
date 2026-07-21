@@ -164,17 +164,23 @@ const handleCandidatePageChange = (page: number) => {
 
         <div class="tag-editor-body">
           <div v-if="selectedTags.length > 0" class="tag-editor-selected">
-            <button
+            <span
               v-for="tag in selectedTags"
               :key="tag.id"
-              type="button"
               class="tag-chip tag-chip--selected"
               :style="{ '--tag-chip-color': tag.color || '#1677ff' }"
-              @click="removeTag(tag.id)"
             >
-              <span>{{ tag.label }}</span>
-              <span class="tag-chip-remove">×</span>
-            </button>
+              <span class="tag-chip__label">{{ tag.label }}</span>
+              <button
+                type="button"
+                class="tag-chip__remove"
+                :title="`删除标签「${tag.label}」`"
+                :aria-label="`删除标签 ${tag.label}`"
+                @click="removeTag(tag.id)"
+              >
+                ×
+              </button>
+            </span>
           </div>
 
           <input
@@ -282,10 +288,11 @@ const handleCandidatePageChange = (page: number) => {
   flex-shrink: 0;
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: 10px 8px;
   max-height: 88px;
   overflow-y: auto;
   margin-bottom: 10px;
+  padding: 6px 4px 2px;
 }
 
 .tag-editor-input {
@@ -350,28 +357,50 @@ const handleCandidatePageChange = (page: number) => {
 
 .tag-chip {
   --tag-chip-color: #1677ff;
+  position: relative;
   display: inline-flex;
   align-items: center;
-  gap: 6px;
   border-radius: 999px;
   border: 1px solid color-mix(in srgb, var(--tag-chip-color) 30%, white);
   background: color-mix(in srgb, var(--tag-chip-color) 12%, white);
   color: color-mix(in srgb, var(--tag-chip-color) 85%, black);
-  padding: 4px 10px;
+  padding: 4px 14px 4px 10px;
   font-size: 12px;
   line-height: 1.4;
 }
 
 .tag-chip--selected {
-  cursor: pointer;
   background: color-mix(in srgb, var(--tag-chip-color) 16%, white);
 }
 
 .tag-chip--preview {
   pointer-events: none;
+  padding: 4px 10px;
 }
 
-.tag-chip-remove {
-  font-size: 13px;
+.tag-chip__remove {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 1px solid #e8e8e8;
+  border-radius: 999px;
+  background: #fff;
+  color: #8c8c8c;
+  font-size: 12px;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12);
+}
+
+.tag-chip__remove:hover {
+  color: #ff4d4f;
+  border-color: #ffccc7;
+  background: #fff1f0;
 }
 </style>

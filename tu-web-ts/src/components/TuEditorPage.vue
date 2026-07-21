@@ -15,7 +15,6 @@ import PdfExcerptPicker, { type PdfExcerptPickerMode, type PdfExcerptSelection }
 import BlockMetadataTagEditor from './BlockMetadataTagEditor.vue'
 import PageTagsBar from './PageTagsBar.vue'
 import PageKnowledgeContextBar from './PageKnowledgeContextBar.vue'
-import TagFilterBar from './TagFilterBar.vue'
 import Toast from './Toast.vue'
 import NoteEditor from './NoteEditor.vue'
 import NotePopover from './NotePopover.vue'
@@ -25,6 +24,10 @@ import { generateDocumentMarkingStream, clearPageAiMarkers } from '@/api/aiDocum
 import { applyAiMarkingSuggestions, clearAiMarkersFromDocument } from '@/utils/aiDocumentMarking'
 import type { DocumentMarkingSuggestion } from '@/api/types'
 import { useExpandCollapse } from '@/composables/useExpandCollapse'
+import {
+  loadPageTocPreferences,
+  savePageTocPreferences,
+} from '@/utils/pageTocPreferences'
 import { useAnchoredFloating, type FloatingAnchorRect } from '@/composables/useAnchoredFloating'
 import { useViewportClampedFixedPanel } from '@/utils/viewportPanel'
 import { blockSyncManager } from '@/utils/blockSyncManager'
@@ -72,6 +75,10 @@ import { createHeadingBlockId } from '@/utils/headingSource'
 import { registerExternalUrlFromPaste, type ResourceExcerpt, type ResourceItem } from '@/api/externalResource'
 import { parseExternalUrl } from '@/utils/externalUrlResource'
 import { getAnnotationSelectionPayload } from '@/editor/annotationText'
+import {
+  mergePageClipboardMeta,
+  type TuPageClipboardMeta,
+} from '@/editor/pageMetaClipboard'
 import { useBlockRegistryStore } from '@/stores/blockRegistry'
 import { useOutlineCacheStore } from '@/stores/outlineCache'
 import { clearSectionFoldSession } from '@/stores/sectionFoldSession'
@@ -659,7 +666,7 @@ const filterableTags = computed(() => {
   )
 })
 
-const showPageChrome = computed(() => props.editable || filterableTags.value.length > 0)
+const showPageChrome = computed(() => props.editable)
 
 provide('activeTagFilter', activeTagFilter)
 provide('sectionTagsMap', sectionTagsMap)
@@ -1534,8 +1541,35 @@ const handleResourcePickerVisibleChange = (visible: boolean) => {
 
 // --- TOC ---
 const tocExpand = useExpandCollapse()
+const tocPrefsReady = ref(false)
 
-const getTocExpandKey = (item: TocItem): string => item.id
+/** Prefer stable blockId for local headings; position-based ids change on edit. */
+const getTocExpandKey = (item: TocItem): string => {
+  if (item.sourceType === 'local' && item.blockId) return `local:${item.blockId}`
+  return item.id
+}
+
+function persistPageTocPrefs() {
+  const pageId = workspaceStore.currentPageId
+  if (!tocPrefsReady.value || !pageId) return
+  savePageTocPreferences(pageId, {
+    expandedNodeIds: [...tocExpand.expanded.value],
+    panelOpen: tocExpanded.value,
+  })
+}
+
+function loadTocPrefsForPage(pageId: string | null) {
+  tocPrefsReady.value = false
+  if (!pageId) {
+    tocExpand.collapseAll()
+    tocExpanded.value = true
+    return
+  }
+  const prefs = loadPageTocPreferences(pageId)
+  tocExpand.expandAll(prefs.expandedNodeIds)
+  tocExpanded.value = prefs.panelOpen
+  tocPrefsReady.value = true
+}
 
 const allExpandableTocIds = computed(() => {
   const ids: string[] = []
@@ -1559,14 +1593,23 @@ const toggleAllTocItems = () => {
   if (ids.length === 0) return
   if (allTocItemsExpanded.value) tocExpand.collapseAll()
   else tocExpand.expandAll(ids)
+  persistPageTocPrefs()
 }
 
 const toggleTocItem = (item: TocItem) => {
-  if (item.children?.length) tocExpand.toggle(getTocExpandKey(item))
+  if (item.children?.length) {
+    tocExpand.toggle(getTocExpandKey(item))
+    persistPageTocPrefs()
+  }
 }
 
 const isTocItemExpanded = (item: TocItem): boolean => {
   return tocExpand.isExpanded(getTocExpandKey(item))
+}
+
+function setTocPanelOpen(open: boolean) {
+  tocExpanded.value = open
+  persistPageTocPrefs()
 }
 
 /** Walk workspace page tree to find a page title by pageId. */
@@ -1619,11 +1662,13 @@ async function prefetchEditorRefOutlines() {
 
 watch(
   () => workspaceStore.currentPageId,
-  () => {
+  (pageId) => {
     clearSectionFoldSession()
     clearTagFilterSession()
+    loadTocPrefsForPage(pageId)
     void nextTick(() => void prefetchEditorRefOutlines())
   },
+  { immediate: true },
 )
 
 watch(
@@ -2184,6 +2229,13 @@ const handleTextTagSpansMapped = (spans: TextTagSpan[]) => {
   emitLocalContentChange()
 }
 
+const handlePageMetaPaste = (meta: TuPageClipboardMeta) => {
+  const nextMetadata = mergePageClipboardMeta(localPageMetadata.value, meta)
+  if (JSON.stringify(nextMetadata) === JSON.stringify(localPageMetadata.value)) return
+  localPageMetadata.value = nextMetadata
+  emitLocalContentChange()
+}
+
 const bumpTextTagSpanRevision = () => {
   textTagSpanRevision.value += 1
 }
@@ -2434,6 +2486,20 @@ const handleTocEditTags = () => {
 const handleOpenPageTagEditor = () => {
   tagEditorBlockTags.value = [...pageTags.value]
   openTagEditorAtCenter('page')
+}
+
+const handleRemovePageTag = (tag: BlockTag) => {
+  const next = pageTags.value.filter((item) => item.id !== tag.id)
+  const normalizedTags = normalizeBlockTags(next)
+  const metadata = { ...localPageMetadata.value }
+  if (normalizedTags.length > 0) {
+    metadata.tags = normalizedTags
+  } else {
+    delete metadata.tags
+  }
+  localPageMetadata.value = metadata
+  emitLocalContentChange()
+  void refreshKbTagPool()
 }
 
 const handleTagFilterSelect = (tag: BlockTag) => {
@@ -3025,19 +3091,6 @@ onBeforeUnmount(() => {
           AI 分析标记（整页）
         </button>
       </div>
-      <span
-        v-if="editable && filterableTags.length > 0"
-        class="page-chrome__sep"
-        aria-hidden="true"
-      />
-      <TagFilterBar
-        v-if="filterableTags.length > 0"
-        embedded
-        :tags="filterableTags"
-        :active-tag="activeTagFilter"
-        @select="handleTagFilterSelect"
-        @clear="handleTagFilterClear"
-      />
     </header>
 
     <!-- 链接插入弹窗 -->
@@ -3101,11 +3154,16 @@ onBeforeUnmount(() => {
       />
       <h1 v-else class="page-title-heading">{{ pageTitleDraft || '未命名页面' }}</h1>
       <PageTagsBar
-        v-if="editable || pageTags.length > 0"
+        v-if="editable || pageTags.length > 0 || filterableTags.length > 0"
         class="page-title-row__tags"
         :tags="pageTags"
+        :filter-tags="filterableTags"
+        :active-filter="activeTagFilter"
         :editable="editable"
         @edit="handleOpenPageTagEditor"
+        @remove="handleRemovePageTag"
+        @select-filter="handleTagFilterSelect"
+        @clear-filter="handleTagFilterClear"
       />
     </section>
 
@@ -3151,6 +3209,7 @@ onBeforeUnmount(() => {
           @blockquote-excerpt-click="handleBlockquoteExcerptClick"
           @text-tag-span-click="handleTextTagSpanClick"
           @text-tag-spans-mapped="handleTextTagSpansMapped"
+          @page-meta-paste="handlePageMetaPaste"
           @url-hover-change="handleUrlHoverChange"
         />
       </div>
@@ -3164,7 +3223,7 @@ onBeforeUnmount(() => {
           <button
             type="button"
             class="page-toc__header"
-            @click="tocExpanded = false"
+            @click="setTocPanelOpen(false)"
           >
             <span class="page-toc__title">目录</span>
             <span class="page-toc__toggle">收起</span>
@@ -3198,7 +3257,7 @@ onBeforeUnmount(() => {
         v-if="!tocExpanded && tocItems.length > 0"
         type="button"
         class="page-toc__floating-toggle"
-        @click="tocExpanded = true"
+        @click="setTocPanelOpen(true)"
         title="展开目录"
       >
         目录
@@ -3473,15 +3532,6 @@ onBeforeUnmount(() => {
   align-items: center;
   flex-wrap: wrap;
   gap: 6px;
-  flex-shrink: 0;
-}
-
-.page-chrome__sep {
-  width: 1px;
-  align-self: stretch;
-  min-height: 24px;
-  margin: 2px 4px;
-  background: #d9d9d9;
   flex-shrink: 0;
 }
 

@@ -11,12 +11,13 @@ export interface OutlineTreeMeta {
   blockType: string | null;
 }
 
-export type PageTreeNodeKind = 'page' | 'outline' | 'outline-placeholder';
+export type PageTreeNodeKind = 'page' | 'outline' | 'outline-placeholder' | 'resource-document'
 
-/** Page tree row: real page or virtual document-outline node. */
+/** Page tree row: real page, virtual document-outline node, or linked resource document. */
 export interface PageTreeDisplayItem extends PageItem {
   nodeKind?: PageTreeNodeKind;
   outlineMeta?: OutlineTreeMeta;
+  resourceMeta?: { resourceItemId: string; parentPageId?: string | null };
 }
 
 export function isOutlinePlaceholderNode(
@@ -31,11 +32,17 @@ export function isOutlineTreeNode(
   return node?.nodeKind === 'outline' || (node?.id?.startsWith('outline:') ?? false);
 }
 
-/** Virtual rows injected under pages (outline headings or load placeholder). */
+export function isResourceDocumentTreeNode(
+  node: Pick<PageTreeDisplayItem, 'nodeKind' | 'id'> | null | undefined,
+): boolean {
+  return node?.nodeKind === 'resource-document' || (node?.id?.startsWith('ri:') ?? false);
+}
+
+/** Virtual rows injected under pages (outline headings or load placeholder) or linked resources. */
 export function isVirtualPageTreeExtra(
   node: Pick<PageTreeDisplayItem, 'nodeKind' | 'id'> | null | undefined,
 ): boolean {
-  return isOutlineTreeNode(node) || isOutlinePlaceholderNode(node);
+  return isOutlineTreeNode(node) || isOutlinePlaceholderNode(node) || isResourceDocumentTreeNode(node);
 }
 
 function createOutlinePlaceholder(page: PageItem, title: string): PageTreeDisplayItem {
@@ -110,6 +117,11 @@ export function mergeDocumentOutlinesIntoPageTree(
   },
 ): PageTreeDisplayItem[] {
   return pages.map((page) => {
+    const display = page as PageTreeDisplayItem;
+    if (display.nodeKind === 'resource-document') {
+      return { ...display, nodeKind: 'resource-document' as const };
+    }
+
     const pageChildren = page.children?.length
       ? mergeDocumentOutlinesIntoPageTree(page.children, options)
       : [];

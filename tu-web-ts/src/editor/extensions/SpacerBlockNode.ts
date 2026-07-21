@@ -1,6 +1,7 @@
 ﻿import { Node, mergeAttributes } from '@tiptap/core'
 import { VueNodeViewRenderer } from '@tiptap/vue-3'
 import SpacerBlockView from '../views/SpacerBlockView.vue'
+import { jsonDomAttribute } from '../jsonDomAttribute'
 import { stopNonHandleNodeViewDragEvent } from './nodeViewDragHandle'
 
 export const SpacerBlockNode = Node.create({
@@ -19,7 +20,7 @@ export const SpacerBlockNode = Node.create({
       spacerHeight: { default: 40 },
       width: { default: null },
       height: { default: 40 },
-      metadata: { default: {} },
+      metadata: jsonDomAttribute('metadata', 'data-metadata', {}),
     }
   },
 

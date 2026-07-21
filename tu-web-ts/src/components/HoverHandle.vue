@@ -36,6 +36,8 @@ const props = withDefaults(defineProps<Props>(), {
 const emit = defineEmits<{
   (e: 'select', key: string): void;
   (e: 'menu-visibility-change', visible: boolean): void;
+  (e: 'grip-enter'): void;
+  (e: 'grip-leave', event: MouseEvent): void;
 }>();
 
 const rootRef = ref<HTMLElement | null>(null);
@@ -192,7 +194,12 @@ onBeforeUnmount(() => {
     @mouseenter="handleMouseEnter"
     @mouseleave="handleMouseLeave"
   >
-    <div class="handle-dot hover-handle__dot" :class="{ 'hover-handle__dot--drag': dragCursor }"></div>
+    <div
+      class="handle-dot hover-handle__dot"
+      :class="{ 'hover-handle__dot--drag': dragCursor }"
+      @mouseenter="emit('grip-enter')"
+      @mouseleave="(event: MouseEvent) => emit('grip-leave', event)"
+    ></div>
 
     <Teleport to="body">
       <div
@@ -239,15 +246,32 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: opacity 0.2s ease;
+  box-sizing: border-box;
 }
 
 .hover-handle__dot {
+  position: absolute;
+  left: var(--hover-handle-dot-left, 50%);
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  cursor: pointer;
+  box-shadow: none;
+  flex-shrink: 0;
+}
+
+.hover-handle__dot::after {
+  content: '';
   width: 14px;
   height: 14px;
   border-radius: 50%;
   background: #1890ff;
-  cursor: pointer;
   box-shadow: 0 2px 4px rgba(24, 144, 255, 0.3);
   transition: transform 0.15s ease, background-color 0.15s ease;
 }
@@ -260,7 +284,8 @@ onBeforeUnmount(() => {
   cursor: grabbing;
 }
 
-.hover-handle:hover .hover-handle__dot {
+.hover-handle:hover .hover-handle__dot::after,
+.hover-handle__dot:hover::after {
   transform: scale(1.08);
   background: #40a9ff;
 }

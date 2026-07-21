@@ -1,6 +1,7 @@
 import { Node, mergeAttributes } from '@tiptap/core'
 import { VueNodeViewRenderer } from '@tiptap/vue-3'
 import MultiTableBlockView from '../views/MultiTableBlockView.vue'
+import { jsonDomAttribute } from '../jsonDomAttribute'
 import { isFromNodeViewDragHandle, stopNonHandleNodeViewDragEvent } from './nodeViewDragHandle'
 
 export const MultiTableBlockNode = Node.create({
@@ -18,8 +19,12 @@ export const MultiTableBlockNode = Node.create({
       headingLevel: { default: 0 },
       width: { default: null },
       height: { default: null },
-      multiTableData: { default: { fields: [], records: [], views: [] } },
-      metadata: { default: {} },
+      multiTableData: jsonDomAttribute('multiTableData', 'data-multi-table-data', {
+        fields: [],
+        records: [],
+        views: [],
+      }),
+      metadata: jsonDomAttribute('metadata', 'data-metadata', {}),
     }
   },
 

@@ -1,6 +1,7 @@
 ﻿import { Node, mergeAttributes } from '@tiptap/core'
 import { VueNodeViewRenderer } from '@tiptap/vue-3'
 import TimelineBlockView from '../views/TimelineBlockView.vue'
+import { jsonDomAttribute } from '../jsonDomAttribute'
 import { stopNonHandleNodeViewDragEvent } from './nodeViewDragHandle'
 
 export const TimelineBlockNode = Node.create({
@@ -18,8 +19,8 @@ export const TimelineBlockNode = Node.create({
       headingLevel: { default: 0 },
       width: { default: null },
       height: { default: null },
-      timelineData: { default: [] },
-      metadata: { default: {} },
+      timelineData: jsonDomAttribute('timelineData', 'data-timeline-data', []),
+      metadata: jsonDomAttribute('metadata', 'data-metadata', {}),
     }
   },
 

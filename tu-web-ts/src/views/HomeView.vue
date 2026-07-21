@@ -42,11 +42,24 @@ const canvasPageType = computed(() => (
   store.currentPageType === 'x6board' ? 'x6board' : 'mindmap'
 ));
 
-/** Page type for context-aware help; null when no page selected. */
+/** Page type for context-aware help; null when no page/resource selected. */
 const helpPageType = computed<PageType | null>(() => {
-  if (!store.currentPageId) return null
-  return store.currentPageType ?? 'document'
+  if (store.isResourceDocumentView) return 'document';
+  if (!store.currentPageId) return null;
+  return store.currentPageType ?? 'document';
 });
+
+const showResourceDocument = computed(() => (
+  store.isResourceDocumentView && !!store.currentViewKey && !!store.pageContent
+));
+
+const showCanvasPage = computed(() => (
+  !store.isResourceDocumentView && !!store.currentPageId && store.isCanvasPage && !!store.pageContent
+));
+
+const showDocumentPage = computed(() => (
+  !store.isResourceDocumentView && !!store.currentPageId && !!store.pageContent
+));
 
 const localFileStatusText = computed(() => {
   const binding = store.currentLocalFileBinding;
@@ -180,13 +193,13 @@ watch(
         <AppHelpButton variant="topbar" :page-type="helpPageType" />
       </div>
       <div
-        v-if="store.currentPageId && store.isCanvasPage && store.pageContent"
-        :key="store.currentPageId"
+        v-if="showCanvasPage"
+        :key="store.currentPageId!"
         class="content-canvas"
       >
         <CanvasPage
           :page-type="canvasPageType"
-          :content="store.pageContent"
+          :content="store.pageContent!"
           :page-title="store.currentPageTitle"
           @page-title-change="onPageTitleChange"
           @content-change="onContentChange"
@@ -194,7 +207,23 @@ watch(
       </div>
 
       <div
-        v-else-if="store.currentPageId && store.pageContent"
+        v-else-if="showResourceDocument"
+        class="content-scroll"
+      >
+        <div class="resource-document-banner">
+          <span class="resource-document-banner__title">{{ store.currentPageTitle }}</span>
+          <span class="resource-document-banner__tag">只读</span>
+        </div>
+        <TuEditorPage
+          :key="store.currentViewKey!"
+          :contentList="store.pageContent!"
+          :page-title="store.currentPageTitle"
+          :editable="false"
+        />
+      </div>
+
+      <div
+        v-else-if="showDocumentPage"
         class="content-scroll"
       >
         <div
@@ -210,8 +239,8 @@ watch(
         </div>
 
         <TuEditorPage
-          :key="store.currentPageId"
-          :contentList="store.pageContent"
+          :key="store.currentPageId!"
+          :contentList="store.pageContent!"
           :page-title="store.currentPageTitle"
           :editable="true"
           @page-title-change="onPageTitleChange"
@@ -371,6 +400,34 @@ watch(
   overflow-y: auto;
   scrollbar-gutter: stable;
   padding: 0 48px 32px;
+}
+
+.resource-document-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  margin: 16px 0 8px;
+  padding: 10px 14px;
+  border-radius: 8px;
+  border: 1px solid #e2e8f0;
+  background: #f8fafc;
+}
+
+.resource-document-banner__title {
+  font-size: 14px;
+  font-weight: 600;
+  color: #1f2933;
+}
+
+.resource-document-banner__tag {
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: #64748b;
+  background: #e2e8f0;
 }
 
 .local-file-status {

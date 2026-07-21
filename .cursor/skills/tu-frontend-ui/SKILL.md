@@ -1,12 +1,35 @@
 ---
 name: tu-frontend-ui
 description: >-
-  tu 前端 UI 约定：视口内弹窗、列表分页（默认每页 10 条）、悬浮/弹出派生 UI 的关闭行为。
+  tu 前端 UI 约定：固定显示区域、视口内弹窗、列表分页（默认每页 10 条）、悬浮/弹出派生 UI 的关闭行为。
   在 tu-web-ts 中新增或修改 el-dialog、el-table、列表 API、右键菜单、悬浮工具栏、
   资源管理/节选/选择器等界面时使用。
 ---
 
 # tu 前端 UI 约定
+
+## 0. 动态内容的固定显示区域
+
+动态内容出现的地方必须提前静态规定好显示区域，动态内容如列表查询展示的内容，后端发来的文本显示的内容。如果内容可能会超出区域，考虑使用滚动、分页；如果内容不够，也不允许收缩显示区域。换言之，显示区域都是写死的。而不是由动态内容的长度影响 UI 的变化。
+
+除了顶部容器如弹窗外，子容器在规划 UI 时必须填充满父容器，不能出现无任务元素的空白。
+
+### 实现要点
+
+- **先定框，再填内容**：列表区、详情区、文本预览区等用固定 `height` / `min-height`（或父级 flex 分配的确定高度），不要只用内容撑开的自然高度。
+- **子容器铺满父容器**：规划布局时，每一层子区域（双栏、列表槽、详情槽、滚动区）须用 `flex: 1` / `height: 100%` / grid 轨道等占满父级已分配空间；禁止父级已写死高度后，子级只按内容收缩，留下大块无交互、无信息的空白。
+- **空白须有任务**：若视觉上仍有空余，应放空态、说明文案、可滚动列表区或主操作锚点等**有任务**的元素去填满；不要留「什么都没有」的死区。
+- **超出**：区域内 `overflow: auto` / `el-scrollbar`，或分页（默认每页 `DEFAULT_PAGE_SIZE = 10`）；禁止把整页 / 整弹窗被内容撑高后依赖页面滚动。
+- **不足**：空态、加载中、短列表时区域高度保持不变（空态/说明区 `flex: 1` 居中填满），禁止随条目变少而塌缩。
+- **单条文本**：标题、URL、后端长文等用省略（`ellipsis`）或区域内换行 + 滚动，不得撑破固定框。
+- **与 §1 关系**：弹窗仍须 `tu-dialog-viewport`；本条强调弹窗**内部各槽位**高度也写死且层层铺满，而不仅是「不超过视口」。
+
+### 反例
+
+- 选择器双栏 `max-height` 仅作上限、无固定高度 → 0～2 条结果时弹窗忽高忽矮。
+- 详情区随选中资源元信息长短伸缩，主操作按钮位置上下跳动。
+- 列表 `v-for` 无分页/无内部滚动，条目多时把 footer 挤出视口。
+- 弹窗已固定高度，但左/右栏或滚动区未 `flex: 1` / `height: 100%` → 栏底或栏间出现大块无任务空白。
 
 ## 1. 弹出面板高度
 
@@ -19,7 +42,7 @@ description: >-
 - 对话框根节点加 `tu-dialog-viewport`（样式见 `tu-web-ts/src/assets/dialog-viewport.css`）。
 - 对话框本体：`max-height: calc(100dvh - 32px)`，纵向 flex；**禁止**让 `document` / `body` 因弹窗出现纵向滚动条。
 - `.el-dialog__body`：`flex: 1; min-height: 0; overflow: hidden`。
-- 内容根容器（如 `.resource-picker`）：`flex: 1; min-height: 0; max-height: calc(100dvh - 120px)`（预留 header/footer）。
+- 内容根容器（如 `.resource-picker`）：**写死高度**（如 `height: min(560px, calc(100dvh - 140px))`），不要只用 `max-height` 导致内容少时塌缩；见 §0。
 - 双栏/多栏布局：每栏 `display: flex; flex-direction: column; min-height: 0; overflow: hidden`；列表区 `flex: 1; min-height: 0` + 内部 `el-scrollbar` 或 `overflow-y: auto`。
 - 表单主操作（创建/保存）放在栏底 `flex-shrink: 0` 或 `position: sticky; bottom: 0`，勿随正文滚出视口。
 - 可滚动内容放在内部区域（如表格 `height`/`max-height`、表单列 `overflow-y: auto`），不要给 `el-dialog__body` 设 `overflow: auto`。
@@ -83,7 +106,7 @@ description: >-
 
 ### 实现要点
 
-- 文档页：`tu-web-ts/src/components/TuEditorPage.vue` 的 `.page-chrome`（`position: sticky; top: 0`），内含编辑操作与 `TagFilterBar`（`embedded`）。
+- 文档页：`tu-web-ts/src/components/TuEditorPage.vue` 的 `.page-chrome`（`position: sticky; top: 0`）放编辑操作；页面标签与按标签筛选在标题下 `PageTagsBar`。
 - 滚动容器为 `tu-web-ts/src/views/HomeView.vue` 的 `.content-scroll`；顶栏用负水平边距与 padding 对齐内容区全宽。
 - 只读模式若仍支持区域级能力（如按标签查看），顶栏在无编辑按钮时单独展示该能力。
 - 对象级（单块 NodeView 工具栏）与选区级（划选浮条）不抬升到 page 顶栏。
@@ -152,6 +175,8 @@ description: >-
 
 ## 检查清单
 
+- [ ] 动态内容区（列表/详情/后端文本）是否有**写死的**显示区域，空内容也不塌缩、长内容用滚动或分页？
+- [ ] 子容器是否填满父容器已分配空间，有无无任务元素的空白死区？
 - [ ] 新 `el-dialog` 是否使用 `tu-dialog-viewport` 且打开后页面无整体滚动？
 - [ ] 弹窗内双栏/列表/富文本编辑区是否 `min-height: 0` 并在内部滚动，而非撑高整窗？
 - [ ] 新列表是否走后端分页 API，默认 `pageSize=10`？
@@ -164,5 +189,5 @@ description: >-
 - [ ] 可能无限增长的侧栏列表/树是否在内部滚动容器内（`min-height: 0` + `el-scrollbar`）？
 - [ ] PDF 摘页是否只存 `fileId` + 页码、用 PDF.js + Range 渲染（非 iframe `file://` / 物理切分）？
 - [ ] 新的区域级能力是否放在 sticky 顶栏 / Header / 右键菜单，而非仅正文顶部？
-- 弹窗内无上限列表是否分页或按需加载，且 footer 操作固定可见？
+- [ ] 弹窗内无上限列表是否分页或按需加载，且 footer 操作固定可见？
 - [ ] 跨锚点知识关联是否走 `knowledge_relation` API，而非写死 `source_kind`？（见 `docs/knowledge-relations.md`）
