@@ -169,7 +169,7 @@ description: >-
 ### 实现要点
 
 - 节点：`pdfExcerptBlock` + `PdfExcerptBlockView.vue`（canvas 按页渲染，`IntersectionObserver` 惰性绘制）。
-- 上传选页：`PdfExcerptPicker.vue`（`tu-dialog-viewport`）；Slash / 行手柄「PDF 摘页」。
+- 上传选页：`PdfExcerptPicker.vue`（`tu-dialog-viewport`）；Slash / 段落手柄「PDF 摘页」。
 - 序列化：`src/utils/pdfExcerpt.ts`（`<!--tu:pdf-excerpt ...-->`）；文档缓存 `src/utils/pdfDocumentCache.ts`。
 - 后端：`GET /api/files/{id}` 须返回 `Accept-Ranges: bytes` 并支持 `206 Partial Content`。
 

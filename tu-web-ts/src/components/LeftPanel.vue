@@ -1032,6 +1032,7 @@ function collapseAllTree() {
           draggable
           :allow-drag="allowDrag"
           :allow-drop="allowDrop"
+          :expand-on-click-node="false"
           :highlight-current="true"
           :current-node-key="store.currentViewKey ?? undefined"
           @node-click="onNodeClick"

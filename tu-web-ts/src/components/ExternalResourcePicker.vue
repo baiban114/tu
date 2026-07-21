@@ -668,7 +668,7 @@ watch(selectedItemId, () => {
                 >
                   <span>{{ excerpt.title }}</span>
                   <small v-if="excerpt.chapterTitle">章节：{{ excerpt.chapterTitle }}</small>
-                  <small v-if="excerpt.locator">{{ resourcePositionDisplay(excerpt.locator) }}</small>
+                  <small v-if="excerpt.locator">{{ resourcePositionDisplay(excerpt.locator) || excerpt.locator }}</small>
                   <em>{{ excerpt.excerptText }}</em>
                 </button>
                 <p v-if="!excerptLoading && filteredExcerpts.length === 0 && !isSetBasisMode" class="resource-picker__empty">

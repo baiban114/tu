@@ -18,8 +18,44 @@ export function isResourceDocumentTreeId(id: string | null | undefined): boolean
   return Boolean(id && parseResourceDocumentTreeId(id))
 }
 
+/** Stable heading blockId for a resource excerpt section in the synthesized document. */
+export function resourceExcerptHeadingBlockId(excerptId: string): string {
+  return `excerpt-${excerptId}`
+}
+
+export function parseResourceExcerptHeadingBlockId(blockId: string | null | undefined): string | null {
+  if (!blockId?.startsWith('excerpt-')) return null
+  const id = blockId.slice('excerpt-'.length).trim()
+  return id || null
+}
+
 function escapeMarkdownHeading(text: string): string {
   return text.replace(/\s+/g, ' ').trim() || '未命名节选'
+}
+
+type TipTapJsonNode = {
+  type?: string
+  attrs?: Record<string, unknown>
+  content?: TipTapJsonNode[]
+}
+
+/** Assign stable blockIds to h2 headings that correspond to excerpts (in sort order). */
+export function stampExcerptHeadingBlockIds(
+  document: TipTapJsonNode | null | undefined,
+  excerpts: ResourceExcerpt[],
+): void {
+  if (!document?.content?.length || !excerpts.length) return
+  const sorted = [...excerpts].sort((a, b) => a.sortOrder - b.sortOrder || a.title.localeCompare(b.title))
+  let excerptIndex = 0
+  for (const node of document.content) {
+    if (node.type !== 'heading') continue
+    const level = Number(node.attrs?.level ?? 0)
+    if (level !== 2) continue
+    const excerpt = sorted[excerptIndex]
+    if (!excerpt) break
+    node.attrs = { ...(node.attrs ?? {}), blockId: resourceExcerptHeadingBlockId(excerpt.id) }
+    excerptIndex += 1
+  }
 }
 
 /**
@@ -64,6 +100,8 @@ export function synthesizeResourceDocumentContent(
       readOnly: true,
     },
   })
+
+  stampExcerptHeadingBlockIds(document as TipTapJsonNode, sorted)
 
   return toV2PageContent(document, [], {
     sourceKind: 'resource-document',

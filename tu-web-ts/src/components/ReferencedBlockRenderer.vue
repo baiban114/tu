@@ -37,7 +37,7 @@ const {
   forwardCreateKnowledgeRelation,
 } = useRefGutterForwarding();
 
-const lineGutterActions = computed(() => props.editable || hasRefGutterHost)
+const paragraphGutterActions = computed(() => props.editable || hasRefGutterHost)
 
 const emit = defineEmits<{
   (e: 'update-block', block: Block): void;
@@ -194,7 +194,7 @@ const startChildResize = (event: MouseEvent, childIndex: number, edge: ResizeEdg
       ref="nestedEditorRef"
       :blocks="[block]"
       :editable="editable"
-      :line-gutter-actions="lineGutterActions"
+      :paragraph-gutter-actions="paragraphGutterActions"
       class="block-content"
       @update:blocks="([updated]: Block[]) => updateBlock({ content: updated.content })"
       @line-annotate="forwardLineAnnotate"
@@ -240,7 +240,7 @@ const startChildResize = (event: MouseEvent, childIndex: number, edge: ResizeEdg
       :body-block-id="block.id"
       show-body
       compact
-      :line-gutter-actions="lineGutterActions"
+      :paragraph-gutter-actions="paragraphGutterActions"
       class="referenced-external-resource"
       @line-annotate="forwardLineAnnotate"
       @mark-block-excerpt="forwardMarkExcerpt"

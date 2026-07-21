@@ -114,6 +114,8 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   const currentPageId = ref<string | null>(null);
   const currentResourceItemId = ref<string | null>(null);
   const viewMode = ref<WorkspaceViewMode>('page');
+  /** One-shot: after opening a resource document, scroll to this excerpt heading then clear. */
+  const pendingResourceExcerptFocusId = ref<string | null>(null);
   const pageContent = ref<PageContent | null>(null);
   const currentPageTitleOverride = ref<string | null>(null);
   const loading = ref(false);
@@ -166,6 +168,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     currentPageId.value = null;
     currentResourceItemId.value = null;
     viewMode.value = 'page';
+    pendingResourceExcerptFocusId.value = null;
     currentPageTitleOverride.value = null;
     pageTree.value = [];
     linkedResourceDocuments.value = [];
@@ -239,6 +242,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     currentPageId.value = null;
     currentResourceItemId.value = null;
     viewMode.value = 'page';
+    pendingResourceExcerptFocusId.value = null;
     currentPageTitleOverride.value = null;
     blockSyncManager.setPageId(null);
     pageContent.value = null;
@@ -279,6 +283,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     currentResourceItemId.value = null;
     currentPageId.value = pageId;
     currentPageTitleOverride.value = null;
+    pendingResourceExcerptFocusId.value = null;
     blockSyncManager.setPageId(pageId);
     loading.value = true;
     try {
@@ -294,12 +299,16 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     }
   }
 
-  async function selectKbLinkedResource(resourceItemId: string) {
+  async function selectKbLinkedResource(
+    resourceItemId: string,
+    options?: { focusExcerptId?: string | null },
+  ) {
     await flushCurrentPageIndexBestEffort();
     viewMode.value = 'resource-document';
     currentResourceItemId.value = resourceItemId;
     currentPageId.value = null;
     blockSyncManager.setPageId(null);
+    pendingResourceExcerptFocusId.value = options?.focusExcerptId?.trim() || null;
     loading.value = true;
     try {
       const [item, excerpts] = await Promise.all([
@@ -316,6 +325,12 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     } finally {
       loading.value = false;
     }
+  }
+
+  function consumePendingResourceExcerptFocusId(): string | null {
+    const id = pendingResourceExcerptFocusId.value;
+    pendingResourceExcerptFocusId.value = null;
+    return id;
   }
 
   async function refreshLinkedResourceDocuments() {
@@ -751,6 +766,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     currentResourceItemId,
     currentViewKey,
     viewMode,
+    pendingResourceExcerptFocusId,
     isResourceDocumentView,
     pageContent,
     currentPageTitle,
@@ -765,6 +781,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     selectKb,
     selectPage,
     selectKbLinkedResource,
+    consumePendingResourceExcerptFocusId,
     refreshLinkedResourceDocuments,
     saveCurrentPage,
     addKb,

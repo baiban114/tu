@@ -20,7 +20,7 @@ export interface InsertOption {
   keywords: string[]
 }
 
-export interface LineHandleMenuItem {
+export interface EditorHandleMenuItem {
   key: string
   label?: string
   icon?: string
@@ -28,7 +28,10 @@ export interface LineHandleMenuItem {
   divider?: boolean
 }
 
-export type LineHandleAction =
+/** @deprecated Use EditorHandleMenuItem */
+export type LineHandleMenuItem = EditorHandleMenuItem
+
+export type EditorHandleAction =
   | InsertBlockType
   | 'mark-excerpt'
   | 'set-basis'
@@ -44,6 +47,9 @@ export type LineHandleAction =
   | 'clear-formatting'
   | 'delete'
 
+/** @deprecated Use EditorHandleAction */
+export type LineHandleAction = EditorHandleAction
+
 export const insertOptions: InsertOption[] = [
   { key: 'richtext', label: '文本', icon: '📝', keywords: ['text', 'richtext', 'wenben'] },
   { key: 'ref', label: '引用', icon: '🔖', keywords: ['ref', 'reference', 'yinyong'] },
@@ -58,7 +64,7 @@ export const insertOptions: InsertOption[] = [
   { key: 'spacer', label: '分割空白', icon: '↕', keywords: ['spacer', 'blank', 'kongbai'] },
 ]
 
-export function buildEditorLineHandleItems(extraActionItems: LineHandleMenuItem[] = []): LineHandleMenuItem[] {
+export function buildEditorParagraphHandleItems(extraActionItems: EditorHandleMenuItem[] = []): EditorHandleMenuItem[] {
   return [
     { key: 'insert-divider', label: '插入', divider: true },
     ...insertOptions.map((option) => ({ key: option.key, label: option.label, icon: option.icon })),
@@ -66,16 +72,19 @@ export function buildEditorLineHandleItems(extraActionItems: LineHandleMenuItem[
     ...extraActionItems,
     { key: 'mark-excerpt', label: '标记节选', icon: '▣' },
     { key: 'set-basis', label: '设置依据', icon: '◎' },
-    { key: 'cut', label: '剪切行', icon: '✂️' },
+    { key: 'cut', label: '剪切段落', icon: '✂️' },
     { key: 'copy', label: '复制', icon: '📋' },
-    { key: 'duplicate', label: '复制行', icon: '📄' },
+    { key: 'duplicate', label: '复制段落', icon: '📄' },
     { key: 'clear-formatting', label: '清除格式', icon: '🧹' },
-    { key: 'delete', label: '删除行', icon: '🗑️', danger: true },
+    { key: 'delete', label: '删除段落', icon: '🗑️', danger: true },
   ]
 }
 
-function knowledgeActionItems(kind: 'line' | 'section'): LineHandleMenuItem[] {
-  const items: LineHandleMenuItem[] = [
+/** @deprecated Use buildEditorParagraphHandleItems */
+export const buildEditorLineHandleItems = buildEditorParagraphHandleItems
+
+function knowledgeActionItems(kind: 'paragraph' | 'section'): EditorHandleMenuItem[] {
+  const items: EditorHandleMenuItem[] = [
     { key: 'add-note', label: kind === 'section' ? '添加标注（本节）' : '添加标注', icon: '📝' },
     { key: 'create-knowledge-relation', label: '建立关联', icon: '🔗' },
   ]
@@ -93,8 +102,8 @@ export function getSectionHandleMenuContext(entry: FlatTocEntry) {
   }
 }
 
-function sectionMetadataActionItems(context: ReturnType<typeof getSectionHandleMenuContext>): LineHandleMenuItem[] {
-  const items: LineHandleMenuItem[] = []
+function sectionMetadataActionItems(context: ReturnType<typeof getSectionHandleMenuContext>): EditorHandleMenuItem[] {
+  const items: EditorHandleMenuItem[] = []
   if (context.canMarkHeadingSource) {
     items.push({ key: 'mark-heading-source', label: '标记来源', icon: '▣' })
   }
@@ -108,14 +117,14 @@ function sectionMetadataActionItems(context: ReturnType<typeof getSectionHandleM
 }
 
 export type EditorHandleTarget =
-  | { kind: 'line'; pos: number }
+  | { kind: 'paragraph'; pos: number }
   | { kind: 'section'; entryId: string }
 
 export function buildHandleMenuItems(
   target: EditorHandleTarget | null,
   sectionContext?: ReturnType<typeof getSectionHandleMenuContext> | null,
-): LineHandleMenuItem[] {
-  const kind = target?.kind === 'section' ? 'section' : 'line'
+): EditorHandleMenuItem[] {
+  const kind = target?.kind === 'section' ? 'section' : 'paragraph'
   const extraActionItems = kind === 'section' && sectionContext
     ? [...knowledgeActionItems('section'), ...sectionMetadataActionItems(sectionContext)]
     : knowledgeActionItems(kind)
@@ -127,14 +136,14 @@ export function buildHandleMenuItems(
     duplicate: '复制本节',
     delete: '删除本节',
   }
-  return buildEditorLineHandleItems(extraActionItems).map((item) => (
+  return buildEditorParagraphHandleItems(extraActionItems).map((item) => (
     kind === 'section' && sectionLabels[item.key]
       ? { ...item, label: sectionLabels[item.key] }
       : item
   ))
 }
 
-export function buildSectionHandleItems(entry?: FlatTocEntry | null): LineHandleMenuItem[] {
+export function buildSectionHandleItems(entry?: FlatTocEntry | null): EditorHandleMenuItem[] {
   const context = entry ? getSectionHandleMenuContext(entry) : {
     canMarkHeadingSource: true,
     canClearHeadingSource: false,

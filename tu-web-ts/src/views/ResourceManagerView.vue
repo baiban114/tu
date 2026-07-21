@@ -764,7 +764,9 @@ const excerptSelectedTypeCode = computed(() => {
 });
 
 function formatExcerptLocatorCell(row: ResourceExcerpt): string {
-  return resourcePositionDisplay(row.locator) || '—';
+  const raw = row.locator?.trim()
+  if (!raw) return '—'
+  return resourcePositionDisplay(raw) || raw
 }
 
 const excerptUrlPasteVisible = computed(() => supportsResourceExcerpts(excerptSelectedTypeCode.value));
@@ -1386,6 +1388,16 @@ function editExcerpt(excerpt: ResourceExcerpt) {
     excerptText: excerpt.excerptText,
     note: excerpt.note || '',
     sortOrder: excerpt.sortOrder ?? 0,
+  });
+}
+
+async function openResourceDocumentView(focusExcerptId?: string | null) {
+  const item = selectedExcerptItem.value;
+  if (!item) return;
+  excerptPanelVisible.value = false;
+  await router.push({ path: '/' });
+  await workspaceStore.selectKbLinkedResource(item.id, {
+    focusExcerptId: focusExcerptId || null,
   });
 }
 
@@ -2627,6 +2639,7 @@ watch(
         <div v-if="excerptPanelRoute === 'list'" class="excerpt-list">
           <div class="excerpt-list__toolbar">
             <el-button type="primary" @click="openExcerptCreateRoute">新增节选</el-button>
+            <el-button @click="openResourceDocumentView()">查看全文</el-button>
           </div>
           <div class="excerpt-list__table-wrap">
             <el-table
@@ -2649,9 +2662,10 @@ watch(
               </el-table-column>
               <el-table-column prop="excerptText" label="正文" min-width="240" show-overflow-tooltip />
               <el-table-column prop="note" label="备注" min-width="120" show-overflow-tooltip />
-              <el-table-column label="操作" width="140" fixed="right">
+              <el-table-column label="操作" width="220" fixed="right">
                 <template #default="{ row }">
                   <el-space>
+                    <el-button size="small" @click="openResourceDocumentView(row.id)">查看文档</el-button>
                     <el-button size="small" @click="editExcerpt(row)">编辑</el-button>
                     <el-button size="small" type="danger" plain @click="removeExcerpt(row)">删除</el-button>
                   </el-space>

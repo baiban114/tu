@@ -24,6 +24,7 @@ import { resetMockState } from '@/mock/store';
 import { useWorkspaceStore } from '@/stores/workspace';
 
 const STORAGE_KEY = 'tu:dev:product-features';
+const COLLAPSED_STORAGE_KEY = 'tu:dev:panel-collapsed';
 
 type FeatureDraft = Pick<ProductFeature, 'name' | 'module' | 'description' | 'status' | 'owner' | 'note'>;
 
@@ -36,6 +37,7 @@ const statusFilter = ref<ProductFeatureStatus | 'all'>('all');
 const moduleFilter = ref('all');
 const keyword = ref('');
 const features = ref<ProductFeature[]>(loadFeatures());
+const collapsed = ref(loadCollapsed());
 const draft = reactive<FeatureDraft>({
   name: '',
   module: '',
@@ -87,6 +89,24 @@ watch(
   },
   { deep: true },
 );
+
+watch(collapsed, (value) => {
+  if (typeof window === 'undefined') return;
+  window.localStorage.setItem(COLLAPSED_STORAGE_KEY, value ? '1' : '0');
+});
+
+function loadCollapsed(): boolean {
+  if (typeof window === 'undefined') return false;
+  try {
+    return window.localStorage.getItem(COLLAPSED_STORAGE_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function setCollapsed(value: boolean) {
+  collapsed.value = value;
+}
 
 function loadFeatures(): ProductFeature[] {
   if (typeof window === 'undefined') return productFeatureCatalog.map((feature) => ({ ...feature }));
@@ -228,10 +248,31 @@ function resetFeatureCatalog() {
 
 <template>
   <div v-if="isDev" class="dev-mode-panel">
-    <el-card shadow="always" class="dev-mode-panel__card">
+    <button
+      v-if="collapsed"
+      type="button"
+      class="dev-mode-panel__fab"
+      :title="`开发者模式（${sourceLabel}）`"
+      @click="setCollapsed(false)"
+    >
+      Dev
+      <el-tag size="small" :type="sourceTagType" class="dev-mode-panel__fab-tag">{{ sourceLabel }}</el-tag>
+    </button>
+
+    <el-card v-else shadow="always" class="dev-mode-panel__card">
       <div class="dev-mode-panel__header">
         <span class="dev-mode-panel__title">Developer Mode</span>
-        <el-tag size="small" :type="sourceTagType">{{ sourceLabel }}</el-tag>
+        <div class="dev-mode-panel__header-actions">
+          <el-tag size="small" :type="sourceTagType">{{ sourceLabel }}</el-tag>
+          <button
+            type="button"
+            class="dev-mode-panel__hide"
+            title="隐藏开发者模式"
+            @click="setCollapsed(true)"
+          >
+            隐藏
+          </button>
+        </div>
       </div>
 
       <div class="dev-mode-panel__body">
@@ -382,6 +423,31 @@ function resetFeatureCatalog() {
   z-index: 3000;
 }
 
+.dev-mode-panel__fab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  border: 1px solid rgba(24, 119, 255, 0.28);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow: 0 6px 18px rgba(15, 23, 42, 0.12);
+  color: #334155;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+}
+
+.dev-mode-panel__fab:hover {
+  border-color: rgba(24, 119, 255, 0.5);
+  color: #0958d9;
+}
+
+.dev-mode-panel__fab-tag {
+  margin-left: 0;
+}
+
 .dev-mode-panel__card {
   width: 300px;
   border-radius: 8px;
@@ -394,7 +460,27 @@ function resetFeatureCatalog() {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 8px;
   margin-bottom: 12px;
+}
+
+.dev-mode-panel__header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.dev-mode-panel__hide {
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: #6b7280;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.dev-mode-panel__hide:hover {
+  color: #0958d9;
 }
 
 .dev-mode-panel__title {

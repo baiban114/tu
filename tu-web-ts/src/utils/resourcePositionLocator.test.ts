@@ -28,14 +28,12 @@ describe('resourcePositionLocator', () => {
     expect(resourcePositionDisplay('paragraph:3')).toBe('第 3 段')
   })
 
-  it('splits stored locator for editing', () => {
-    expect(splitResourcePositionLocator('anchor:intro', 'web-link')).toEqual({
-      kind: 'anchor',
-      value: 'intro',
+  it('keeps free-text legacy locators as legacy for editing', () => {
+    expect(splitResourcePositionLocator('第 3 章', 'book')).toEqual({
+      kind: 'legacy',
+      value: '第 3 章',
     })
-    expect(splitResourcePositionLocator('page:12', 'book')).toEqual({
-      kind: 'page',
-      value: '12',
-    })
+    expect(resourcePositionDisplay('第 3 章')).toBe('第 3 章')
+    expect(normalizeResourcePositionLocator('第 3 章')).toBe('第 3 章')
   })
 })

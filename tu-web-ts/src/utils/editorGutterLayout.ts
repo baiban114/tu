@@ -7,7 +7,7 @@ export interface ContentScrollGutterAnchor {
   hoverLeft: number
 }
 
-/** 悬停手柄触发条：从装订线左侧延伸到折叠钮左缘（无缝隙，不再依赖消失延迟） */
+/** 悬停手柄触发条：覆盖手柄圆点，并向右延伸到正文左缘（无缝隙） */
 export interface HandleTriggerBounds {
   left: number
   right: number
@@ -36,12 +36,20 @@ export function getContentScrollGutterAnchor(el: HTMLElement | null | undefined)
   }
 }
 
-export function getHandleTriggerBounds(gutter: ContentScrollGutterAnchor): HandleTriggerBounds {
+export function getHandleTriggerBounds(
+  gutter: ContentScrollGutterAnchor,
+  options?: { contentLeft?: number },
+): HandleTriggerBounds {
   const half = EDITOR_GUTTER_BTN_SIZE / 2
-  // 右缘贴齐折叠钮左缘
-  const right = gutter.foldLeft - half
+  // 左缘：覆盖手柄圆点整宽，再略向外扩半钮，避免移入圆点时出界
   const hoverLeftEdge = gutter.hoverLeft - half
-  const left = Math.min(gutter.rect.left, hoverLeftEdge)
+  const left = Math.min(gutter.rect.left, hoverLeftEdge) - half
+  // 右缘：折叠钮左缘，且至少贴到正文左缘，消除「正文 → 手柄」死区
+  const foldRight = gutter.foldLeft + half
+  const contentLeft = options?.contentLeft
+  const right = contentLeft != null
+    ? Math.max(foldRight, contentLeft)
+    : foldRight
   const width = Math.max(EDITOR_GUTTER_BTN_SIZE, right - left)
   return {
     left,
@@ -49,4 +57,16 @@ export function getHandleTriggerBounds(gutter: ContentScrollGutterAnchor): Handl
     width,
     dotCenterX: gutter.hoverLeft,
   }
+}
+
+/** 指针是否落在手柄触发条（水平）内；可选带入当前手柄竖直范围 */
+export function isPointInHandleTriggerZone(
+  clientX: number,
+  clientY: number,
+  trigger: HandleTriggerBounds,
+  vertical?: { top: number; height: number } | null,
+): boolean {
+  if (clientX < trigger.left || clientX >= trigger.right) return false
+  if (!vertical) return true
+  return clientY >= vertical.top && clientY <= vertical.top + vertical.height
 }

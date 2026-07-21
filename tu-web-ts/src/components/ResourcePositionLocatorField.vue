@@ -28,33 +28,65 @@ const emit = defineEmits<{
 
 const positionKind = ref<ResourcePositionKind>(defaultPositionKindForResourceType(props.resourceTypeCode))
 const positionValue = ref('')
+/** 正在从 model 同步到控件时，禁止反向 emit，避免误清空已保存定位 */
+let syncingFromModel = false
 
-const kindOptions = computed(() => positionKindsForResourceType(props.resourceTypeCode))
+const kindOptions = computed(() => {
+  const base = positionKindsForResourceType(props.resourceTypeCode)
+  if (positionKind.value === 'legacy' && !base.includes('legacy')) {
+    return [...base, 'legacy' as const]
+  }
+  return base
+})
 
 const displayPreview = computed(() => {
-  const built = buildResourcePositionLocator(positionKind.value, positionValue.value)
-  return built ? resourcePositionDisplay(built) : ''
+  const draft = positionKind.value === 'legacy'
+    ? positionValue.value.trim()
+    : buildResourcePositionLocator(positionKind.value, positionValue.value)
+  if (draft) return resourcePositionDisplay(draft) || draft
+  // 切换类型等导致草稿暂时无效时，仍展示已绑定（上次保存）的定位
+  const saved = props.modelValue?.trim()
+  if (!saved) return ''
+  return resourcePositionDisplay(saved) || saved
 })
 
 function syncFromModel(value: string) {
-  const normalized = normalizeResourcePositionLocator(value)
-  if (normalized && normalized !== value.trim()) {
-    emit('update:modelValue', normalized)
-    return
+  syncingFromModel = true
+  try {
+    const normalized = normalizeResourcePositionLocator(value)
+    if (normalized && normalized !== value.trim()) {
+      emit('update:modelValue', normalized)
+      return
+    }
+    const split = splitResourcePositionLocator(normalized || value, props.resourceTypeCode)
+    // 保留 legacy，勿强行改成 page/anchor 再 emit 成空串
+    positionKind.value = split.kind
+    positionValue.value = split.value
+  } finally {
+    syncingFromModel = false
   }
-  const split = splitResourcePositionLocator(normalized || value, props.resourceTypeCode)
-  positionKind.value = split.kind === 'legacy'
-    ? defaultPositionKindForResourceType(props.resourceTypeCode)
-    : split.kind
-  positionValue.value = split.kind === 'legacy' ? (split.value || value) : split.value
 }
 
 function emitCanonical() {
+  if (syncingFromModel) return
+
   if (positionKind.value === 'legacy') {
     emit('update:modelValue', positionValue.value.trim())
     return
   }
-  emit('update:modelValue', buildResourcePositionLocator(positionKind.value, positionValue.value))
+
+  const trimmed = positionValue.value.trim()
+  // 用户清空输入：允许清空
+  if (!trimmed) {
+    emit('update:modelValue', '')
+    return
+  }
+
+  const built = buildResourcePositionLocator(positionKind.value, trimmed)
+  // 定位类型切换中、当前值尚不符合新类型格式：保留 model 中上次保存的定位，不写入空串
+  if (!built) return
+
+  emit('update:modelValue', built)
 }
 
 watch(

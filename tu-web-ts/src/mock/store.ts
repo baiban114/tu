@@ -62,6 +62,14 @@ import type {
   UrlClusterRule,
 } from '@/api/externalResource';
 import type { CreateKbResourceLinkPayload, KbResourceLink } from '@/api/kbResourceLink';
+import type {
+  ContentComment,
+  CreateContentCommentPayload,
+  ListContentCommentRepliesParams,
+  ListContentCommentsParams,
+} from '@/api/comment';
+import type { PageResponse } from '@/api/aiRuns';
+import { DEFAULT_PAGE_SIZE } from '@/constants/pagination';
 
 interface MockState {
   knowledgeBases: KnowledgeBase[];
@@ -75,6 +83,7 @@ interface MockState {
   urlClusterRules: UrlClusterRule[];
   resourceItemRelations: ResourceItemRelation[];
   kbResourceLinks: KbResourceLink[];
+  contentComments: ContentComment[];
   contentTreeHours: Record<string, number | null>;
 }
 
@@ -287,6 +296,7 @@ const initialState: MockState = {
   urlClusterRules: [...BUILTIN_URL_CLUSTER_RULES],
   resourceItemRelations: [],
   kbResourceLinks: [],
+  contentComments: [],
   resourceChapters: [
     {
       id: 'rc-book-demo-1',
@@ -365,6 +375,7 @@ function loadState(): MockState {
       urlClusterRules: Array.isArray(parsed.urlClusterRules) ? parsed.urlClusterRules : cloneState(initialState.urlClusterRules),
       resourceItemRelations: Array.isArray(parsed.resourceItemRelations) ? parsed.resourceItemRelations : cloneState(initialState.resourceItemRelations),
       kbResourceLinks: Array.isArray(parsed.kbResourceLinks) ? parsed.kbResourceLinks : cloneState(initialState.kbResourceLinks),
+      contentComments: Array.isArray(parsed.contentComments) ? parsed.contentComments : cloneState(initialState.contentComments),
       contentTreeHours: parsed.contentTreeHours && typeof parsed.contentTreeHours === 'object'
         ? parsed.contentTreeHours
         : cloneState(initialState.contentTreeHours),
@@ -714,6 +725,155 @@ export function deleteKbResourceLinkMock(kbId: string, resourceItemId: string): 
   }
   persistState();
 }
+
+function normalizeCommentScopeId(value?: string | null): string | null {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : null;
+}
+
+function sameCommentScope(a?: string | null, b?: string | null): boolean {
+  return normalizeCommentScopeId(a) === normalizeCommentScopeId(b);
+}
+
+function resolveMockCommentAuthor(): { userId: string; displayName: string } {
+  try {
+    const raw = typeof window !== 'undefined' ? window.localStorage.getItem('tu.auth.user') : null;
+    if (raw) {
+      const user = JSON.parse(raw) as { id?: string; displayName?: string | null; username?: string; email?: string };
+      if (user?.id) {
+        const displayName = user.displayName || user.username || user.email || '用户';
+        return { userId: user.id, displayName };
+      }
+    }
+  } catch {
+    // fall through
+  }
+  return {
+    userId: 'anonymous',
+    displayName: '匿名用户',
+  };
+}
+
+function recountCommentReplies(commentId: string): number {
+  return state.contentComments.filter((item) => item.parentId === commentId).length;
+}
+
+function hydrateContentComment(comment: ContentComment): ContentComment {
+  return {
+    ...comment,
+    replyCount: recountCommentReplies(comment.id),
+  };
+}
+
+function requireMockPage(pageId: string): void {
+  if (!state.pages.some((page) => page.id === pageId)) {
+    throw new Error('page not found');
+  }
+}
+
+export function listContentCommentsMock(
+  pageId: string,
+  params: ListContentCommentsParams = {},
+): PageResponse<ContentComment> {
+  requireMockPage(pageId);
+  const annotationId = normalizeCommentScopeId(params.annotationId);
+  const page = Math.max(0, params.page ?? 0);
+  const pageSize = Math.max(1, Math.min(params.pageSize ?? DEFAULT_PAGE_SIZE, 200));
+  const roots = state.contentComments
+    .filter(
+      (item) =>
+        item.pageId === pageId &&
+        !item.parentId &&
+        sameCommentScope(item.annotationId, annotationId),
+    )
+    .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
+  const from = page * pageSize;
+  const items = from >= roots.length ? [] : roots.slice(from, from + pageSize).map(hydrateContentComment);
+  return { items: cloneState(items), total: roots.length, page, pageSize };
+}
+
+export function listContentCommentRepliesMock(
+  pageId: string,
+  commentId: string,
+  params: ListContentCommentRepliesParams = {},
+): PageResponse<ContentComment> {
+  requireMockPage(pageId);
+  const parent = state.contentComments.find((item) => item.id === commentId);
+  if (!parent || parent.pageId !== pageId) {
+    throw new Error('comment not found');
+  }
+  const page = Math.max(0, params.page ?? 0);
+  const pageSize = Math.max(1, Math.min(params.pageSize ?? DEFAULT_PAGE_SIZE, 200));
+  const replies = state.contentComments
+    .filter((item) => item.parentId === commentId)
+    .sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)));
+  const from = page * pageSize;
+  const items = from >= replies.length ? [] : replies.slice(from, from + pageSize).map(hydrateContentComment);
+  return { items: cloneState(items), total: replies.length, page, pageSize };
+}
+
+export function createContentCommentMock(
+  pageId: string,
+  payload: CreateContentCommentPayload,
+): ContentComment {
+  requireMockPage(pageId);
+  const body = payload.body?.trim() || '';
+  if (!body) throw new Error('body is required');
+  const annotationId = normalizeCommentScopeId(payload.annotationId);
+  const parentId = normalizeCommentScopeId(payload.parentId);
+  if (parentId) {
+    const parent = state.contentComments.find((item) => item.id === parentId);
+    if (!parent || parent.pageId !== pageId) {
+      throw new Error('parent comment not found');
+    }
+    if (!sameCommentScope(parent.annotationId, annotationId)) {
+      throw new Error('parent comment annotation scope mismatch');
+    }
+  }
+  const author = resolveMockCommentAuthor();
+  const now = new Date().toISOString();
+  const comment: ContentComment = {
+    id: nextId('cmt'),
+    pageId,
+    annotationId,
+    parentId,
+    authorUserId: author.userId,
+    authorDisplayName: author.displayName,
+    body,
+    createdAt: now,
+    updatedAt: now,
+    replyCount: 0,
+  };
+  state.contentComments.push(comment);
+  persistState();
+  return cloneState(hydrateContentComment(comment));
+}
+
+export function deleteContentCommentMock(pageId: string, commentId: string): void {
+  requireMockPage(pageId);
+  const target = state.contentComments.find((item) => item.id === commentId);
+  if (!target || target.pageId !== pageId) {
+    throw new Error('comment not found');
+  }
+  const author = resolveMockCommentAuthor();
+  if (target.authorUserId !== author.userId) {
+    throw new Error('only the author can delete this comment');
+  }
+  const toDelete = new Set<string>();
+  const queue = [commentId];
+  while (queue.length > 0) {
+    const id = queue.shift()!;
+    toDelete.add(id);
+    for (const child of state.contentComments) {
+      if (child.parentId === id && !toDelete.has(child.id)) {
+        queue.push(child.id);
+      }
+    }
+  }
+  state.contentComments = state.contentComments.filter((item) => !toDelete.has(item.id));
+  persistState();
+}
+
 
 function hydrateKbResourceLink(link: KbResourceLink): KbResourceLink {
   const item = state.resourceItems.find((entry) => entry.id === link.resourceItemId);

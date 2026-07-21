@@ -25,6 +25,7 @@ import { HeadingNode } from './extensions/HeadingNode'
 import { CodeBlockNode } from './extensions/CodeBlockNode'
 import { HeadingSourceDecorations } from './extensions/HeadingSourceDecorations'
 import { BlockquoteExcerptDecorations } from './extensions/BlockquoteExcerptDecorations'
+import { AnnotationSideMarkers } from './extensions/AnnotationSideMarkers'
 import { HeadingSectionFold } from './extensions/HeadingSectionFold'
 import { TagContentFilter } from './extensions/TagContentFilter'
 import { TextTagSpanDecorations } from './extensions/TextTagSpanDecorations'
@@ -69,6 +70,7 @@ export interface TuEditorExtensionsConfig {
     context: { blockId: string; title: string; clientX: number; clientY: number },
   ) => void
   getAnnotations: () => TextAnnotation[]
+  getAnnotationSideMarkersEnabled?: () => boolean
   getTocContext: () => TocCollectContext | null
   getFoldRevision: () => number
   getSectionTagsMap: () => SectionTagsMap
@@ -138,6 +140,11 @@ export function getTuEditorExtensions(config: TuEditorExtensionsConfig): Extensi
       annotations: config.annotations,
       onAnnotationClick: config.onAnnotationClick,
       onAnnotationsMapped: config.onAnnotationsMapped,
+    }),
+    AnnotationSideMarkers.configure({
+      getEnabled: () => config.getAnnotationSideMarkersEnabled?.() ?? false,
+      getAnnotations: config.getAnnotations,
+      onMarkerClick: config.onAnnotationClick,
     }),
     HeadingSourceDecorations.configure({
       getSectionTagsMap: config.getSectionTagsMap,

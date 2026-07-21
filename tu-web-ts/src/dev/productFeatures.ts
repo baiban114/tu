@@ -141,7 +141,7 @@ export const productFeatureCatalog: ProductFeature[] = [
     id: 'external-resource-excerpt-from-block',
     module: '外部资源',
     name: '块级标记节选',
-    description: '行手柄、嵌入块工具栏或目录右键可将整块/section/引用区域标记为外部资源节选。',
+    description: '段落手柄、嵌入块工具栏或目录右键可将整块/section/引用区域标记为外部资源节选。',
     status: 'testing',
     owner: 'Resource',
   },

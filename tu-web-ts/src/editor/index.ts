@@ -1,6 +1,11 @@
 export { SlashCommand } from './extensions/SlashCommand'
 export { BlockActions, blockToTipTapNode } from './extensions/BlockActions'
 export { AnnotationDecorations, annotationDecorationsKey } from './extensions/AnnotationDecorations'
+export {
+  AnnotationSideMarkers,
+  annotationSideMarkersKey,
+  ANNOTATION_SIDE_MARKERS_META,
+} from './extensions/AnnotationSideMarkers'
 export { SelectionDecorations, selectionDecorationsKey } from './extensions/SelectionDecorations'
 
 export { ParagraphNode } from './extensions/ParagraphNode'

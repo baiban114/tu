@@ -3,8 +3,8 @@ import { buildHandleMenuItems, buildSectionHandleItems, getSectionHandleMenuCont
 import type { FlatTocEntry } from '@/utils/toc/headings'
 
 describe('lineHandleMenu', () => {
-  it('includes knowledge actions for line and section handles', () => {
-    const lineKeys = buildHandleMenuItems({ kind: 'line', pos: 1 }).map((item) => item.key)
+  it('includes knowledge actions for paragraph and section handles', () => {
+    const paragraphKeys = buildHandleMenuItems({ kind: 'paragraph', pos: 1 }).map((item) => item.key)
     const sectionKeys = buildHandleMenuItems({ kind: 'section', entryId: 'sec-1' }, getSectionHandleMenuContext({
       id: 'sec-1',
       blockId: 'h1',
@@ -15,15 +15,15 @@ describe('lineHandleMenu', () => {
       sourceType: 'local',
     })).map((item) => item.key)
 
-    expect(lineKeys).toContain('add-note')
-    expect(lineKeys).toContain('create-knowledge-relation')
+    expect(paragraphKeys).toContain('add-note')
+    expect(paragraphKeys).toContain('create-knowledge-relation')
     expect(sectionKeys).toContain('add-note')
     expect(sectionKeys).toContain('create-knowledge-relation')
     expect(sectionKeys).toContain('section-ai-marking')
   })
 
-  it('only relabels section-specific operations', () => {
-    const lineItems = buildHandleMenuItems({ kind: 'line', pos: 1 })
+  it('uses paragraph labels for paragraph handle and section labels for section handle', () => {
+    const paragraphItems = buildHandleMenuItems({ kind: 'paragraph', pos: 1 })
     const sectionItems = buildHandleMenuItems({ kind: 'section', entryId: 'sec-1' }, getSectionHandleMenuContext({
       id: 'sec-1',
       blockId: 'h1',
@@ -34,11 +34,15 @@ describe('lineHandleMenu', () => {
       sourceType: 'local',
     }))
 
-    expect(lineItems.find((item) => item.key === 'add-note')?.label).toBe('添加标注')
+    expect(paragraphItems.find((item) => item.key === 'add-note')?.label).toBe('添加标注')
+    expect(paragraphItems.find((item) => item.key === 'cut')?.label).toBe('剪切段落')
+    expect(paragraphItems.find((item) => item.key === 'duplicate')?.label).toBe('复制段落')
+    expect(paragraphItems.find((item) => item.key === 'delete')?.label).toBe('删除段落')
     expect(sectionItems.find((item) => item.key === 'add-note')?.label).toBe('添加标注（本节）')
     expect(sectionItems.find((item) => item.key === 'create-knowledge-relation')?.label).toBe('建立关联')
     expect(sectionItems.find((item) => item.key === 'mark-excerpt')?.label).toBe('标记节选（本节）')
-    expect(lineItems.find((item) => item.key === 'mark-excerpt')?.label).toBe('标记节选')
+    expect(paragraphItems.find((item) => item.key === 'mark-excerpt')?.label).toBe('标记节选')
+    expect(sectionItems.find((item) => item.key === 'delete')?.label).toBe('删除本节')
   })
 
   it('adds section metadata actions based on entry context', () => {

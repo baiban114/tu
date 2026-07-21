@@ -4,6 +4,7 @@ import type { HeadingSourceBinding, KnowledgeAnchor, TextAnnotation } from '@/ap
 import type { FloatingAnchorRect } from '@/composables/useAnchoredFloating'
 import { effectiveMarkerSource, headingSourceBadgeLabel, headingSourceBadgeTitle } from '@/utils/headingSource'
 import KnowledgeRelationList from './KnowledgeRelationList.vue'
+import CommentThreadPanel from './CommentThreadPanel.vue'
 import { annotationToAnchor } from '@/utils/knowledgeAnchor'
 import type { KnowledgeAnchorNavigateHandlers } from '@/utils/knowledgeAnchor'
 
@@ -98,6 +99,9 @@ const effectiveRelationAnchor = computed(() => {
   return annotationToAnchor(props.pageId, props.annotation)
 })
 
+const commentAnnotationId = computed(() => props.annotation?.id || '')
+const showCommentPanel = computed(() => Boolean(props.pageId && commentAnnotationId.value))
+
 const relationNavigate = computed(() => props.navigate ?? null)
 
 const popoverStyle = computed(() => {
@@ -151,7 +155,7 @@ const clampToViewport = () => {
 }
 
 watch(
-  () => [props.visible, props.top, props.left, props.anchorRect, displayedAnnotations.value.length, hasSourceBinding.value] as const,
+  () => [props.visible, props.top, props.left, props.anchorRect, displayedAnnotations.value.length, hasSourceBinding.value, showCommentPanel.value] as const,
   async ([visible]) => {
     if (!visible) return
     displayTop.value = props.top
@@ -313,6 +317,13 @@ watch(
           :navigate="relationNavigate"
           :after-navigate="() => emit('close')"
         />
+
+        <CommentThreadPanel
+          v-if="showCommentPanel && pageId"
+          compact
+          :page-id="pageId"
+          :annotation-id="commentAnnotationId"
+        />
       </div>
     </div>
   </Teleport>
@@ -345,6 +356,10 @@ watch(
   justify-content: space-between;
   padding: 10px 12px;
   border-bottom: 1px solid var(--el-border-color-lighter);
+}
+
+.note-popover :deep(.comment-thread) {
+  flex-shrink: 0;
 }
 
 .note-popover__label {

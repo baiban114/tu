@@ -281,7 +281,7 @@ onMounted(() => {
             :ref="(el) => setNestedEditorRef(block.id, el)"
             :blocks="[block]"
             :editable="false"
-            :line-gutter-actions="true"
+            :paragraph-gutter-actions="true"
             class="ref-page-content__block"
             @line-annotate="(innerBlockId) => forwardRefGutterAction(block.id, innerBlockId, 'annotate')"
             @mark-block-excerpt="(innerBlockId) => forwardRefGutterAction(block.id, innerBlockId, 'mark-excerpt')"
@@ -313,7 +313,7 @@ onMounted(() => {
             :body-block-id="block.id"
             show-body
             compact
-            :line-gutter-actions="true"
+            :paragraph-gutter-actions="true"
             class="ref-page-content__block"
             @line-annotate="(innerBlockId) => forwardRefGutterAction(block.id, innerBlockId, 'annotate')"
             @mark-block-excerpt="(innerBlockId) => forwardRefGutterAction(block.id, innerBlockId, 'mark-excerpt')"

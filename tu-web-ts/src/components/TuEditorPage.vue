@@ -15,6 +15,7 @@ import PdfExcerptPicker, { type PdfExcerptPickerMode, type PdfExcerptSelection }
 import BlockMetadataTagEditor from './BlockMetadataTagEditor.vue'
 import PageTagsBar from './PageTagsBar.vue'
 import PageKnowledgeContextBar from './PageKnowledgeContextBar.vue'
+import CommentThreadPanel from './CommentThreadPanel.vue'
 import Toast from './Toast.vue'
 import NoteEditor from './NoteEditor.vue'
 import NotePopover from './NotePopover.vue'
@@ -72,6 +73,7 @@ import {
   setActiveTagFilter,
 } from '@/stores/tagFilterSession'
 import { createHeadingBlockId } from '@/utils/headingSource'
+import { resourceExcerptHeadingBlockId } from '@/utils/resourceDocumentContent'
 import { registerExternalUrlFromPaste, type ResourceExcerpt, type ResourceItem } from '@/api/externalResource'
 import { parseExternalUrl } from '@/utils/externalUrlResource'
 import { getAnnotationSelectionPayload } from '@/editor/annotationText'
@@ -667,6 +669,11 @@ const filterableTags = computed(() => {
 })
 
 const showPageChrome = computed(() => props.editable)
+const annotationSideMarkersVisible = ref(false)
+
+const toggleAnnotationSideMarkers = () => {
+  annotationSideMarkersVisible.value = !annotationSideMarkersVisible.value
+}
 
 provide('activeTagFilter', activeTagFilter)
 provide('sectionTagsMap', sectionTagsMap)
@@ -1725,6 +1732,41 @@ const scrollToHeadingByBlockId = (_pageId: string, blockId: string) => {
       : editor.view.dom.querySelector<HTMLElement>(`[data-block-id="${CSS.escape(blockId)}"]`)
   if (el) scrollElementIntoEditorView(el)
 }
+
+function tryFocusPendingResourceExcerpt() {
+  if (props.editable || !workspaceStore.isResourceDocumentView) return
+  if (!workspaceStore.pendingResourceExcerptFocusId) return
+
+  const run = (attemptsLeft: number) => {
+    if (!tuEditorRef.value?.editor) {
+      if (attemptsLeft > 0) window.setTimeout(() => run(attemptsLeft - 1), 50)
+      return
+    }
+    const excerptId = workspaceStore.consumePendingResourceExcerptFocusId()
+    if (!excerptId) return
+    const blockId = resourceExcerptHeadingBlockId(excerptId)
+    scrollToHeadingByBlockId('', blockId)
+    highlightedBlockId.value = blockId
+    window.setTimeout(() => {
+      if (highlightedBlockId.value === blockId) highlightedBlockId.value = null
+    }, 2000)
+  }
+
+  void nextTick(() => run(40))
+}
+
+watch(
+  () => [
+    props.contentList,
+    workspaceStore.pendingResourceExcerptFocusId,
+    workspaceStore.isResourceDocumentView,
+    workspaceStore.currentViewKey,
+  ] as const,
+  () => {
+    tryFocusPendingResourceExcerpt()
+  },
+  { flush: 'post' },
+)
 
 const scrollToSelectionRange = (_pageId: string, from: number, to: number) => {
   const editor = tuEditorRef.value?.editor
@@ -3085,6 +3127,14 @@ onBeforeUnmount(() => {
         </button>
         <button
           class="toolbar-button"
+          :class="{ 'toolbar-button--active': annotationSideMarkersVisible }"
+          @click="toggleAnnotationSideMarkers"
+          :title="annotationSideMarkersVisible ? '隐藏段落标注入口' : '在有标注的段落右侧显示入口'"
+        >
+          {{ annotationSideMarkersVisible ? '隐藏标注' : '显示标注' }}
+        </button>
+        <button
+          class="toolbar-button"
           @click="handleAiDocumentMarking"
           title="分析整页文档结构并建议知识标记"
         >
@@ -3182,6 +3232,7 @@ onBeforeUnmount(() => {
           :document="localDocument"
           :editable="editable"
           :annotations="editorAnnotations"
+          :annotation-side-markers="annotationSideMarkersVisible"
           @update:document="handleDocumentChange"
           @selection-change="handleSelectionChange"
           @annotation-click="handleAnnotationClick"
@@ -3353,6 +3404,12 @@ onBeforeUnmount(() => {
       </div>
 
     </div>
+
+    <CommentThreadPanel
+      v-if="workspaceStore.currentPageId && !workspaceStore.isResourceDocumentView"
+      class="page-comment-panel"
+      :page-id="workspaceStore.currentPageId"
+    />
 
     <!-- 选中文本工具栏 -->
     <SelectionToolbar
@@ -3550,6 +3607,14 @@ onBeforeUnmount(() => {
   background-color: #40a9ff;
 }
 
+.toolbar-button--active {
+  background-color: #0958d9;
+}
+
+.toolbar-button--active:hover {
+  background-color: #1677ff;
+}
+
 .page-title-row {
   flex: 0 0 auto;
   width: 100%;
@@ -3620,6 +3685,14 @@ onBeforeUnmount(() => {
 
 .content-shell--toc-open {
   gap: 20px;
+}
+
+.page-comment-panel {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  padding-left: 16px;
+  padding-right: 16px;
 }
 
 .content-container {

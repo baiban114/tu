@@ -4,6 +4,7 @@ import {
   isResourceDocumentTreeId,
   parseResourceDocumentTreeId,
   resourceDocumentTreeId,
+  resourceExcerptHeadingBlockId,
   synthesizeResourceDocumentContent,
 } from './resourceDocumentContent'
 
@@ -72,5 +73,16 @@ describe('resourceDocumentContent', () => {
     expect(indexB).toBeGreaterThan(indexA)
     expect(texts).toContain('前')
     expect(texts).toContain('后')
+  })
+
+  it('stamps stable blockIds on excerpt h2 headings', () => {
+    const content = synthesizeResourceDocumentContent(item(), [
+      excerpt({ id: 'e2', sortOrder: 2, title: '后', excerptText: 'B' }),
+      excerpt({ id: 'e1', sortOrder: 1, title: '前', excerptText: 'A' }),
+    ])
+    const headings = (content.document?.content ?? []).filter((node) => node.type === 'heading' && node.attrs?.level === 2)
+    expect(headings).toHaveLength(2)
+    expect(headings[0]?.attrs?.blockId).toBe(resourceExcerptHeadingBlockId('e1'))
+    expect(headings[1]?.attrs?.blockId).toBe(resourceExcerptHeadingBlockId('e2'))
   })
 })

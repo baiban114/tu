@@ -27,12 +27,12 @@ const props = withDefaults(defineProps<{
   compact?: boolean
   showBody?: boolean
   bodyBlockId?: string
-  lineGutterActions?: boolean
+  paragraphGutterActions?: boolean
 }>(), {
   compact: false,
   showBody: false,
   bodyBlockId: '',
-  lineGutterActions: false,
+  paragraphGutterActions: false,
 })
 
 const emit = defineEmits<{
@@ -190,7 +190,7 @@ onMounted(() => {
         :blocks="excerptEditorBlocks"
         :editable="false"
         :hover-handle="false"
-        :line-gutter-actions="lineGutterActions"
+        :paragraph-gutter-actions="paragraphGutterActions"
         class="external-resource-excerpt-panel__editor"
         @line-annotate="emit('line-annotate', $event)"
         @mark-block-excerpt="emit('mark-block-excerpt', $event)"

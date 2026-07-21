@@ -12,6 +12,7 @@ import {
   getTuEditorExtensions,
   getTuEditorSchemaExtensions,
   createPdfExcerptNodeAttrs,
+  ANNOTATION_SIDE_MARKERS_META,
 } from '@/editor'
 import {
   findClipboardImageFileOnly,
@@ -34,7 +35,7 @@ import { createGraphFromSource, createGraphSourceMetadata } from '@/utils/graphS
 import { createMindmapStarterGraphData } from '@/components/x6'
 import { createHeadingBlockId } from '@/utils/headingSource'
 import { createBlockquoteBlockId } from '@/utils/blockquoteExcerpt'
-import { EDITOR_GUTTER_BTN_SIZE, getContentScrollGutterAnchor, getHandleTriggerBounds } from '@/utils/editorGutterLayout'
+import { EDITOR_GUTTER_BTN_SIZE, getContentScrollGutterAnchor, getHandleTriggerBounds, isPointInHandleTriggerZone } from '@/utils/editorGutterLayout'
 import type { TocCollectContext } from '@/utils/toc/collectFlatTocEntries'
 import { HEADING_SECTION_FOLD_META } from '@/utils/toc/tocSectionFoldActions'
 import { textTagSpanDecorationsMetaKey } from '@/editor/extensions/TextTagSpanDecorations'
@@ -59,9 +60,9 @@ import {
   getSectionHandleMenuContext,
   insertOptions,
   isInsertBlockAction,
+  type EditorHandleAction,
   type EditorHandleTarget,
   type InsertBlockType,
-  type LineHandleAction,
 } from '@/editor/lineHandleMenu'
 import { collectFlatTocEntries } from '@/utils/toc/collectFlatTocEntries'
 import { iterTocFoldSections } from '@/utils/toc/tocSections'
@@ -84,8 +85,10 @@ interface Props {
   editable?: boolean
   annotations?: Record<string, TextAnnotation[]>
   hoverHandle?: boolean
-  /** 只读模式下仍显示行手柄并允许标注/节选等（不启用编辑类操作） */
-  lineGutterActions?: boolean
+  /** 只读模式下仍显示段落手柄并允许标注/节选等（不启用编辑类操作） */
+  paragraphGutterActions?: boolean
+  /** 在有标注的段落右侧显示「标注」入口按钮 */
+  annotationSideMarkers?: boolean
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -94,7 +97,8 @@ const props = withDefaults(defineProps<Props>(), {
   editable: true,
   annotations: () => ({}),
   hoverHandle: true,
-  lineGutterActions: undefined,
+  paragraphGutterActions: undefined,
+  annotationSideMarkers: false,
 })
 
 const emit = defineEmits<{
@@ -157,7 +161,7 @@ let lastUrlHoverTarget: UrlHoverTarget | null = null
 let urlHoverSuppressed = false
 
 // --- Hover Handle ---
-const LINE_NODE_TYPES = ['paragraph', 'heading', 'list_item', 'blockquote', 'bullet_list', 'ordered_list', 'task_list', 'task_item']
+const PARAGRAPH_HANDLE_NODE_TYPES = ['paragraph', 'heading', 'list_item', 'blockquote', 'bullet_list', 'ordered_list', 'task_list', 'task_item']
 const HANDLE_GUTTER_WIDTH = 44
 const hoveredPos = ref<number | null>(null)
 const handleVisible = ref(false)
@@ -183,8 +187,8 @@ const handlePositionStyle = computed<CSSProperties>(() => ({
   ['--hover-handle-dot-left' as string]: `${handleFixedLeft.value - handleTriggerLeft.value}px`,
 }))
 
-const lineGutterActionsEnabled = computed(() => props.lineGutterActions ?? props.editable)
-const gutterReadOnly = computed(() => lineGutterActionsEnabled.value && !props.editable)
+const paragraphGutterActionsEnabled = computed(() => props.paragraphGutterActions ?? props.editable)
+const gutterReadOnly = computed(() => paragraphGutterActionsEnabled.value && !props.editable)
 
 const activeHandleItems = computed(() => {
   const target = handleTarget.value
@@ -802,7 +806,7 @@ const clearHandleState = () => {
 
 type HoverHighlightTarget =
   | { kind: 'section'; entryId: string }
-  | { kind: 'line'; pos: number }
+  | { kind: 'paragraph'; pos: number }
 
 const hoverHighlightBox = ref<{ top: number; left: number; width: number; height: number } | null>(null)
 let activeHoverHighlight: HoverHighlightTarget | null = null
@@ -843,7 +847,7 @@ function measureSectionHighlightBox(entryId: string): { top: number; left: numbe
   }
 }
 
-function measureLineHighlightBox(pos: number): { top: number; left: number; width: number; height: number } | null {
+function measureParagraphHighlightBox(pos: number): { top: number; left: number; width: number; height: number } | null {
   const ed = editor.value
   if (!ed || ed.isDestroyed) return null
   const resolved = ed.state.doc.resolve(Math.min(Math.max(pos, 0), ed.state.doc.content.size))
@@ -863,7 +867,7 @@ function measureLineHighlightBox(pos: number): { top: number; left: number; widt
 function measureHoverHighlightBox(target: HoverHighlightTarget) {
   return target.kind === 'section'
     ? measureSectionHighlightBox(target.entryId)
-    : measureLineHighlightBox(target.pos)
+    : measureParagraphHighlightBox(target.pos)
 }
 
 function refreshHoverHighlight() {
@@ -910,19 +914,19 @@ const clearHideHandle = () => {
 }
 
 const handleEditorMouseMove = (event: MouseEvent) => {
-  if (!editor.value || !editorEl.value || !lineGutterActionsEnabled.value) return
+  if (!editor.value || !editorEl.value || !paragraphGutterActionsEnabled.value) return
   if (handleMenuVisible.value) return
 
   const wrapperRect = editorEl.value.getBoundingClientRect()
   const gutter = getContentScrollGutterAnchor(editorEl.value)
-  const trigger = gutter ? getHandleTriggerBounds(gutter) : null
+  const trigger = gutter ? getHandleTriggerBounds(gutter, { contentLeft: wrapperRect.left }) : null
   const isInsideEditor = event.clientX >= wrapperRect.left
     && event.clientX <= wrapperRect.right
     && event.clientY >= wrapperRect.top
     && event.clientY <= wrapperRect.bottom
-  // 装订线触发区：手柄条（延伸到折叠钮左缘）+ 折叠钮本身，直到正文左缘
+  // 装订线触发区：覆盖手柄圆点并向右贴齐正文左缘 + 折叠钮
   const gutterRight = trigger
-    ? Math.max(trigger.right + EDITOR_GUTTER_BTN_SIZE, wrapperRect.left)
+    ? Math.max(trigger.right, wrapperRect.left)
     : wrapperRect.left
   const isInLeftGutter = Boolean(
     gutter
@@ -938,9 +942,11 @@ const handleEditorMouseMove = (event: MouseEvent) => {
     const section = resolveSectionAtClientY(event.clientY)
     if (section) {
       showHandle({ kind: 'section', entryId: section.entryId }, section.anchorEl)
-    } else {
-      scheduleHideHandle()
+      return
     }
+    // 在手柄条内：按正文同高解析段落，或保留已显示的手柄，避免移向圆点时消失
+    if (keepOrResolveHandleInGutter(event.clientY, wrapperRect.left)) return
+    scheduleHideHandle()
     return
   }
 
@@ -951,7 +957,7 @@ const handleEditorMouseMove = (event: MouseEvent) => {
   if (resolved.depth < 1) { scheduleHideHandle(); return }
 
   const node = resolved.node(1)
-  if (!node || !LINE_NODE_TYPES.includes(node.type.name)) { scheduleHideHandle(); return }
+  if (!node || !PARAGRAPH_HANDLE_NODE_TYPES.includes(node.type.name)) { scheduleHideHandle(); return }
 
   const domPos = editor.value.view.nodeDOM(resolved.before(1))
   if (!domPos || !(domPos instanceof HTMLElement)) { scheduleHideHandle(); return }
@@ -964,15 +970,55 @@ const handleEditorMouseMove = (event: MouseEvent) => {
     return
   }
 
-  showHandle({ kind: 'line', pos: pos.pos }, domPos)
+  showHandle({ kind: 'paragraph', pos: pos.pos }, domPos)
+}
+
+/** 装订线内：用正文左缘内侧坐标解析同高块；失败则若指针仍在当前手柄竖直范围内则保持 */
+function keepOrResolveHandleInGutter(clientY: number, contentLeft: number): boolean {
+  const ed = editor.value
+  if (!ed || ed.isDestroyed) return false
+
+  const probeX = contentLeft + 4
+  const pos = ed.view.posAtCoords({ left: probeX, top: clientY })
+  if (pos) {
+    const resolved = ed.state.doc.resolve(pos.pos)
+    if (resolved.depth >= 1) {
+      const node = resolved.node(1)
+      if (node && PARAGRAPH_HANDLE_NODE_TYPES.includes(node.type.name)) {
+        const domPos = ed.view.nodeDOM(resolved.before(1))
+        if (domPos instanceof HTMLElement) {
+          const sectionEntryId = tocCollectContext?.value
+            ? resolveFoldSectionEntryIdAtPos(ed.state.doc, pos.pos, tocCollectContext.value)
+            : null
+          if (sectionEntryId) {
+            showHandle({ kind: 'section', entryId: sectionEntryId }, domPos)
+          } else {
+            showHandle({ kind: 'paragraph', pos: pos.pos }, domPos)
+          }
+          return true
+        }
+      }
+    }
+  }
+
+  if (
+    handleVisible.value
+    && hoveredLineEl
+    && clientY >= handleTop.value
+    && clientY <= handleTop.value + handleHeight.value
+  ) {
+    clearHideHandle()
+    return true
+  }
+  return false
 }
 
 function showHandle(target: EditorHandleTarget, anchorEl: HTMLElement) {
-  if (!editor.value || !editorEl.value || !lineGutterActionsEnabled.value) return
+  if (!editor.value || !editorEl.value || !paragraphGutterActionsEnabled.value) return
 
   const wrapperRect = editorEl.value.getBoundingClientRect()
   const gutter = getContentScrollGutterAnchor(editorEl.value)
-  const trigger = gutter ? getHandleTriggerBounds(gutter) : null
+  const trigger = gutter ? getHandleTriggerBounds(gutter, { contentLeft: wrapperRect.left }) : null
   const lineRect = anchorEl.getBoundingClientRect()
 
   handleTarget.value = target
@@ -982,7 +1028,7 @@ function showHandle(target: EditorHandleTarget, anchorEl: HTMLElement) {
   handleTriggerWidth.value = trigger?.width ?? EDITOR_GUTTER_BTN_SIZE
   handleTop.value = lineRect.top
   handleHeight.value = Math.max(EDITOR_GUTTER_BTN_SIZE, lineRect.height)
-  if (target.kind === 'line') {
+  if (target.kind === 'paragraph') {
     hoveredPos.value = target.pos
   } else {
     const resolved = resolveSectionEntry(target.entryId)
@@ -1052,7 +1098,24 @@ const handleDocumentMouseUp = () => {
 
 const handleEditorMouseLeave = (event: MouseEvent) => {
   if (isHandleInteractionTarget(event.relatedTarget)) return
+  // 移向装订线/手柄条时不要立刻隐藏（相关目标可能是 content-scroll 空白）
+  if (editorEl.value && isClientPointInHandleKeepZone(event.clientX, event.clientY)) {
+    clearHideHandle()
+    return
+  }
   scheduleHideHandle()
+}
+
+function isClientPointInHandleKeepZone(clientX: number, clientY: number): boolean {
+  if (!editorEl.value) return false
+  const gutter = getContentScrollGutterAnchor(editorEl.value)
+  if (!gutter) return false
+  const wrapperRect = editorEl.value.getBoundingClientRect()
+  const trigger = getHandleTriggerBounds(gutter, { contentLeft: wrapperRect.left })
+  const vertical = handleVisible.value
+    ? { top: handleTop.value, height: handleHeight.value }
+    : { top: wrapperRect.top, height: wrapperRect.height }
+  return isPointInHandleTriggerZone(clientX, clientY, trigger, vertical)
 }
 
 const handleHandleMenuVisibilityChange = (visible: boolean) => {
@@ -1060,21 +1123,21 @@ const handleHandleMenuVisibilityChange = (visible: boolean) => {
   if (!visible) scheduleHideHandle()
 }
 
-const handleHandleSelect = (key: LineHandleAction) => {
+const handleHandleSelect = (key: EditorHandleAction) => {
   const target = handleTarget.value
   if (!editor.value || !target) return
   runHandleAction(target, key)
   clearHandleState()
 }
 
-function runHandleAction(target: EditorHandleTarget, key: LineHandleAction) {
+function runHandleAction(target: EditorHandleTarget, key: EditorHandleAction) {
   if (target.kind === 'section') {
     runSectionHandleAction(target.entryId, key)
     return
   }
   const resolved = editor.value!.state.doc.resolve(target.pos)
   if (resolved.depth < 1) return
-  runLineHandleAction(key, resolved, target.pos)
+  runParagraphHandleAction(key, resolved, target.pos)
 }
 
 function resolveSectionAtClientY(clientY: number): { entryId: string; anchorEl: HTMLElement } | null {
@@ -1132,7 +1195,7 @@ function onHoverHandleGripEnter() {
     setHoverHighlight({ kind: 'section', entryId: target.entryId })
     return
   }
-  setHoverHighlight({ kind: 'line', pos: target.pos })
+  setHoverHighlight({ kind: 'paragraph', pos: target.pos })
 }
 
 function onHoverHandleGripLeave(event: MouseEvent) {
@@ -1157,12 +1220,36 @@ provide(EDITOR_SECTION_HANDLE_KEY, {
 })
 
 const handleWrapperMouseMove = (event: MouseEvent) => {
-  if (!props.editable || handleMenuVisible.value) return
+  if (!props.editable && !paragraphGutterActionsEnabled.value) return
+  if (handleMenuVisible.value) return
+
   const target = event.target as HTMLElement | null
   const foldBtn = target?.closest('.heading-section-fold-gutter__btn')
-  if (!(foldBtn instanceof HTMLElement)) return
-  const entryId = foldBtn.dataset.entryId
-  if (entryId) handleSectionGutterHover(entryId)
+  if (foldBtn instanceof HTMLElement) {
+    const entryId = foldBtn.dataset.entryId
+    if (entryId) handleSectionGutterHover(entryId)
+    return
+  }
+
+  // 装订线/手柄条在 ProseMirror 外：仍需跟踪，否则移出正文后无法保持段落手柄
+  if (!editorEl.value || !paragraphGutterActionsEnabled.value) return
+  const wrapperRect = editorEl.value.getBoundingClientRect()
+  const gutter = getContentScrollGutterAnchor(editorEl.value)
+  if (!gutter) return
+  const trigger = getHandleTriggerBounds(gutter, { contentLeft: wrapperRect.left })
+  const inTrigger = event.clientX >= trigger.left
+    && event.clientX < Math.max(trigger.right, wrapperRect.left)
+    && event.clientY >= wrapperRect.top
+    && event.clientY <= wrapperRect.bottom
+  if (!inTrigger) return
+
+  const section = resolveSectionAtClientY(event.clientY)
+  if (section) {
+    showHandle({ kind: 'section', entryId: section.entryId }, section.anchorEl)
+    return
+  }
+  if (keepOrResolveHandleInGutter(event.clientY, wrapperRect.left)) return
+  if (handleVisible.value) scheduleHideHandle()
 }
 
 function resolveSectionEntry(entryId: string) {
@@ -1185,7 +1272,7 @@ function getSectionRange(entryId: string): { from: number; to: number } | null {
   return { from: entry.pos, to }
 }
 
-function runLineHandleAction(key: LineHandleAction, resolved: ResolvedPos, cursorPos: number) {
+function runParagraphHandleAction(key: EditorHandleAction, resolved: ResolvedPos, cursorPos: number) {
   if (!editor.value) return
   const { from, to } = getBlockRange(resolved)
 
@@ -1258,7 +1345,7 @@ function runLineHandleAction(key: LineHandleAction, resolved: ResolvedPos, curso
   }
 }
 
-function runSectionHandleAction(entryId: string, key: LineHandleAction) {
+function runSectionHandleAction(entryId: string, key: EditorHandleAction) {
   if (!editor.value) return
 
   if (gutterReadOnly.value && !['add-note', 'create-knowledge-relation', 'mark-excerpt', 'set-basis', 'section-ai-marking'].includes(key)) {
@@ -1385,6 +1472,7 @@ const editor = useEditor({
   extensions: getTuEditorExtensions({
     annotations: flattenedAnnotations.value,
     getAnnotations: () => flattenedAnnotations.value,
+    getAnnotationSideMarkersEnabled: () => props.annotationSideMarkers,
     onAnnotationClick: (payload) => emit('annotation-click', payload),
     onAnnotationsMapped: (annotations) => emit('annotations-mapped', annotations),
     onHeadingSourceClick: (binding, context) => emit('heading-source-click', binding, context),
@@ -1644,8 +1732,21 @@ watch(
     editor.value.view.dispatch(
       editor.value.state.tr.setMeta(annotationDecorationsKey, { annotations }),
     )
+    editor.value.view.dispatch(
+      editor.value.state.tr.setMeta(ANNOTATION_SIDE_MARKERS_META, true),
+    )
   },
   { deep: true },
+)
+
+watch(
+  () => props.annotationSideMarkers,
+  () => {
+    if (!editor.value) return
+    editor.value.view.dispatch(
+      editor.value.state.tr.setMeta(ANNOTATION_SIDE_MARKERS_META, true),
+    )
+  },
 )
 
 watch(
@@ -2182,7 +2283,7 @@ defineExpose({
       :style="handlePositionStyle"
       :menu-min-width="'140px'"
       :menu-gap="4"
-      @select="(key: string) => handleHandleSelect(key as LineHandleAction)"
+      @select="(key: string) => handleHandleSelect(key as EditorHandleAction)"
       @menu-visibility-change="handleHandleMenuVisibilityChange"
       @mouseenter="onHoverHandleEnter"
       @mouseleave="onHoverHandleLeave"
@@ -2425,6 +2526,31 @@ defineExpose({
   color: #fff;
   font-size: 9px;
   font-weight: 700;
+}
+
+.tu-editor-wrapper :deep(.ProseMirror > p) {
+  position: relative;
+}
+
+.tu-editor-wrapper :deep(.annotation-side-marker) {
+  float: right;
+  position: relative;
+  z-index: 2;
+  margin: 0 0 4px 8px;
+  padding: 1px 8px;
+  border: 1px solid #fcd34d;
+  border-radius: 999px;
+  background: #fffbeb;
+  color: #92400e;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.4;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.tu-editor-wrapper :deep(.annotation-side-marker:hover) {
+  background: #fef3c7;
 }
 
 .tu-editor-wrapper :deep(.tu-tiptap-annotation--ai) {
