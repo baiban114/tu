@@ -23,6 +23,10 @@ const props = defineProps({
   maxWidth: { type: Number, default: undefined },
   maxHeight: { type: Number, default: undefined },
   blockTypeLabel: { type: String, default: '' },
+  /** Shown in chrome header; editable when titleEditable is true. */
+  title: { type: String, default: '' },
+  titleEditable: { type: Boolean, default: false },
+  titlePlaceholder: { type: String, default: '未命名' },
   blockId: { type: String, default: '' },
   blockType: { type: String, default: '' },
   compoundBadges: { type: Object as () => CompoundBadge[], default: () => [] },
@@ -37,6 +41,7 @@ const props = defineProps({
 const emit = defineEmits<{
   resize: [width: number | null, height: number | null]
   'compound-badge-click': [blockId: string, annotationId: string, event: MouseEvent]
+  'title-change': [title: string]
 }>()
 
 const wrapper = ref<HTMLElement | null>(null)
@@ -192,13 +197,17 @@ onBeforeUnmount(() => {
     @mouseleave="onWrapperMouseLeave"
   >
     <TuBlockChromeHeader
-      v-if="blockTypeLabel"
+      v-if="blockTypeLabel || title || titleEditable"
       :type-label="blockTypeLabel"
+      :title="title"
+      :title-editable="titleEditable"
+      :title-placeholder="titlePlaceholder"
       :compound-badges="compoundBadges"
       drag-handle
       @mouseenter="onChromeMouseEnter"
       @mouseleave="onChromeMouseLeave"
       @compound-badge-click="(annotationId, event) => emit('compound-badge-click', blockId, annotationId, event)"
+      @title-change="emit('title-change', $event)"
     />
 
     <div

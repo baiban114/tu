@@ -30,24 +30,47 @@ describe('pageTocPreferences', () => {
     savePageTocPreferences('page-1', {
       expandedNodeIds: ['local:h1', 'ref-group-r1'],
       panelOpen: false,
+      focusFollow: true,
     });
     savePageTocPreferences('page-2', {
       expandedNodeIds: ['local:h2'],
       panelOpen: true,
+      focusFollow: true,
     });
 
     expect(loadPageTocPreferences('page-1')).toEqual({
       expandedNodeIds: ['local:h1', 'ref-group-r1'],
       panelOpen: false,
+      focusFollow: true,
     });
     expect(loadPageTocPreferences('page-2')).toEqual({
       expandedNodeIds: ['local:h2'],
       panelOpen: true,
+      focusFollow: true,
     });
     expect(loadPageTocPreferences('missing')).toEqual({
       expandedNodeIds: [],
       panelOpen: true,
+      focusFollow: true,
     });
+  });
+
+  it('persists focusFollow off and treats it as non-default', () => {
+    const localStorage = createLocalStorageMock();
+    vi.stubGlobal('window', { localStorage });
+
+    savePageTocPreferences('page-1', {
+      expandedNodeIds: [],
+      panelOpen: true,
+      focusFollow: false,
+    });
+
+    expect(loadPageTocPreferences('page-1')).toEqual({
+      expandedNodeIds: [],
+      panelOpen: true,
+      focusFollow: false,
+    });
+    expect(localStorage.getItem('tu:page-toc-prefs')).toBeTruthy();
   });
 
   it('removes default preferences for a page', () => {
@@ -57,15 +80,18 @@ describe('pageTocPreferences', () => {
     savePageTocPreferences('page-1', {
       expandedNodeIds: ['a'],
       panelOpen: false,
+      focusFollow: false,
     });
     savePageTocPreferences('page-1', {
       expandedNodeIds: [],
       panelOpen: true,
+      focusFollow: true,
     });
 
     expect(loadPageTocPreferences('page-1')).toEqual({
       expandedNodeIds: [],
       panelOpen: true,
+      focusFollow: true,
     });
     expect(localStorage.getItem('tu:page-toc-prefs')).toBeNull();
   });

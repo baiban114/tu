@@ -14,6 +14,10 @@ public class FileStorageProperties {
     private boolean s3PathStyle = true;
     private long maxFileSize = 20L * 1024 * 1024;
     private long maxPdfFileSize = 200L * 1024 * 1024;
+    /** Files at or above this size use S3 multipart + resumable client. */
+    private long multipartThresholdBytes = 8L * 1024 * 1024;
+    /** Chunk size for multipart uploads (must be >= 5 MiB for non-final parts). */
+    private long multipartChunkSizeBytes = 8L * 1024 * 1024;
 
     public boolean isEnabled() {
         return enabled;
@@ -85,5 +89,21 @@ public class FileStorageProperties {
 
     public void setMaxPdfFileSize(long maxPdfFileSize) {
         this.maxPdfFileSize = maxPdfFileSize;
+    }
+
+    public long getMultipartThresholdBytes() {
+        return multipartThresholdBytes;
+    }
+
+    public void setMultipartThresholdBytes(long multipartThresholdBytes) {
+        this.multipartThresholdBytes = multipartThresholdBytes;
+    }
+
+    public long getMultipartChunkSizeBytes() {
+        return multipartChunkSizeBytes;
+    }
+
+    public void setMultipartChunkSizeBytes(long multipartChunkSizeBytes) {
+        this.multipartChunkSizeBytes = multipartChunkSizeBytes;
     }
 }

@@ -2,6 +2,7 @@
 import { ref, reactive, watch, computed, onMounted, onBeforeUnmount, nextTick, provide } from 'vue'
 import { useRouter } from 'vue-router'
 import type { Block, BlockTag, EmbeddedObject, ExternalResourceEmbedData, HeadingSourceBinding, PageContent, TextAnnotation, TextTagSpan, SpannedBlockInfo } from '@/api/types'
+import type { CompareSide } from '@/utils/compareBlock'
 import type { JSONContent } from '@tiptap/core'
 import { tipTapToBlocks } from '@/editor/converters'
 import { resolvePageDocument, toV2PageContent } from '@/editor/pageDocument'
@@ -11,7 +12,7 @@ import SelectionToolbar from './SelectionToolbar.vue'
 import type { ReuseMarkOffer } from './SelectionToolbar.vue'
 import UrlHoverToolbar from './UrlHoverToolbar.vue'
 import BlockPicker from './BlockPicker.vue'
-import ExternalResourcePicker from './ExternalResourcePicker.vue'
+import ExternalResourcePicker, { type ExternalResourcePickerSelection } from './ExternalResourcePicker.vue'
 import PdfExcerptPicker, { type PdfExcerptPickerMode, type PdfExcerptSelection } from './PdfExcerptPicker.vue'
 import BlockMetadataTagEditor from './BlockMetadataTagEditor.vue'
 import PageTagsBar from './PageTagsBar.vue'
@@ -29,7 +30,6 @@ import {
   canAutoMarkFromInProgress,
   clearLearningInProgress,
   formatLearningInProgressLabel,
-  formatLearningInProgressMarkAsLabel,
   learningInProgressToBinding,
   loadLearningInProgress,
   saveLearningInProgress,
@@ -42,6 +42,7 @@ import {
   loadPageTocPreferences,
   savePageTocPreferences,
 } from '@/utils/pageTocPreferences'
+import { collectTocFocusExpandKeys, findActiveFlatTocEntry } from '@/utils/toc/tocFocus'
 import { useAnchoredFloating, type FloatingAnchorRect } from '@/composables/useAnchoredFloating'
 import { useViewportClampedFixedPanel } from '@/utils/viewportPanel'
 import { blockSyncManager } from '@/utils/blockSyncManager'
@@ -144,7 +145,7 @@ import {
 import type { Editor } from '@tiptap/vue-3'
 
 type TocItem = TocTreeItem
-const NODEVIEW_TYPES = ['x6Block', 'tableBlock', 'multiTableBlock', 'timelineBlock', 'spacerBlock', 'refBlock', 'externalResourceBlock', 'pdfExcerptBlock']
+const NODEVIEW_TYPES = ['x6Block', 'tableBlock', 'multiTableBlock', 'timelineBlock', 'spacerBlock', 'refBlock', 'externalResourceBlock', 'pdfExcerptBlock', 'compareBlock']
 
 const nodeViewToolbar = reactive({
   visible: false,
@@ -425,6 +426,7 @@ const tuEditorRef = ref<InstanceType<typeof TuEditor> | null>(null)
 const showBlockPicker = ref(false)
 const showResourcePicker = ref(false)
 const showPdfExcerptPicker = ref(false)
+const pendingCompareBind = ref<{ blockId: string; side: CompareSide } | null>(null)
 const pdfExcerptPickerMode = ref<PdfExcerptPickerMode>('insert')
 const pdfExcerptEditBlockId = ref('')
 const pdfExcerptPickerInitial = ref<PdfExcerptSelection | null>(null)
@@ -444,7 +446,11 @@ const resourcePickerMode = ref<'insert' | 'markExcerpt' | 'bindSource' | 'setBas
 const pendingResourceExcerptText = ref('')
 const pendingResourceExcerptTitle = ref('')
 const highlightedBlockId = ref<string | null>(null)
+const focusedTocItemId = ref<string | null>(null)
 const tocExpanded = ref(true)
+const tocFocusFollow = ref(true)
+const tocListRef = ref<HTMLElement | null>(null)
+let tocFlashTimer: ReturnType<typeof setTimeout> | null = null
 
 // TOC / tags: derive legacy Block[] from document for compatibility
 const localBlocks = computed<Block[]>(() => {
@@ -1007,10 +1013,59 @@ const handleOpenBlockPicker = () => {
 }
 
 const handleOpenResourcePicker = () => {
+  pendingCompareBind.value = null
   resourcePickerMode.value = 'insert'
   pendingResourceExcerptText.value = ''
   pendingResourceExcerptTitle.value = ''
   showResourcePicker.value = true
+}
+
+const handleBindCompareSide = (payload: { blockId: string; side: CompareSide }) => {
+  if (!payload.blockId) return
+  pendingCompareBind.value = { blockId: payload.blockId, side: payload.side }
+  resourcePickerMode.value = 'insert'
+  pendingResourceExcerptText.value = ''
+  pendingResourceExcerptTitle.value = ''
+  showResourcePicker.value = true
+}
+
+const handleResourcePickerSelect = (selection: ExternalResourcePickerSelection) => {
+  const pending = pendingCompareBind.value
+  if (pending) {
+    tuEditorRef.value?.updateCompareBlockSide?.(
+      pending.blockId,
+      pending.side,
+      selection.externalResource,
+    )
+    pendingCompareBind.value = null
+    showResourcePicker.value = false
+    return
+  }
+
+  if (selection.insertKind === 'pdf' && selection.pdf) {
+    const inserted = tuEditorRef.value?.insertPdfExcerptUsingExternalResourcePending?.(selection.pdf)
+    if (!inserted) return
+    showToast(`已插入 PDF：${selection.pdf.fileName}`)
+    showResourcePicker.value = false
+    return
+  }
+
+  if (selection.insertKind === 'image' && selection.imageSrc) {
+    const inserted = tuEditorRef.value?.insertImageUsingExternalResourcePending?.(selection.imageSrc)
+    if (!inserted) return
+    showToast(`已插入图片：${selection.title}`)
+    showResourcePicker.value = false
+    return
+  }
+
+  const block: Block = {
+    id: 'external-resource-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8),
+    type: 'externalResource',
+    title: selection.title,
+    externalResource: selection.externalResource,
+  }
+  tuEditorRef.value?.completePendingExternalResourceInsert?.(block)
+  showResourcePicker.value = false
 }
 
 const handleOpenPdfExcerptPicker = () => {
@@ -1078,17 +1133,6 @@ const handleBlockPickerSelect = (target: { type: 'block' | 'page'; id: string })
   showBlockPicker.value = false
 }
 
-const handleResourcePickerSelect = (selection: { title: string; externalResource: ExternalResourceEmbedData }) => {
-  const block: Block = {
-    id: 'external-resource-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8),
-    type: 'externalResource',
-    title: selection.title,
-    externalResource: selection.externalResource,
-  }
-  tuEditorRef.value?.completePendingExternalResourceInsert?.(block)
-  showResourcePicker.value = false
-}
-
 const normalizeResourceExcerptSelectionText = (value: string): string => {
   let text = value.trim()
   const wrappedQuote = text.match(/^\{>\s*([\s\S]*?)\s*\}$/)
@@ -1108,6 +1152,26 @@ const buildResourceExcerptTitle = (text: string, pos?: number): string => {
     return resolveExcerptDefaultTitle(editor.state.doc, pos, text)
   }
   return excerptTitleFromText(text)
+}
+
+/** Display / snapshot title at mark position: nearest preceding heading, else first line. */
+function resolveMarkAsTitleAtPos(pos: number | undefined, text: string): string {
+  return buildResourceExcerptTitle(text, pos)
+}
+
+function withMarkAsTitleAtPos(
+  binding: HeadingSourceBinding,
+  pos: number | undefined,
+  text: string,
+): HeadingSourceBinding {
+  const excerptTitle = resolveMarkAsTitleAtPos(pos, text)
+  return {
+    ...binding,
+    snapshot: {
+      ...binding.snapshot,
+      excerptTitle,
+    },
+  }
 }
 
 const handleMarkResourceExcerptFromSelection = () => {
@@ -1348,18 +1412,14 @@ function dismissReuseMarkOffer() {
   reuseMarkBinding.value = null
 }
 
-function presentReuseMarkOffer(binding: HeadingSourceBinding) {
+function presentReuseMarkOffer(binding: HeadingSourceBinding, markAsLabel: string) {
   if (!props.editable || selectionToolbarSuppressed.value) return
   if (!canMarkResourceExcerptFromSelection.value) return
+  if (!markAsLabel.trim()) return
   reuseMarkToken += 1
   reuseMarkBinding.value = binding
   reuseMarkOffer.value = {
-    label: formatLearningInProgressMarkAsLabel({
-      resourceItemId: binding.resourceItemId,
-      resourceExcerptId: binding.resourceExcerptId ?? null,
-      snapshot: binding.snapshot,
-      updatedAt: Date.now(),
-    }),
+    label: markAsLabel.trim(),
     durationMs: REUSE_MARK_DURATION_MS,
     token: reuseMarkToken,
   }
@@ -1417,13 +1477,14 @@ function scheduleReuseMarkOfferForRange(
 ) {
   const text = editor.state.doc.textBetween(range.from, range.to, '\n').trim()
   if (!text) return
+  const markAsLabel = resolveExcerptDefaultTitle(editor.state.doc, range.from, text)
   nextTick(() => {
     if (!props.editable || selectionToolbarSuppressed.value) return
     const live = tuEditorRef.value?.editor
     if (!live || live.isDestroyed) return
     live.chain().focus().setTextSelection({ from: range.from, to: range.to }).run()
     nextTick(() => {
-      presentReuseMarkOffer(binding)
+      presentReuseMarkOffer(binding, markAsLabel)
     })
   })
 }
@@ -1666,7 +1727,7 @@ function handleConfirmReuseMark() {
     spannedBlockIds: [promoted.blockId],
     spannedBlockMetadata: [],
   }
-  saveMarkExcerptAnnotation(binding)
+  saveMarkExcerptAnnotation(withMarkAsTitleAtPos(binding, promoted.from, excerptText))
 }
 
 function handleDismissReuseMark() {
@@ -1709,10 +1770,13 @@ watch(selectionToolbarSuppressed, (suppressed) => {
 })
 
 const handleResourceExcerptCreated = (payload: { item: ResourceItem; excerpt: ResourceExcerpt }) => {
-  const hadTarget = !!pendingMarkExcerptTarget.value
+  const target = pendingMarkExcerptTarget.value
+  const hadTarget = !!target
   const binding = buildExcerptBinding(payload.item, payload.excerpt)
   if (hadTarget) {
-    saveMarkExcerptAnnotation(binding)
+    const markPos = target?.from
+    const markText = target?.selectedText || payload.excerpt.excerptText || payload.excerpt.title || ''
+    saveMarkExcerptAnnotation(withMarkAsTitleAtPos(binding, markPos, markText))
   } else {
     showToast(`已创建外部资源节选：${payload.excerpt.title}`)
   }
@@ -1805,6 +1869,134 @@ const handleNavigateSourceFromPopover = () => {
   if (!binding) return
   closeNotePopover()
   navigateToHeadingSource(binding)
+}
+
+const sameExcerptBasis = (a: HeadingSourceBinding, b: HeadingSourceBinding) =>
+  a.resourceItemId === b.resourceItemId && a.resourceExcerptId === b.resourceExcerptId
+
+const findBlockquoteRangeByBlockId = (blockId: string): { from: number; to: number } | null => {
+  const editor = tuEditorRef.value?.editor
+  if (!editor || !blockId) return null
+  let range: { from: number; to: number } | null = null
+  editor.state.doc.descendants((node, pos) => {
+    if (node.type.name === 'blockquote' && node.attrs.blockId === blockId) {
+      range = { from: pos + 1, to: pos + node.nodeSize - 1 }
+      return false
+    }
+    return true
+  })
+  return range
+}
+
+const excerptAnnotationBelongsToBlockquote = (
+  annotation: TextAnnotation,
+  blockId: string,
+  range: { from: number; to: number } | null,
+) => {
+  if (annotation.kind !== 'excerpt') return false
+  if (annotation.spannedBlockIds?.includes(blockId)) return true
+  if (
+    range
+    && typeof annotation.from === 'number'
+    && typeof annotation.to === 'number'
+    && annotation.from >= range.from
+    && annotation.to <= range.to
+  ) {
+    return true
+  }
+  return false
+}
+
+const removeExcerptAnnotationsForBlockquote = (blockId: string, binding: HeadingSourceBinding) => {
+  const range = findBlockquoteRangeByBlockId(blockId)
+  localAnnotations.value = localAnnotations.value.filter((item) => {
+    if (item.kind !== 'excerpt' || !item.basisBinding) return true
+    if (!sameExcerptBasis(item.basisBinding, binding)) return true
+    return !excerptAnnotationBelongsToBlockquote(item, blockId, range)
+  })
+}
+
+const clearBlockquoteBindingForExcerptAnnotation = (annotation: TextAnnotation) => {
+  if (annotation.kind !== 'excerpt' || !annotation.basisBinding) return
+  const binding = annotation.basisBinding
+  const editor = tuEditorRef.value?.editor
+  if (!editor) return
+
+  const candidateIds = new Set<string>(annotation.spannedBlockIds ?? [])
+  if (typeof annotation.from === 'number' && typeof annotation.to === 'number') {
+    editor.state.doc.descendants((node, pos) => {
+      if (node.type.name !== 'blockquote') return true
+      const innerFrom = pos + 1
+      const innerTo = pos + node.nodeSize - 1
+      if (annotation.from! >= innerFrom && annotation.to! <= innerTo && node.attrs.blockId) {
+        candidateIds.add(String(node.attrs.blockId))
+        return false
+      }
+      return true
+    })
+  }
+
+  for (const blockId of candidateIds) {
+    const nodeBinding = (() => {
+      let found: HeadingSourceBinding | null = null
+      editor.state.doc.descendants((node) => {
+        if (node.type.name === 'blockquote' && node.attrs.blockId === blockId) {
+          found = (node.attrs.excerptBinding as HeadingSourceBinding | null) ?? null
+          return false
+        }
+        return true
+      })
+      return found
+    })()
+    if (!nodeBinding || !sameExcerptBasis(nodeBinding, binding)) continue
+    tuEditorRef.value?.clearBlockquoteExcerptBindingByBlockId?.(blockId)
+  }
+}
+
+const handleClearSourceFromPopover = () => {
+  const binding = notePopoverSourceBinding.value
+  const anchor = notePopoverRelationAnchor.value
+  if (!binding || !anchor) return
+
+  if (anchor.kind === 'heading') {
+    const blockId = anchor.locator.match(/:heading:([^:]+)$/)?.[1]
+    if (!blockId) return
+    if (!tuEditorRef.value?.clearHeadingSourceBindingByBlockId?.(blockId)) return
+    tuEditorRef.value?.flushContentChange?.()
+    emitLocalContentChange()
+    notePopoverSourceBinding.value = null
+    notePopoverHeadingTitle.value = ''
+    if (notePopoverAnnotations.value.length > 0) {
+      notePopoverVisible.value = true
+    } else {
+      closeNotePopover()
+    }
+    showToast('已解除标题来源')
+    return
+  }
+
+  if (anchor.kind === 'block') {
+    const blockId = String(anchor.snapshot?.blockId || anchor.locator.match(/:block:([^:]+)/)?.[1] || '')
+    if (!blockId) return
+    if (!tuEditorRef.value?.clearBlockquoteExcerptBindingByBlockId?.(blockId)) return
+    removeExcerptAnnotationsForBlockquote(blockId, binding)
+    tuEditorRef.value?.flushContentChange?.()
+    emitLocalContentChange()
+    notePopoverSourceBinding.value = null
+    notePopoverHeadingTitle.value = ''
+    notePopoverAnnotations.value = notePopoverAnnotations.value.filter((item) => {
+      if (item.kind !== 'excerpt' || !item.basisBinding) return true
+      if (!sameExcerptBasis(item.basisBinding, binding)) return true
+      return !excerptAnnotationBelongsToBlockquote(item, blockId, findBlockquoteRangeByBlockId(blockId))
+    })
+    notePopoverAnnotation.value = notePopoverAnnotations.value[0] ?? null
+    if (notePopoverAnnotations.value.length > 0) {
+      notePopoverVisible.value = true
+    } else {
+      closeNotePopover()
+    }
+    showToast('已取消节选标记')
+  }
 }
 
 const handleCreateKnowledgeRelationFromSelection = () => {
@@ -2025,6 +2217,7 @@ const handleResourcePickerVisibleChange = (visible: boolean) => {
     pendingResourceExcerptText.value = ''
     pendingResourceExcerptTitle.value = ''
     pendingBasisTarget.value = null
+    pendingCompareBind.value = null
   }
 }
 
@@ -2042,20 +2235,28 @@ function persistPageTocPrefs() {
   const pageId = workspaceStore.currentPageId
   if (!tocPrefsReady.value || !pageId) return
   savePageTocPreferences(pageId, {
-    expandedNodeIds: [...tocExpand.expanded.value],
+    expandedNodeIds: tocFocusFollow.value ? [] : [...tocExpand.expanded.value],
     panelOpen: tocExpanded.value,
+    focusFollow: tocFocusFollow.value,
   })
 }
 
 function loadTocPrefsForPage(pageId: string | null) {
   tocPrefsReady.value = false
+  focusedTocItemId.value = null
   if (!pageId) {
     tocExpand.collapseAll()
     tocExpanded.value = true
+    tocFocusFollow.value = true
     return
   }
   const prefs = loadPageTocPreferences(pageId)
-  tocExpand.expandAll(prefs.expandedNodeIds)
+  tocFocusFollow.value = prefs.focusFollow
+  if (prefs.focusFollow) {
+    tocExpand.collapseAll()
+  } else {
+    tocExpand.expandAll(prefs.expandedNodeIds)
+  }
   tocExpanded.value = prefs.panelOpen
   tocPrefsReady.value = true
 }
@@ -2080,16 +2281,21 @@ const allTocItemsExpanded = computed(() => {
 const toggleAllTocItems = () => {
   const ids = allExpandableTocIds.value
   if (ids.length === 0) return
+  if (tocFocusFollow.value) {
+    tocFocusFollow.value = false
+  }
   if (allTocItemsExpanded.value) tocExpand.collapseAll()
   else tocExpand.expandAll(ids)
   persistPageTocPrefs()
 }
 
 const toggleTocItem = (item: TocItem) => {
-  if (item.children?.length) {
-    tocExpand.toggle(getTocExpandKey(item))
-    persistPageTocPrefs()
+  if (!item.children?.length) return
+  if (tocFocusFollow.value) {
+    tocFocusFollow.value = false
   }
+  tocExpand.toggle(getTocExpandKey(item))
+  persistPageTocPrefs()
 }
 
 const isTocItemExpanded = (item: TocItem): boolean => {
@@ -2099,6 +2305,66 @@ const isTocItemExpanded = (item: TocItem): boolean => {
 function setTocPanelOpen(open: boolean) {
   tocExpanded.value = open
   persistPageTocPrefs()
+}
+
+function setTocFocusFollow(enabled: boolean) {
+  tocFocusFollow.value = enabled
+  if (!enabled) {
+    focusedTocItemId.value = null
+  }
+  persistPageTocPrefs()
+  if (enabled) syncTocFocusFollow()
+}
+
+function scrollTocItemIntoView(itemId: string) {
+  const list = tocListRef.value
+  if (!list) return
+  const el = list.querySelector<HTMLElement>(`[data-toc-item-id="${CSS.escape(itemId)}"]`)
+  if (!el) return
+  const listRect = list.getBoundingClientRect()
+  const elRect = el.getBoundingClientRect()
+  if (elRect.top >= listRect.top && elRect.bottom <= listRect.bottom) return
+  el.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+}
+
+function syncTocFocusFollow() {
+  if (!tocFocusFollow.value || !tocExpanded.value || !tocPrefsReady.value) return
+  const editor = tuEditorRef.value?.editor
+  if (!editor) return
+
+  const flat = collectFlatTocEntries(editor.state.doc, tocCollectContext.value)
+  if (flat.length === 0) {
+    focusedTocItemId.value = null
+    return
+  }
+
+  const cursorPos = selectionFrom.value || editor.state.selection.from
+  const active = findActiveFlatTocEntry(flat, cursorPos)
+  if (!active) {
+    focusedTocItemId.value = null
+    return
+  }
+
+  const expandKeys = collectTocFocusExpandKeys(tocItems.value, active.id, getTocExpandKey)
+  if (!expandKeys) {
+    focusedTocItemId.value = null
+    return
+  }
+
+  const prevId = focusedTocItemId.value
+  const prevExpanded = tocExpand.expanded.value
+  const sameExpand =
+    expandKeys.length === prevExpanded.size
+    && expandKeys.every((key) => prevExpanded.has(key))
+
+  focusedTocItemId.value = active.id
+  if (!sameExpand) {
+    tocExpand.expandAll(expandKeys)
+  }
+
+  if (prevId !== active.id || !sameExpand) {
+    void nextTick(() => scrollTocItemIntoView(active.id))
+  }
 }
 
 /** Walk workspace page tree to find a page title by pageId. */
@@ -2176,6 +2442,21 @@ const tocItems = computed<TocItem[]>(() => {
   if (flat.length === 0) return []
   return buildHeadingTree(flat)
 })
+
+watch(
+  [
+    tocFocusFollow,
+    tocExpanded,
+    selectionFrom,
+    selectionStateVersion,
+    tocItems,
+  ],
+  () => {
+    if (!tocFocusFollow.value) return
+    syncTocFocusFollow()
+  },
+  { flush: 'post' },
+)
 
 const getEditorScrollContainer = (): HTMLElement | Window => {
   const editorDom = tuEditorRef.value?.editor?.view.dom
@@ -2352,8 +2633,16 @@ const handleTocItemClick = (item: TocItem) => {
     const targetEl = findTocTargetElement(item)
     if (targetEl) scrollElementIntoEditorView(targetEl)
     else editor.commands.scrollIntoView()
-    highlightedBlockId.value = item.blockId
-    setTimeout(() => { highlightedBlockId.value = null }, 2000)
+    if (tocFocusFollow.value) {
+      focusedTocItemId.value = item.id
+    } else {
+      if (tocFlashTimer) clearTimeout(tocFlashTimer)
+      highlightedBlockId.value = item.blockId
+      tocFlashTimer = setTimeout(() => {
+        if (highlightedBlockId.value === item.blockId) highlightedBlockId.value = null
+        tocFlashTimer = null
+      }, 2000)
+    }
   } catch {
     // Position may be stale after editor rebuild; ignore silently
   }
@@ -3516,13 +3805,21 @@ const handleDeleteAnnotation = (annotation?: TextAnnotation) => {
   const target = annotation ?? notePopoverAnnotation.value
   if (!target) return
 
+  if (target.kind === 'excerpt') {
+    clearBlockquoteBindingForExcerptAnnotation(target)
+  }
+
   localAnnotations.value = localAnnotations.value.filter(a => a.id !== target.id)
   emitLocalContentChange()
 
   notePopoverAnnotations.value = notePopoverAnnotations.value.filter(item => item.id !== target.id)
   notePopoverAnnotation.value = notePopoverAnnotations.value[0] ?? null
-  notePopoverVisible.value = notePopoverAnnotations.value.length > 0
-  if (!notePopoverVisible.value) notePopoverAnchor.value = null
+  const keepOpen = notePopoverAnnotations.value.length > 0 || !!notePopoverSourceBinding.value
+  notePopoverVisible.value = keepOpen
+  if (!notePopoverVisible.value) {
+    notePopoverAnchor.value = null
+    notePopoverRelationAnchor.value = null
+  }
 }
 
 // --- Paste URL detection ---
@@ -3752,6 +4049,7 @@ onBeforeUnmount(() => {
           @open-resource-picker="handleOpenResourcePicker"
           @open-pdf-excerpt-picker="handleOpenPdfExcerptPicker"
           @edit-pdf-excerpt-source="handleEditPdfExcerptSource"
+          @bind-compare-side="handleBindCompareSide"
           @open-tag-editor="handleOpenTagEditor"
           @block-click="handleBlockClick"
           @mark-block-excerpt="handleMarkBlockExcerpt"
@@ -3789,8 +4087,18 @@ onBeforeUnmount(() => {
             <span class="page-toc__title">目录</span>
             <span class="page-toc__toggle">收起</span>
           </button>
-          <div v-if="tocExpanded && allExpandableTocIds.length > 0" class="page-toc__actions">
+          <div v-if="tocExpanded" class="page-toc__actions">
             <button
+              type="button"
+              class="page-toc__action-btn"
+              :class="{ 'page-toc__action-btn--active': tocFocusFollow }"
+              :title="tocFocusFollow ? '关闭聚焦：目录不再跟随光标' : '开启聚焦：目录跟随当前标题展开并滚动'"
+              @click="setTocFocusFollow(!tocFocusFollow)"
+            >
+              聚焦
+            </button>
+            <button
+              v-if="allExpandableTocIds.length > 0"
               type="button"
               class="page-toc__action-btn"
               @click="toggleAllTocItems"
@@ -3798,10 +4106,11 @@ onBeforeUnmount(() => {
               {{ allTocItemsExpanded ? '全部收起' : '全部展开' }}
             </button>
           </div>
-          <div v-show="tocExpanded" class="page-toc__list">
+          <div v-show="tocExpanded" ref="tocListRef" class="page-toc__list">
             <TocTreeList
               :items="tocItems"
               :highlighted-block-id="highlightedBlockId"
+              :highlighted-item-id="focusedTocItemId"
               :section-tags-by-item-id="sectionTagsByItemId"
               :is-expanded="isTocItemExpanded"
               @click="handleTocItemClick"
@@ -4045,6 +4354,7 @@ onBeforeUnmount(() => {
       @delete="handleDeleteAnnotation"
       @navigate-basis="handleNavigateBasisFromPopover"
       @navigate-source="handleNavigateSourceFromPopover"
+      @clear-source="handleClearSourceFromPopover"
       @promote-to-user="handlePromoteAnnotationToUser"
       @promote-source-to-user="promoteHeadingSourceToUser"
       @close="closeNotePopover"
@@ -4377,22 +4687,31 @@ onBeforeUnmount(() => {
 .page-toc__actions {
   display: flex;
   justify-content: flex-end;
+  align-items: center;
+  gap: 4px;
   padding: 2px 8px 0;
 }
 
 .page-toc__action-btn {
   border: 0;
   background: transparent;
-  color: #1677ff;
+  color: #6b7280;
   font-size: 11px;
   cursor: pointer;
   padding: 2px 6px;
   border-radius: 4px;
-  transition: background 0.15s;
+  transition: background 0.15s, color 0.15s;
 }
 
 .page-toc__action-btn:hover {
+  color: #1677ff;
   background: rgba(22, 119, 255, 0.08);
+}
+
+.page-toc__action-btn--active {
+  color: #1677ff;
+  background: rgba(22, 119, 255, 0.12);
+  font-weight: 600;
 }
 
 .page-toc__list {

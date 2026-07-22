@@ -1275,7 +1275,7 @@ function collapseAllTree() {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 10px 12px 6px;
+  padding: 8px 12px;
   flex-shrink: 0;
 }
 
@@ -1381,11 +1381,11 @@ function collapseAllTree() {
   flex: 1;
   min-height: 0;
   height: 0;
-  padding: 0 4px 8px;
 }
 
-.page-tree-scroll :deep(.el-scrollbar) {
-  height: 100%;
+.page-tree-scroll :deep(.el-scrollbar__view) {
+  box-sizing: border-box;
+  padding: 8px 4px;
 }
 
 .page-tree {

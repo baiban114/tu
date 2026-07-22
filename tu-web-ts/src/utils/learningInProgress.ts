@@ -94,8 +94,8 @@ export function formatLearningInProgressLabel(target: LearningInProgress): strin
 }
 
 /**
- * Auto-mark prompt label — same judgment as mark-excerpt toast:
- * excerpt title first, then resource title.
+ * Fallback label from a stored binding snapshot (not current caret position).
+ * Prefer {@link resolveExcerptDefaultTitle} at the mark position when a doc is available.
  */
 export function formatLearningInProgressMarkAsLabel(target: LearningInProgress | HeadingSourceBinding): string {
   const snapshot = 'snapshot' in target ? target.snapshot : null

@@ -7,6 +7,7 @@ import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.multipart.MaxUploadSizeExceededException;
 
 @RestControllerAdvice
 public class GlobalExceptionHandler {
@@ -17,6 +18,12 @@ public class GlobalExceptionHandler {
     public ApiResponse<Void> handleBusinessException(BusinessException ex) {
         log.warn("business exception: code={}, message={}", ex.getCode(), ex.getMessage(), ex);
         return ApiResponse.failure(ex.getCode(), ex.getMessage());
+    }
+
+    @ExceptionHandler(MaxUploadSizeExceededException.class)
+    public ApiResponse<Void> handleMaxUploadSizeExceeded(MaxUploadSizeExceededException ex) {
+        log.warn("upload size exceeded: {}", ex.getMessage(), ex);
+        return ApiResponse.failure(40000, "upload file too large");
     }
 
     @ExceptionHandler({

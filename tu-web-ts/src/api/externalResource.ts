@@ -80,6 +80,8 @@ export interface ResourceItem {
   title: string;
   identityValue?: string | null;
   sourceUrl?: string;
+  /** In-site access URLs (uploaded files or platform-reachable resources). Distinct from sourceUrl (origin). */
+  accessUrls?: string[];
   edition?: string;
   note?: string;
   titleSource?: FieldSource;

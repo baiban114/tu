@@ -161,7 +161,7 @@ export interface FlatTreeNode<TMeta = unknown> {
 
 - `workspace.ts` 内 `flattenPages` / `findPageTitle` 的 walk
 - `BlockPicker.vue` 内 `flattenPages`
-- 资源合并归类等处的列表展示（可选改为树选择）
+- 资源关联归类等处的列表展示（可选改为树选择）
 
 ---
 
@@ -207,6 +207,7 @@ ResourceType (根下第一层，或虚拟根「外部资源」)
 - 节点 `id` 建议加前缀避免冲突：`rt:`, `rw:`, `ri:`, `rc:`, `re:`；未归类节选容器为 `re-unassigned:{itemId}`。
 - `label`：实体 `title`；归类可附 `clusterKey` 缩写；章节可附 `locator`。
 - 图书章节挂在 **ResourceItem** 级；节选 `chapterId` 可选，未关联时归入「未归类节选」或（无章节时）直接挂在实体下。
+- 章节弹窗支持「从资源判断」：访问地址仅用于打开资源；图书站内 PDF 从书签/目录读取结构，可点选填入或导入为章节树。
 - 节选支持同实体内 `parentId` 无限嵌套（与章节树同模式）；删除父节选时子节点提升到原父级。
 - 不在 v1 展示 `ResourceItemRelation` 边（属图结构，可后续用「关系」面板）。
 
@@ -253,7 +254,7 @@ toggle: (node: TreeNode, expanded: boolean) => void
 |------|------|
 | 页面目录（拖拽、右键、重命名） | **保留** `LeftPanel` 现有 `el-tree` |
 | 知识点软分类（拖拽、右键、重命名） | **`KnowledgePointTree`**（`el-tree`，管理 + 关联弹窗） |
-| 资源管理浏览、合并归类目标选择、设置页预览 | **新建** `TreeListPanel` |
+| 资源管理浏览、关联归类目标选择、设置页预览 | **新建** `TreeListPanel` |
 | TOC 侧栏 | v2 评估是否替换为 `TreeListPanel`（需保留 scroll-to-pos） |
 
 ---
@@ -263,10 +264,10 @@ toggle: (node: TreeNode, expanded: boolean) => void
 ### 9.1 资源管理 [`ResourceManagerView.vue`](../src/views/ResourceManagerView.vue)
 
 - 左侧（或 Tab 内）增加「树形浏览」：`resourcesToTreeNodes` + `TreeListPanel`。
-- **资源实体表**：支持节选的实体行可树形展开，懒加载并以表格子行展示 `parentId` 嵌套节选；子行可编辑排序数字、拖拽调整同级顺序/父子层级，以及编辑/添加子节选/删除。
+- **资源实体表**：整页列表；「新增实体 / 编辑」走弹窗表单（与节选弹窗同风格）。支持节选的实体行可树形展开，懒加载并以表格子行展示 `parentId` 嵌套节选；子行可编辑排序数字、拖拽调整同级顺序/父子层级，以及编辑/添加子节选/删除。
 - **节选弹窗**：`ElTree` 可拖拽调整层级与顺序；表单「排序」字段可手工编辑。
 - 选中节点：根据 `meta.layer` 切换 Tab 并定位实体（类型 / 归类 / 实体 / 节选）。
-- 「合并归类」对话框：列表已改为表格单选；可 **v1.1** 升级为 `TreeListPanel` 按归类分支选择。
+- 「关联归类」对话框：可选关联到已有归类，或新建独立归类；列表可 **v1.1** 升级为按归类分支的树选择体验 polish。
 
 ### 9.2 页面目录
 
@@ -280,6 +281,8 @@ toggle: (node: TreeNode, expanded: boolean) => void
 
 侧栏目录节点展开/收起与面板开合按**页面**写入 `localStorage`（`tu:page-toc-prefs`）；切换页面或刷新后恢复。本地标题优先用稳定 `blockId` 作为展开键。
 
+**聚焦（默认开）：** 目录工具栏「聚焦」开启时，侧栏随编辑器光标所在标题自动展开祖先路径、收起其他分支，并将当前条目滚入可视区并高亮。关闭聚焦后可手动展开/收起，展开状态会持久化；开启聚焦时不持久化临时展开路径。
+
 **纳入目录：**
 
 - 主文档 Tiptap `heading` 节点（渲染为 `h1`–`h6`）
@@ -287,7 +290,9 @@ toggle: (node: TreeNode, expanded: boolean) => void
 - 引用内容中富文本来源的 ATX 标题（`richtext` 块 `#` …、`externalResource` 节选 `excerptText`；经层级偏移后与 TuEditor 渲染一致）
 - 外部资源块（`externalResourceBlock`）：设置了 `headingLevel` 时的外层标题，以及节选正文中 `#` 标题（节选以只读 TuEditor 渲染，目录可精确跳转）；可通过 nodeView 悬浮栏「目录等级」设置外层标题级别
 
-**不纳入：** 画板、表格、时间轴、分割块等非富文本 nodeView；引用页内嵌套 `ref` embed（v1）；nodeView 仅作视觉展示的 `headingLevel` 标题（未作为外层 group 采集时）。
+**不纳入：** 画板、表格、时间轴、分割块、**文本比较块**（`compareBlock`）等非大纲 nodeView；引用页内嵌套 `ref` embed（v1）；nodeView 仅作视觉展示的 `headingLevel` 标题（未作为外层 group 采集时）。
+
+**文本比较块（`compareBlock`）：** slash/手柄「文本比较」插入三列对照：左/右列绑定外部资源节选（`ExternalResourceEmbedData`，`ExternalResourcePicker` 选择），只读展示定位正文；中间列为可编辑纯文本（`middleText`）。持久化于 v2 `document` JSON。第一期无行级 diff。
 
 **目录等级设置：** 点击引用块或外部资源块，在悬浮操作栏选择「目录等级」，可设置外层标题为自动 / H1–H6；引用块还可勾选「不在目录显示外层标题」。设置写入 `metadata.tocSettings` 与 `headingLevel` 并持久化。
 
@@ -303,7 +308,7 @@ toggle: (node: TreeNode, expanded: boolean) => void
 | **P1** | 资源域 | `adapters/resources.ts`、`serialize.ts`（`toFlatWithPath` + `toTreeDocument`）；`TreeListPanel.vue`；`ResourceManagerView` 集成树浏览 | P0 |
 | **P2** | TOC / 导出 | `adapters/toc.ts`、`toMarkdownOutline`；TOC 或开发工具入口 | P0 |
 | **P3** | 页面适配 | `adapters/pages.ts`；与 `flattenPages` 收敛；导出用例 | P0 |
-| **P1.1** | 体验 | 合并归类对话框改用树选择；资源树与 Tab 联动 polish | P1 |
+| **P1.1** | 体验 | 关联归类对话框树选择 polish；资源树与 Tab 联动 | P1 |
 
 **预估体量（仅供参考）**：P0 ~0.5d，P1 ~1.5d，P2 ~0.5d，P3 ~0.5d（不含 E2E）。
 
@@ -368,7 +373,8 @@ tu-web-ts/src/
 | 日期 | 内容 |
 |------|------|
 | 2026-06 | P0 工具层：`src/utils/tree/` |
-| 2026-06 | P1：`TreeListPanel.vue`、`ResourceManagerView` 左侧资源结构树、合并归类树选择 |
+| 2026-06 | P1：`TreeListPanel.vue`、`ResourceManagerView` 左侧资源结构树、关联归类树选择 |
+| 2026-07 | 合并/拆分归类合并为「关联归类」弹窗（已有归类 / 新建独立归类） |
 | 2026-06 | P2/P3 适配器：`adapters/toc.ts`、`adapters/pages.ts`（导出/复用；页面仍用 `el-tree`） |
 
 ## 17. 统一内容树 `content_tree_node`（2026-06）

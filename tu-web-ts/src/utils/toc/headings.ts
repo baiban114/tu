@@ -37,7 +37,7 @@ export function clampHeadingLevel(level: number): number {
   return Math.min(6, Math.max(1, level))
 }
 
-/** Find the nearest preceding heading node before `pos` (exclusive). */
+/** Find the nearest preceding heading node before `pos` (exclusive). Skips empty headings. */
 export function findNearestPrecedingHeading(
   doc: ProseMirrorNode,
   pos: number,
@@ -46,11 +46,12 @@ export function findNearestPrecedingHeading(
   let nearestLevel = 0
   let nearestText = ''
   doc.descendants((node, nodePos) => {
-    if (node.type.name === 'heading' && nodePos < pos && nodePos > nearestPos) {
-      nearestPos = nodePos
-      nearestLevel = node.attrs?.level || 1
-      nearestText = node.textContent.trim()
-    }
+    if (node.type.name !== 'heading' || nodePos >= pos || nodePos <= nearestPos) return true
+    const text = node.textContent.trim()
+    if (!text) return true
+    nearestPos = nodePos
+    nearestLevel = node.attrs?.level || 1
+    nearestText = text
     return true
   })
   if (nearestPos < 0) return null

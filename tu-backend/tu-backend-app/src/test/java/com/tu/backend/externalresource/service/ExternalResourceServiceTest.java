@@ -51,6 +51,7 @@ class ExternalResourceServiceTest {
             null,
             null,
             null,
+            null,
             null
         ));
 

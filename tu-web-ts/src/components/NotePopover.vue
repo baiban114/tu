@@ -49,6 +49,7 @@ const emit = defineEmits<{
   (e: 'delete', annotation?: TextAnnotation): void
   (e: 'navigate-basis', annotation?: TextAnnotation): void
   (e: 'navigate-source'): void
+  (e: 'clear-source'): void
   (e: 'promote-to-user', annotation?: TextAnnotation): void
   (e: 'promote-source-to-user'): void
   (e: 'close'): void
@@ -71,6 +72,10 @@ const displayedAnnotations = computed(() => {
 const hasSourceBinding = computed(() => !!props.sourceBinding?.resourceItemId && !!props.sourceBinding?.resourceExcerptId)
 
 const hasAnnotations = computed(() => displayedAnnotations.value.length > 0)
+
+const sourceClearLabel = computed(() =>
+  props.relationAnchor?.kind === 'heading' ? '解除来源' : '取消节选标记',
+)
 
 const title = computed(() => {
   if (hasSourceBinding.value && !hasAnnotations.value) return '来源'
@@ -231,6 +236,9 @@ watch(
                 @click="emit('promote-source-to-user')"
               >
                 转为手动标记
+              </button>
+              <button type="button" class="note-popover__delete-btn" @click="emit('clear-source')">
+                {{ sourceClearLabel }}
               </button>
             </div>
           </section>

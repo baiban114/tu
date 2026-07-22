@@ -25,7 +25,6 @@ import {
   deleteResourceItemRelation,
   listUrlClusterRules,
   listResourceItemRelations,
-  mergeResourceWorks,
   resetResourceItemAuto,
   splitResourceItemToNewWork,
   updateResourceExcerpt,
@@ -49,10 +48,17 @@ import {
   type UpdateResourceExcerptPayload,
   type VariantKind,
 } from '@/api/externalResource';
+import { uploadFile } from '@/api/fileStorage';
 import { DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE } from '@/constants/pagination';
 import { parseExternalUrl } from '@/utils/externalUrlResource';
 import { recognizeExcerptFieldsFromUrl } from '@/utils/excerptUrlRecognition';
+import {
+  chapterFieldsFromOutlineNode,
+  loadChapterStructureFromResource,
+} from '@/utils/chapterResourceRecognition';
+import { defaultAccessUrl, listAccessUrls } from '@/utils/accessUrlInsert';
 import { normalizeResourcePositionLocator, resourcePositionDisplay } from '@/utils/resourcePositionLocator';
+import type { PdfSidebarNode } from '@/utils/pdfOutline';
 import {
   listReferences,
   rebuildReferences,
@@ -163,6 +169,7 @@ const itemExcerptCache = ref<Record<string, ResourceExcerpt[]>>({});
 const itemExcerptLoadingIds = ref<Set<string>>(new Set());
 /** 节选变更后 remount 表格，刷新懒加载子树 */
 const itemsTableKey = ref(0);
+const itemPanelVisible = ref(false);
 const excerptReorderBusy = ref(false);
 const excerptRowDrag = ref<{ itemId: string; excerptId: string } | null>(null);
 const excerptRowDropHint = ref<{ rowKey: string; position: 'before' | 'after' | 'inner' } | null>(null);
@@ -209,10 +216,11 @@ const relationForm = reactive({
   note: '',
 });
 
-const mergeWorkDialogVisible = ref(false);
-const mergeWorkSourceItem = ref<ResourceItem | null>(null);
-const mergeWorkSelectedId = ref('');
-const mergeWorkSubmitting = ref(false);
+const linkWorkDialogVisible = ref(false);
+const linkWorkSourceItem = ref<ResourceItem | null>(null);
+const linkWorkMode = ref<'existing' | 'independent'>('existing');
+const linkWorkSelectedId = ref('');
+const linkWorkSubmitting = ref(false);
 const chaptersLoading = ref(false);
 const chapters = ref<ResourceChapter[]>([]);
 const excerpts = ref<ResourceExcerpt[]>([]);
@@ -254,12 +262,17 @@ const itemForm = reactive({
   title: '',
   identityValue: '',
   sourceUrl: '',
+  accessUrls: [''] as string[],
   edition: '',
   note: '',
   titleSource: 'auto' as 'auto' | 'manual',
   workIdSource: 'auto' as 'auto' | 'manual',
   variantKind: '' as VariantKind | '',
 });
+
+const accessUrlFileInputRef = ref<HTMLInputElement | null>(null);
+const accessUrlUploadIndex = ref<number | null>(null);
+const accessUrlUploading = ref(false);
 
 const urlRuleForm = reactive({
   id: '',
@@ -294,6 +307,12 @@ const chapterForm = reactive({
 
 const excerptPasteUrl = ref('');
 const excerptUrlRecognizing = ref(false);
+const chapterAccessUrlPick = ref('');
+const chapterOutlineLoading = ref(false);
+const chapterOutlineImporting = ref(false);
+const chapterOutlineNodes = ref<PdfSidebarNode[]>([]);
+const chapterOutlineSource = ref<'outline' | 'pages' | 'none' | ''>('');
+const chapterOutlineMessage = ref('');
 
 const classForm = reactive({
   id: '',
@@ -330,8 +349,25 @@ const worksForFilter = computed(() => {
 const worksForItemForm = computed(() => allWorks.value.filter((work) => work.typeId === itemForm.typeId));
 
 const selectedChapterItem = computed(() => (
-  itemSelectOptions.value.find((item) => item.id === selectedChapterItemId.value) || null
+  items.value.find((item) => item.id === selectedChapterItemId.value)
+  ?? itemSelectOptions.value.find((item) => item.id === selectedChapterItemId.value)
+  ?? null
 ));
+
+const chapterAccessUrlOptions = computed(() => listAccessUrls(selectedChapterItem.value?.accessUrls));
+
+const chapterOutlineHint = computed(() => {
+  if (!chapterAccessUrlOptions.value.length) {
+    return '请先在资源实体中配置访问地址（打开资源的手段）。图书站内 PDF 将从书签/目录判断章节。';
+  }
+  if (chapterOutlineSource.value === 'outline') {
+    return '已加载 PDF 书签：点选一项填入当前章节；也可导入全部为章节树。';
+  }
+  if (chapterOutlineSource.value === 'pages') {
+    return '该 PDF 无书签，已列出页目录：点选填入，或导入为章节。';
+  }
+  return '选择访问地址后点「读取结构」。算法按资源类型与内容判断（PDF → 书签/目录），不是解析 URL 参数。';
+});
 
 const chapterTreeNodes = computed(() => {
   const flat = chapters.value.map((chapter) => ({
@@ -369,16 +405,32 @@ const excerptChapterTreeOptions = computed(() => {
   return toTreeSelect(buildTreeFromFlat(flat));
 });
 
-const mergeWorkTreeNodes = computed(() => {
-  const item = mergeWorkSourceItem.value;
+/** 与「资源归类」管理列表同源：该类型下全部归类（含当前），当前项不可选。 */
+const linkWorkTypeWorks = computed(() => {
+  const item = linkWorkSourceItem.value;
+  if (!item) return [] as ResourceWork[];
+  return allWorks.value.filter((work) => work.typeId === item.typeId);
+});
+
+const linkWorkTreeNodes = computed(() => {
+  const item = linkWorkSourceItem.value;
   if (!item) return [];
   const type = allTypes.value.find((entry) => entry.id === item.typeId);
   if (!type) return [];
-  const candidates = allWorks.value.filter(
-    (work) => work.typeId === item.typeId && work.id !== item.workId,
-  );
-  return resourceWorksToTreeNodes(type, candidates, itemSelectOptions.value);
+  const nodes = resourceWorksToTreeNodes(type, linkWorkTypeWorks.value, itemSelectOptions.value);
+  return nodes.map((node) => {
+    const workId = (node.meta as ResourceTreeMeta | undefined)?.entityId;
+    if (workId && workId === item.workId) {
+      return { ...node, label: `${node.label} · 当前` };
+    }
+    return node;
+  });
 });
+const linkWorkSelectableWorks = computed(() => (
+  linkWorkTypeWorks.value.filter((work) => work.id !== linkWorkSourceItem.value?.workId)
+));
+/** 有归类可展示时即可切换到「关联到已有归类」（与资源归类列表同源；当前项不可选）。 */
+const linkWorkHasCandidates = computed(() => linkWorkTypeWorks.value.length > 0);
 const selectedExcerptItem = computed(() => items.value.find((item) => item.id === selectedExcerptItemId.value) || null);
 
 function excerptsToTreeNodes(list: ResourceExcerpt[]) {
@@ -450,10 +502,13 @@ function isItemTableExcerptRow(row: ItemTableRow): row is ItemTableExcerptRow {
 }
 
 function itemRowClassName({ row }: { row: ItemTableRow }) {
-  if (!isItemTableExcerptRow(row)) return 'resource-row';
-  const hint = excerptRowDropHint.value;
-  if (!hint || hint.rowKey !== row.rowKey) return 'resource-row resource-row--excerpt';
-  return `resource-row resource-row--excerpt resource-row--drop-${hint.position}`;
+  if (isItemTableExcerptRow(row)) {
+    const hint = excerptRowDropHint.value;
+    if (!hint || hint.rowKey !== row.rowKey) return 'resource-row resource-row--excerpt';
+    return `resource-row resource-row--excerpt resource-row--drop-${hint.position}`;
+  }
+  if (itemForm.id && row.id === itemForm.id) return 'resource-row resource-row--active';
+  return 'resource-row';
 }
 
 function bumpItemsTableTree() {
@@ -758,6 +813,7 @@ function resetItemForm() {
     title: '',
     identityValue: '',
     sourceUrl: '',
+    accessUrls: [''],
     edition: '',
     note: '',
     titleSource: 'auto',
@@ -765,6 +821,75 @@ function resetItemForm() {
     variantKind: '',
   });
   maybeFillItemTitleFromWork()
+}
+
+function normalizeAccessUrls(urls: string[] | undefined | null): string[] {
+  if (!urls?.length) return [];
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const raw of urls) {
+    const url = raw?.trim();
+    if (!url || url.length > 1024 || seen.has(url)) continue;
+    seen.add(url);
+    result.push(url);
+    if (result.length >= 50) break;
+  }
+  return result;
+}
+
+function accessUrlsForForm(urls: string[] | undefined | null): string[] {
+  const normalized = normalizeAccessUrls(urls);
+  return normalized.length > 0 ? [...normalized] : [''];
+}
+
+function addAccessUrl() {
+  if (itemForm.accessUrls.length >= 50) {
+    showError('最多 50 个访问地址');
+    return;
+  }
+  itemForm.accessUrls.push('');
+}
+
+function removeAccessUrl(index: number) {
+  if (itemForm.accessUrls.length <= 1) {
+    itemForm.accessUrls[0] = '';
+    return;
+  }
+  itemForm.accessUrls.splice(index, 1);
+}
+
+function triggerAccessUrlUpload(index: number) {
+  accessUrlUploadIndex.value = index;
+  accessUrlFileInputRef.value?.click();
+}
+
+async function onAccessUrlFileChange(event: Event) {
+  const input = event.target as HTMLInputElement;
+  const file = input.files?.[0];
+  const index = accessUrlUploadIndex.value;
+  input.value = '';
+  if (!file || index == null || index < 0 || index >= itemForm.accessUrls.length) {
+    accessUrlUploadIndex.value = null;
+    return;
+  }
+
+  accessUrlUploading.value = true;
+  try {
+    const uploaded = await uploadFile(file);
+    itemForm.accessUrls[index] = uploaded.url;
+    if (itemForm.id) {
+      await updateResourceItem(itemForm.id, buildItemPayload(true));
+      showSuccess('已上传并保存访问地址');
+      await refreshItems();
+    } else {
+      showSuccess('已填入上传 URL，保存实体后生效');
+    }
+  } catch (error) {
+    showError(error);
+  } finally {
+    accessUrlUploading.value = false;
+    accessUrlUploadIndex.value = null;
+  }
 }
 
 function resetUrlRuleForm() {
@@ -811,6 +936,12 @@ function backToExcerptListRoute() {
   excerptPanelRoute.value = 'list';
 }
 
+function resetChapterOutlinePanel() {
+  chapterOutlineNodes.value = [];
+  chapterOutlineSource.value = '';
+  chapterOutlineMessage.value = '';
+}
+
 function resetChapterForm() {
   Object.assign(chapterForm, {
     id: '',
@@ -826,7 +957,105 @@ function clearChapterPanel() {
   chapterPanelVisible.value = false;
   selectedChapterItemId.value = '';
   chapters.value = [];
+  chapterAccessUrlPick.value = '';
+  resetChapterOutlinePanel();
   resetChapterForm();
+}
+
+function onChapterAccessUrlPick(url: string | null | undefined) {
+  chapterAccessUrlPick.value = url?.trim() ?? '';
+  resetChapterOutlinePanel();
+}
+
+async function loadChapterOutlineFromResource() {
+  const item = selectedChapterItem.value;
+  if (!item) return;
+
+  const accessUrl = chapterAccessUrlPick.value.trim() || defaultAccessUrl(item.accessUrls);
+  if (!accessUrl) {
+    ElMessage.warning('请先选择访问地址');
+    return;
+  }
+  chapterAccessUrlPick.value = accessUrl;
+
+  chapterOutlineLoading.value = true;
+  chapterOutlineMessage.value = '';
+  try {
+    const typeCode = typeById.value.get(item.typeId)?.code;
+    const result = await loadChapterStructureFromResource({
+      typeCode,
+      accessUrl,
+    });
+    if (!result.ok) {
+      chapterOutlineNodes.value = [];
+      chapterOutlineSource.value = result.source || '';
+      showError(result.message || '无法从资源判断章节结构');
+      return;
+    }
+    chapterOutlineNodes.value = result.nodes;
+    chapterOutlineSource.value = result.source || '';
+    chapterOutlineMessage.value = result.message || '';
+    showSuccess(result.message || '已读取资源结构');
+  } catch (error) {
+    showError(error);
+  } finally {
+    chapterOutlineLoading.value = false;
+  }
+}
+
+function applyChapterOutlineNode(node: PdfSidebarNode) {
+  const fields = chapterFieldsFromOutlineNode(node);
+  chapterForm.title = fields.title;
+  if (fields.locator) {
+    chapterForm.locator = fields.locator;
+  }
+  showSuccess(`已填入「${fields.title}」`);
+}
+
+async function importChapterOutlineTree(
+  itemId: string,
+  nodes: PdfSidebarNode[],
+  parentId: string | null,
+  sortBase: number,
+): Promise<number> {
+  let sortOrder = sortBase;
+  for (const node of nodes) {
+    const fields = chapterFieldsFromOutlineNode(node);
+    const created = await createResourceChapter(itemId, {
+      parentId: parentId || undefined,
+      title: fields.title,
+      locator: fields.locator,
+      sortOrder,
+    });
+    sortOrder += 1;
+    if (node.children.length > 0) {
+      sortOrder = await importChapterOutlineTree(itemId, node.children, created.id, 0);
+    }
+  }
+  return sortOrder;
+}
+
+async function importAllChapterOutlineNodes() {
+  const item = selectedChapterItem.value;
+  if (!item || chapterOutlineNodes.value.length === 0) return;
+
+  try {
+    if (chapters.value.length > 0) {
+      await confirmAction(
+        `当前已有 ${chapters.value.length} 个章节。将把读取到的结构追加导入为新章节树（不删除已有），是否继续？`,
+        '导入书签为章节',
+      );
+    }
+    chapterOutlineImporting.value = true;
+    await importChapterOutlineTree(item.id, chapterOutlineNodes.value, null, chapters.value.length);
+    await loadChapters(item.id);
+    showSuccess('已导入章节结构');
+    resetChapterForm();
+  } catch (error) {
+    if (error !== 'cancel' && error !== 'close') showError(error);
+  } finally {
+    chapterOutlineImporting.value = false;
+  }
 }
 
 function clearExcerptPanel() {
@@ -884,7 +1113,9 @@ async function openChapterPanel(item: ResourceItem) {
   if (!supportsBookChapters(typeById.value.get(item.typeId)?.code)) return;
   selectedChapterItemId.value = item.id;
   chapterPanelVisible.value = true;
+  resetChapterOutlinePanel();
   resetChapterForm();
+  chapterAccessUrlPick.value = defaultAccessUrl(item.accessUrls);
   await loadChapters(item.id);
 }
 
@@ -1434,7 +1665,7 @@ async function saveWork() {
   }
 }
 
-function buildItemPayloadFromRecord(item: Pick<ResourceItem, 'typeId' | 'workId' | 'title' | 'identityValue' | 'sourceUrl' | 'edition' | 'note' | 'titleSource' | 'workIdSource' | 'variantKind'>, overrides: {
+function buildItemPayloadFromRecord(item: Pick<ResourceItem, 'typeId' | 'workId' | 'title' | 'identityValue' | 'sourceUrl' | 'accessUrls' | 'edition' | 'note' | 'titleSource' | 'workIdSource' | 'variantKind'>, overrides: {
   workId?: string;
   workIdSource?: 'auto' | 'manual';
   titleSource?: 'auto' | 'manual';
@@ -1445,6 +1676,7 @@ function buildItemPayloadFromRecord(item: Pick<ResourceItem, 'typeId' | 'workId'
     title: item.title,
     identityValue: item.identityValue || undefined,
     sourceUrl: item.sourceUrl || undefined,
+    accessUrls: normalizeAccessUrls(item.accessUrls),
     edition: item.edition || undefined,
     note: item.note || undefined,
     titleSource: overrides.titleSource ?? item.titleSource ?? 'auto',
@@ -1457,6 +1689,7 @@ function buildItemPayload(manual = false) {
   return buildItemPayloadFromRecord(
     {
       ...itemForm,
+      accessUrls: itemForm.accessUrls,
       variantKind: itemForm.variantKind || undefined,
     },
     {
@@ -1476,7 +1709,7 @@ async function saveItem() {
       await createResourceItem(buildItemPayload(false));
       showSuccess('资源实体已创建');
     }
-    resetItemForm();
+    itemPanelVisible.value = false;
     await refreshAll();
   } catch (error) {
     showError(error);
@@ -1640,6 +1873,23 @@ async function removeItemRelation(relation: ResourceItemRelation) {
   }
 }
 
+function openCreateItem() {
+  resetItemForm();
+  itemRelations.value = [];
+  relationForm.toItemId = '';
+  relationForm.note = '';
+  relationForm.relationType = 'translation';
+  itemPanelVisible.value = true;
+}
+
+function clearItemPanel() {
+  resetItemForm();
+  itemRelations.value = [];
+  relationForm.toItemId = '';
+  relationForm.note = '';
+  relationForm.relationType = 'translation';
+}
+
 function editItem(item: ResourceItem) {
   Object.assign(itemForm, {
     id: item.id,
@@ -1648,6 +1898,7 @@ function editItem(item: ResourceItem) {
     title: item.title,
     identityValue: item.identityValue || '',
     sourceUrl: item.sourceUrl || '',
+    accessUrls: accessUrlsForForm(item.accessUrls),
     edition: item.edition || '',
     note: item.note || '',
     titleSource: item.titleSource || 'auto',
@@ -1655,65 +1906,53 @@ function editItem(item: ResourceItem) {
     variantKind: item.variantKind || '',
   });
   activeTab.value = 'items';
+  itemPanelVisible.value = true;
   void loadItemRelations(item.id);
 }
 
-function openMergeWorkDialog(item: ResourceItem) {
-  const candidates = allWorks.value.filter((work) => work.typeId === item.typeId && work.id !== item.workId);
-  if (candidates.length === 0) {
-    showError('没有可合并的目标归类，请先在「资源归类」中创建。');
-    return;
-  }
-  mergeWorkSourceItem.value = item;
-  mergeWorkSelectedId.value = candidates[0]?.id ?? '';
-  mergeWorkDialogVisible.value = true;
+function openLinkWorkDialog(item: ResourceItem) {
+  linkWorkSourceItem.value = item;
+  const candidates = linkWorkSelectableWorks.value;
+  linkWorkMode.value = candidates.length > 0 ? 'existing' : 'independent';
+  linkWorkSelectedId.value = candidates[0]?.id ?? '';
+  linkWorkDialogVisible.value = true;
 }
 
-function closeMergeWorkDialog() {
-  mergeWorkDialogVisible.value = false;
-  mergeWorkSourceItem.value = null;
-  mergeWorkSelectedId.value = '';
-  mergeWorkSubmitting.value = false;
+function closeLinkWorkDialog() {
+  linkWorkDialogVisible.value = false;
+  linkWorkSourceItem.value = null;
+  linkWorkMode.value = 'existing';
+  linkWorkSelectedId.value = '';
+  linkWorkSubmitting.value = false;
 }
 
-async function confirmMergeWork() {
-  const item = mergeWorkSourceItem.value;
+async function confirmLinkWork() {
+  const item = linkWorkSourceItem.value;
   if (!item) return;
-  const target = allWorks.value.find((work) => work.id === mergeWorkSelectedId.value);
-  if (!target) {
-    showError('请选择目标资源归类');
-    return;
-  }
-  mergeWorkSubmitting.value = true;
+  linkWorkSubmitting.value = true;
   try {
-    const sourceWorkId = item.workId;
-    if (!sourceWorkId) {
+    if (linkWorkMode.value === 'independent') {
+      await splitResourceItemToNewWork(item.id);
+      showSuccess(`已为「${item.title}」新建独立归类`);
+    } else {
+      const target = allWorks.value.find((work) => work.id === linkWorkSelectedId.value);
+      if (!target || target.id === item.workId) {
+        showError('请选择目标资源归类');
+        return;
+      }
       await updateResourceItem(item.id, buildItemPayloadFromRecord(item, {
         workId: target.id,
         workIdSource: 'manual',
         titleSource: item.titleSource === 'manual' ? 'manual' : item.titleSource,
       }));
-    } else {
-      await mergeResourceWorks(sourceWorkId, target.id);
+      showSuccess(`已将「${item.title}」关联到归类「${target.title}」`);
     }
-    showSuccess(`已将「${item.title}」合并到归类「${target.title}」`);
-    closeMergeWorkDialog();
+    closeLinkWorkDialog();
     await refreshAll();
   } catch (error) {
     showError(error);
   } finally {
-    mergeWorkSubmitting.value = false;
-  }
-}
-
-async function splitItemWork(item: ResourceItem) {
-  try {
-    await confirmAction(`确定将「${item.title}」拆分为独立的资源归类？`, '拆分为新归类');
-    await splitResourceItemToNewWork(item.id);
-    showSuccess('已拆分为新资源归类');
-    await refreshAll();
-  } catch (error) {
-    showError(error);
+    linkWorkSubmitting.value = false;
   }
 }
 
@@ -1982,15 +2221,18 @@ function onWorkFilterChange() {
   void refreshItems();
 }
 
-function isMergeWorkTreeSelectable(node: TreeNode) {
-  return (node.meta as ResourceTreeMeta | undefined)?.layer === 'work';
+function isLinkWorkTreeSelectable(node: TreeNode) {
+  const meta = node.meta as ResourceTreeMeta | undefined;
+  if (meta?.layer !== 'work') return false;
+  return meta.entityId !== linkWorkSourceItem.value?.workId;
 }
 
-function onMergeWorkTreeSelect(node: TreeNode) {
+function onLinkWorkTreeSelect(node: TreeNode) {
   const meta = node.meta as ResourceTreeMeta | undefined;
-  if (meta?.layer === 'work') {
-    mergeWorkSelectedId.value = meta.entityId;
-  }
+  if (meta?.layer !== 'work') return;
+  if (meta.entityId === linkWorkSourceItem.value?.workId) return;
+  linkWorkSelectedId.value = meta.entityId;
+  linkWorkMode.value = 'existing';
 }
 
 function goToReferenceSource(item: ReferenceItem) {
@@ -2446,98 +2688,15 @@ watch(
       </el-card>
     </section>
 
-    <section v-if="activeTab === 'items'" class="resource-layout">
-      <el-card shadow="never" class="resource-form-card">
-        <template #header>
-          <span>{{ itemForm.id ? '编辑资源实体' : '新增资源实体' }}</span>
-        </template>
-        <el-form class="resource-form" label-position="top" @submit.prevent="saveItem">
-          <el-form-item label="类型" required>
-            <el-select v-model="itemForm.typeId" placeholder="选择类型" style="width: 100%" @change="itemForm.workId = ''">
-              <el-option v-for="type in visibleResourceTypes" :key="type.id" :label="type.name" :value="type.id" />
-            </el-select>
-          </el-form-item>
-          <el-form-item label="归类 Work">
-            <el-select
-              v-model="itemForm.workId"
-              clearable
-              placeholder="不选择归类"
-              style="width: 100%"
-              @change="maybeFillItemTitleFromWork"
-            >
-              <el-option
-                v-for="work in worksForItemForm"
-                :key="work.id"
-                :label="work.title"
-                :value="work.id"
-              />
-            </el-select>
-          </el-form-item>
-          <el-form-item label="标题" required>
-            <el-input v-model="itemForm.title" maxlength="255" />
-          </el-form-item>
-          <el-form-item :label="itemFormType?.identityFieldLabel || '唯一标识'">
-            <el-input v-model="itemForm.identityValue" maxlength="512" />
-          </el-form-item>
-          <el-form-item label="源 URL">
-            <el-input v-model="itemForm.sourceUrl" maxlength="1024" />
-          </el-form-item>
-          <el-form-item label="版本/变体">
-            <el-input v-model="itemForm.edition" maxlength="128" placeholder="规则推断或手动填写" />
-          </el-form-item>
-          <el-form-item label="变体类型">
-            <el-select v-model="itemForm.variantKind" clearable placeholder="未指定" style="width: 100%">
-              <el-option label="翻译" value="translation" />
-              <el-option label="格式" value="format" />
-              <el-option label="版次" value="edition" />
-              <el-option label="镜像" value="mirror" />
-              <el-option label="其他" value="other" />
-            </el-select>
-          </el-form-item>
-          <el-form-item label="备注">
-            <el-input v-model="itemForm.note" type="textarea" :rows="4" maxlength="1024" />
-          </el-form-item>
-          <template v-if="itemForm.id">
-            <el-divider content-position="left">实体关系</el-divider>
-            <el-table :data="itemRelations" size="small" empty-text="暂无关系">
-              <el-table-column label="关系" width="100" prop="relationType" />
-              <el-table-column label="目标" min-width="120" prop="toItemTitle" show-overflow-tooltip />
-              <el-table-column label="操作" width="80">
-                <template #default="{ row }">
-                  <el-button size="small" type="danger" link @click="removeItemRelation(row)">删除</el-button>
-                </template>
-              </el-table-column>
-            </el-table>
-            <el-form-item label="关联到实体 ID">
-              <el-input v-model="relationForm.toItemId" placeholder="目标资源实体 ID" />
-            </el-form-item>
-            <el-form-item label="关系类型">
-              <el-select v-model="relationForm.relationType" style="width: 100%">
-                <el-option label="翻译" value="translation" />
-                <el-option label="格式" value="format" />
-                <el-option label="版次" value="edition" />
-                <el-option label="镜像" value="mirror" />
-                <el-option label="其他" value="other" />
-              </el-select>
-            </el-form-item>
-            <el-form-item>
-              <el-button @click="addItemRelation">添加关系</el-button>
-            </el-form-item>
-          </template>
-          <el-form-item>
-            <el-space wrap>
-              <el-button type="primary" native-type="submit">{{ itemForm.id ? '保存实体' : '创建实体' }}</el-button>
-              <el-button @click="resetItemForm">清空</el-button>
-            </el-space>
-          </el-form-item>
-        </el-form>
-      </el-card>
-
+    <section v-if="activeTab === 'items'" class="resource-layout items-layout">
       <el-card shadow="never" class="resource-list-card">
           <template #header>
             <div class="list-card-header">
-              <span>资源实体</span>
-              <span class="row-meta">共 {{ itemsTotal }} 项</span>
+              <div class="list-card-header__meta">
+                <span>资源实体</span>
+                <span class="row-meta">共 {{ itemsTotal }} 项</span>
+              </div>
+              <el-button type="primary" @click="openCreateItem">新增实体</el-button>
             </div>
           </template>
           <el-table
@@ -2640,21 +2799,20 @@ watch(
                 </template>
               </template>
             </el-table-column>
-            <el-table-column label="操作" width="360" fixed="right">
+            <el-table-column label="操作" min-width="480" fixed="right">
               <template #default="{ row }">
                 <el-space v-if="isItemTableExcerptRow(row)" wrap>
-                  <el-button size="small" @click="openExcerptRow(row)">编辑</el-button>
-                  <el-button size="small" @click="openExcerptChildFromRow(row)">添加子节选</el-button>
-                  <el-button size="small" type="danger" plain @click="removeExcerptFromRow(row)">删除</el-button>
+                  <el-button size="small" @click.stop="openExcerptRow(row)">编辑</el-button>
+                  <el-button size="small" @click.stop="openExcerptChildFromRow(row)">添加子节选</el-button>
+                  <el-button size="small" type="danger" plain @click.stop="removeExcerptFromRow(row)">删除</el-button>
                 </el-space>
                 <el-space v-else wrap>
-                  <el-button v-if="supportsBookChapterItem(row)" size="small" @click="openChapterPanel(row)">章节</el-button>
-                  <el-button v-if="supportsExcerptItem(row)" size="small" @click="openExcerptPanel(row)">节选</el-button>
-                  <el-button size="small" @click="editItem(row)">编辑</el-button>
-                  <el-button size="small" @click="openMergeWorkDialog(row)">合并归类</el-button>
-                  <el-button size="small" @click="splitItemWork(row)">拆分</el-button>
-                  <el-button size="small" @click="resetItemAuto(row)">重置自动</el-button>
-                  <el-button size="small" type="danger" plain @click="removeItem(row)">移除</el-button>
+                  <el-button v-if="supportsBookChapterItem(row)" size="small" @click.stop="openChapterPanel(row)">章节</el-button>
+                  <el-button v-if="supportsExcerptItem(row)" size="small" @click.stop="openExcerptPanel(row)">节选</el-button>
+                  <el-button size="small" @click.stop="editItem(row)">编辑</el-button>
+                  <el-button size="small" @click.stop="openLinkWorkDialog(row)">关联归类</el-button>
+                  <el-button size="small" @click.stop="resetItemAuto(row)">重置自动</el-button>
+                  <el-button size="small" type="danger" plain @click.stop="removeItem(row)">移除</el-button>
                 </el-space>
               </template>
             </el-table-column>
@@ -3078,6 +3236,150 @@ watch(
     </section>
 
     <el-dialog
+      v-model="itemPanelVisible"
+      class="item-panel-dialog tu-dialog-viewport"
+      width="min(720px, 96vw)"
+      align-center
+      destroy-on-close
+      @closed="clearItemPanel"
+    >
+      <template #header>
+        <div class="item-panel__header">
+          <span class="item-panel__title">{{ itemForm.id ? '编辑资源实体' : '新增资源实体' }}</span>
+          <p v-if="itemForm.title.trim()" class="item-panel__subtitle">{{ itemForm.title }}</p>
+        </div>
+      </template>
+      <div class="item-panel__body">
+        <el-form class="item-form resource-form" label-position="top" @submit.prevent="saveItem">
+          <el-form-item label="类型" required>
+            <el-select v-model="itemForm.typeId" placeholder="选择类型" style="width: 100%" @change="itemForm.workId = ''">
+              <el-option v-for="type in visibleResourceTypes" :key="type.id" :label="type.name" :value="type.id" />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="归类 Work">
+            <el-select
+              v-model="itemForm.workId"
+              clearable
+              placeholder="不选择归类"
+              style="width: 100%"
+              @change="maybeFillItemTitleFromWork"
+            >
+              <el-option
+                v-for="work in worksForItemForm"
+                :key="work.id"
+                :label="work.title"
+                :value="work.id"
+              />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="标题" required>
+            <el-input v-model="itemForm.title" maxlength="255" />
+          </el-form-item>
+          <el-form-item :label="itemFormType?.identityFieldLabel || '唯一标识'">
+            <el-input v-model="itemForm.identityValue" maxlength="512" />
+          </el-form-item>
+          <el-form-item label="源 URL">
+            <el-input v-model="itemForm.sourceUrl" maxlength="1024" />
+          </el-form-item>
+          <el-form-item label="访问地址">
+            <div class="access-url-list">
+              <div
+                v-for="(_url, index) in itemForm.accessUrls"
+                :key="index"
+                class="access-url-row"
+              >
+                <el-input
+                  v-model="itemForm.accessUrls[index]"
+                  maxlength="1024"
+                  placeholder="粘贴链接，或右侧上传文件自动填入"
+                >
+                  <template #append>
+                    <el-button
+                      :loading="accessUrlUploading && accessUrlUploadIndex === index"
+                      :disabled="accessUrlUploading"
+                      @click="triggerAccessUrlUpload(index)"
+                    >
+                      上传
+                    </el-button>
+                  </template>
+                </el-input>
+                <el-button
+                  text
+                  type="danger"
+                  :disabled="itemForm.accessUrls.length <= 1 && !itemForm.accessUrls[0]"
+                  @click="removeAccessUrl(index)"
+                >
+                  删除
+                </el-button>
+              </div>
+              <el-button
+                plain
+                :disabled="itemForm.accessUrls.length >= 50"
+                @click="addAccessUrl"
+              >
+                添加 URL
+              </el-button>
+            </div>
+            <input
+              ref="accessUrlFileInputRef"
+              type="file"
+              class="access-url-file-input"
+              @change="onAccessUrlFileChange"
+            >
+          </el-form-item>
+          <el-form-item label="版本/变体">
+            <el-input v-model="itemForm.edition" maxlength="128" placeholder="规则推断或手动填写" />
+          </el-form-item>
+          <el-form-item label="变体类型">
+            <el-select v-model="itemForm.variantKind" clearable placeholder="未指定" style="width: 100%">
+              <el-option label="翻译" value="translation" />
+              <el-option label="格式" value="format" />
+              <el-option label="版次" value="edition" />
+              <el-option label="镜像" value="mirror" />
+              <el-option label="其他" value="other" />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="备注">
+            <el-input v-model="itemForm.note" type="textarea" :rows="4" maxlength="1024" />
+          </el-form-item>
+          <template v-if="itemForm.id">
+            <el-divider content-position="left">实体关系</el-divider>
+            <el-table :data="itemRelations" size="small" empty-text="暂无关系">
+              <el-table-column label="关系" width="100" prop="relationType" />
+              <el-table-column label="目标" min-width="120" prop="toItemTitle" show-overflow-tooltip />
+              <el-table-column label="操作" width="80">
+                <template #default="{ row }">
+                  <el-button size="small" type="danger" link @click="removeItemRelation(row)">删除</el-button>
+                </template>
+              </el-table-column>
+            </el-table>
+            <el-form-item label="关联到实体 ID">
+              <el-input v-model="relationForm.toItemId" placeholder="目标资源实体 ID" />
+            </el-form-item>
+            <el-form-item label="关系类型">
+              <el-select v-model="relationForm.relationType" style="width: 100%">
+                <el-option label="翻译" value="translation" />
+                <el-option label="格式" value="format" />
+                <el-option label="版次" value="edition" />
+                <el-option label="镜像" value="mirror" />
+                <el-option label="其他" value="other" />
+              </el-select>
+            </el-form-item>
+            <el-form-item>
+              <el-button @click="addItemRelation">添加关系</el-button>
+            </el-form-item>
+          </template>
+          <el-form-item>
+            <el-space wrap>
+              <el-button type="primary" native-type="submit">{{ itemForm.id ? '保存实体' : '创建实体' }}</el-button>
+              <el-button native-type="button" @click="itemPanelVisible = false">取消</el-button>
+            </el-space>
+          </el-form-item>
+        </el-form>
+      </div>
+    </el-dialog>
+
+    <el-dialog
       v-model="excerptPanelVisible"
       class="resource-excerpts-panel excerpt-panel-dialog tu-dialog-viewport"
       width="min(1280px, 96vw)"
@@ -3282,8 +3584,72 @@ watch(
               />
             </el-select>
           </el-form-item>
+          <el-form-item label="从资源判断">
+            <div class="chapter-resource-judge">
+              <div class="excerpt-url-row">
+                <el-select
+                  :model-value="chapterAccessUrlPick"
+                  clearable
+                  filterable
+                  placeholder="选择访问地址（打开资源）"
+                  style="width: 100%; min-width: 0"
+                  :disabled="!chapterAccessUrlOptions.length || chapterOutlineLoading"
+                  @update:model-value="onChapterAccessUrlPick"
+                >
+                  <el-option
+                    v-for="url in chapterAccessUrlOptions"
+                    :key="url"
+                    :label="url"
+                    :value="url"
+                  />
+                </el-select>
+                <el-button
+                  type="primary"
+                  plain
+                  native-type="button"
+                  :loading="chapterOutlineLoading"
+                  :disabled="!chapterAccessUrlOptions.length"
+                  @click.prevent="loadChapterOutlineFromResource"
+                >
+                  读取结构
+                </el-button>
+                <el-button
+                  plain
+                  native-type="button"
+                  :loading="chapterOutlineImporting"
+                  :disabled="chapterOutlineNodes.length === 0 || chapterOutlineLoading"
+                  @click.prevent="importAllChapterOutlineNodes"
+                >
+                  导入全部
+                </el-button>
+              </div>
+              <p class="excerpt-url-hint">{{ chapterOutlineHint }}</p>
+              <div v-loading="chapterOutlineLoading" class="chapter-outline-panel">
+                <el-tree
+                  v-if="chapterOutlineNodes.length"
+                  class="chapter-outline-panel__tree"
+                  :data="chapterOutlineNodes"
+                  node-key="id"
+                  :props="{ label: 'title', children: 'children' }"
+                  highlight-current
+                  default-expand-all
+                  @node-click="(data: PdfSidebarNode) => applyChapterOutlineNode(data)"
+                >
+                  <template #default="{ data }">
+                    <span class="chapter-outline-panel__node">
+                      <span class="chapter-outline-panel__node-title">{{ data.title }}</span>
+                      <small v-if="data.pageNumber != null">p.{{ data.pageNumber }}</small>
+                    </span>
+                  </template>
+                </el-tree>
+                <p v-else class="chapter-outline-panel__empty">
+                  {{ chapterOutlineMessage || '读取后在此显示书签/目录，点选填入当前章节' }}
+                </p>
+              </div>
+            </div>
+          </el-form-item>
           <el-form-item label="结构定位">
-            <el-input v-model="chapterForm.locator" maxlength="255" placeholder="例如 第 1 卷、p.1–p.20" />
+            <el-input v-model="chapterForm.locator" maxlength="255" placeholder="例如 page:1、page:1-20，或 第 1 卷" />
           </el-form-item>
           <el-form-item label="备注">
             <el-input v-model="chapterForm.note" type="textarea" :rows="3" maxlength="1024" />
@@ -3312,36 +3678,47 @@ watch(
     </el-dialog>
 
     <el-dialog
-      v-model="mergeWorkDialogVisible"
-      class="tu-dialog-viewport"
-      title="合并到资源归类"
+      v-model="linkWorkDialogVisible"
+      class="tu-dialog-viewport link-work-dialog"
+      title="关联资源归类"
       width="560px"
       destroy-on-close
-      @closed="closeMergeWorkDialog"
+      @closed="closeLinkWorkDialog"
     >
-      <p v-if="mergeWorkSourceItem" class="merge-work-dialog__intro">
-        将实体「<strong>{{ mergeWorkSourceItem.title }}</strong>」合并到以下归类之一。
-        <span v-if="mergeWorkSourceItem.workTitle" class="row-meta">
-          当前归类：{{ mergeWorkSourceItem.workTitle }}
-        </span>
-      </p>
-      <TreeListPanel
-        :nodes="mergeWorkTreeNodes"
-        :selected-id="mergeWorkSelectedId ? `rw:${mergeWorkSelectedId}` : null"
-        :default-expand-depth="1"
-        :is-selectable="isMergeWorkTreeSelectable"
-        empty-text="没有可合并的目标归类"
-        @select="onMergeWorkTreeSelect"
-      />
+      <div class="link-work-dialog__body">
+        <p v-if="linkWorkSourceItem" class="link-work-dialog__intro">
+          将实体「<strong>{{ linkWorkSourceItem.title }}</strong>」关联到归类。
+          <span v-if="linkWorkSourceItem.workTitle" class="row-meta">
+            当前归类：{{ linkWorkSourceItem.workTitle }}
+          </span>
+        </p>
+        <el-radio-group v-model="linkWorkMode" class="link-work-dialog__modes">
+          <el-radio value="existing" :disabled="!linkWorkHasCandidates">关联到已有归类</el-radio>
+          <el-radio value="independent">新建独立归类</el-radio>
+        </el-radio-group>
+        <div v-if="linkWorkMode === 'existing'" class="link-work-dialog__tree">
+          <TreeListPanel
+            :nodes="linkWorkTreeNodes"
+            :selected-id="linkWorkSelectedId ? `rw:${linkWorkSelectedId}` : null"
+            :default-expand-depth="1"
+            :is-selectable="isLinkWorkTreeSelectable"
+            empty-text="该类型下暂无资源归类"
+            @select="onLinkWorkTreeSelect"
+          />
+        </div>
+        <p v-else class="link-work-dialog__hint">
+          将为该实体单独创建归类（标题沿用实体名称），不再与其它实体共用归类。
+        </p>
+      </div>
       <template #footer>
-        <el-button @click="closeMergeWorkDialog">取消</el-button>
+        <el-button @click="closeLinkWorkDialog">取消</el-button>
         <el-button
           type="primary"
-          :loading="mergeWorkSubmitting"
-          :disabled="!mergeWorkSelectedId"
-          @click="confirmMergeWork"
+          :loading="linkWorkSubmitting"
+          :disabled="linkWorkMode === 'existing' && !linkWorkSelectedId"
+          @click="confirmLinkWork"
         >
-          确认合并
+          确认关联
         </el-button>
       </template>
     </el-dialog>
@@ -3427,7 +3804,8 @@ watch(
 
 .knowledge-relations-layout,
 .knowledge-points-layout,
-.knowledge-graph-layout {
+.knowledge-graph-layout,
+.items-layout {
   grid-template-columns: minmax(0, 1fr);
 }
 
@@ -3474,6 +3852,20 @@ watch(
   min-width: 0;
 }
 
+.list-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.list-card-header__meta {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 12px;
+  min-width: 0;
+}
+
 .resource-form {
   display: flex;
   flex-direction: column;
@@ -3490,13 +3882,6 @@ watch(
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: 8px;
   width: 100%;
-}
-
-.list-card-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
 }
 
 .resource-list {
@@ -3593,6 +3978,78 @@ watch(
   min-height: 0;
 }
 
+.item-panel-dialog :deep(.el-dialog__body) {
+  display: flex;
+  flex-direction: column;
+  padding-top: 8px;
+  min-height: 0;
+}
+
+.item-panel__header {
+  padding-right: 24px;
+}
+
+.item-panel__title {
+  font-size: 18px;
+  font-weight: 600;
+  color: #101828;
+}
+
+.item-panel__subtitle {
+  margin: 4px 0 0;
+  color: #667085;
+  font-size: 13px;
+}
+
+.item-panel__body {
+  flex: 1;
+  max-height: calc(100dvh - 132px);
+  min-height: min(560px, calc(100dvh - 140px));
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.item-form {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.item-form :deep(.el-form-item:last-child) {
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+  margin: 2px 0 0;
+  padding: 12px 0 4px;
+  background: var(--el-bg-color, #fff);
+  box-shadow: 0 -8px 14px rgba(255, 255, 255, 0.9);
+}
+
+.access-url-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+}
+
+.access-url-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+}
+
+.access-url-row .el-input {
+  flex: 1;
+  min-width: 0;
+}
+
+.access-url-file-input {
+  display: none;
+}
+
 .excerpt-panel__header {
   padding-right: 24px;
 }
@@ -3644,9 +4101,7 @@ watch(
   flex: 1;
   min-height: 0;
   overflow: auto;
-  border: 1px solid #e5e7eb;
-  border-radius: 8px;
-  padding: 8px;
+  padding: 4px 0;
 }
 
 .excerpt-list__empty {
@@ -3684,12 +4139,10 @@ watch(
   width: min(720px, 100%);
   max-height: 100%;
   min-height: 0;
-  padding: 14px 14px 0;
+  padding: 0;
   overflow-y: auto;
   align-content: start;
-  background: #f8fafc;
-  border: 1px solid #e4e7ec;
-  border-radius: 8px;
+  background: transparent;
 }
 
 .excerpt-form h3 {
@@ -3705,11 +4158,10 @@ watch(
   position: sticky;
   bottom: 0;
   z-index: 1;
-  margin: 2px -14px 0;
-  padding: 12px 14px 14px;
-  background: #f8fafc;
-  border-top: 1px solid #e4e7ec;
-  box-shadow: 0 -8px 14px rgba(248, 250, 252, 0.9);
+  margin: 2px 0 0;
+  padding: 12px 0 4px;
+  background: var(--el-bg-color, #fff);
+  box-shadow: 0 -8px 14px rgba(255, 255, 255, 0.9);
 }
 
 .excerpt-form :deep(.el-form-item:last-child .el-form-item__content) {
@@ -3734,6 +4186,73 @@ watch(
   font-size: 12px;
   line-height: 1.5;
   color: #52606d;
+}
+
+.chapter-resource-judge {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+}
+
+.chapter-outline-panel {
+  height: 220px;
+  min-height: 220px;
+  margin-top: 4px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: #f8fafc;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+}
+
+.chapter-outline-panel__tree {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 6px 4px;
+  background: #fff;
+}
+
+.chapter-outline-panel__node {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  width: 100%;
+  padding-right: 8px;
+}
+
+.chapter-outline-panel__node-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chapter-outline-panel__node small {
+  flex-shrink: 0;
+  color: #64748b;
+  font-size: 11px;
+}
+
+.chapter-outline-panel__empty {
+  flex: 1;
+  min-height: 0;
+  margin: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  text-align: center;
+  color: #94a3b8;
+  font-size: 12px;
+  line-height: 1.5;
+  box-sizing: border-box;
 }
 
 .chapter-panel-dialog :deep(.el-dialog__body) {
@@ -3832,24 +4351,60 @@ watch(
   margin: 4px 0;
 }
 
-.merge-work-dialog__intro {
-  margin: 0 0 12px;
+.link-work-dialog__body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 280px;
+}
+
+.link-work-dialog__intro {
+  margin: 0;
   color: #344054;
   font-size: 14px;
   line-height: 1.5;
+  flex-shrink: 0;
 }
 
-.merge-work-dialog__intro .row-meta {
+.link-work-dialog__intro .row-meta {
   display: block;
   margin-top: 6px;
 }
 
-.merge-work-dialog__table :deep(.el-table__row) {
-  cursor: pointer;
+.link-work-dialog__modes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 20px;
+  flex-shrink: 0;
 }
 
-.merge-work-dialog__table :deep(.merge-work-row--selected > td) {
-  background: #ecf5ff !important;
+.link-work-dialog__tree {
+  flex: 1;
+  min-height: 0;
+  height: 220px;
+  overflow: auto;
+  border: 1px solid #eaecf0;
+  border-radius: 8px;
+  padding: 4px 0;
+  background: #fcfcfd;
+}
+
+.link-work-dialog__hint {
+  flex: 1;
+  min-height: 120px;
+  margin: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  color: #667085;
+  font-size: 13px;
+  line-height: 1.55;
+  text-align: center;
+  border: 1px dashed #e2e8f0;
+  border-radius: 8px;
+  background: #f8fafc;
+  box-sizing: border-box;
 }
 
 @media (max-width: 960px) {
@@ -3883,7 +4438,7 @@ watch(
 
   .excerpt-form :deep(.el-form-item:last-child) {
     position: static;
-    margin: 2px -14px 0;
+    margin: 2px 0 0;
     box-shadow: none;
   }
 

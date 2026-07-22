@@ -559,7 +559,22 @@ function hydrateResourceItem(item: ResourceItem): ResourceItem {
     identityFieldLabel: type?.identityFieldLabel || item.identityFieldLabel || '',
     workId: work?.id || item.workId || '',
     workTitle: work?.title || item.workTitle || '',
+    accessUrls: normalizeAccessUrls(item.accessUrls),
   };
+}
+
+function normalizeAccessUrls(urls: string[] | undefined | null): string[] {
+  if (!urls?.length) return [];
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const raw of urls) {
+    const url = raw?.trim();
+    if (!url || url.length > 1024 || seen.has(url)) continue;
+    seen.add(url);
+    result.push(url);
+    if (result.length >= 50) break;
+  }
+  return result;
 }
 
 function hydrateResourceExcerpt(excerpt: ResourceExcerpt): ResourceExcerpt {
@@ -950,6 +965,7 @@ export function createResourceItemMock(payload: CreateResourceItemPayload): Reso
     title: payload.title.trim(),
     identityValue,
     sourceUrl: payload.sourceUrl || '',
+    accessUrls: normalizeAccessUrls(payload.accessUrls),
     edition: payload.edition || '',
     note: payload.note || '',
     titleSource: payload.titleSource || 'auto',
@@ -977,6 +993,7 @@ export function updateResourceItemMock(id: string, payload: UpdateResourceItemPa
     title: payload.title.trim(),
     identityValue,
     sourceUrl: payload.sourceUrl || '',
+    accessUrls: normalizeAccessUrls(payload.accessUrls),
     edition: payload.edition || '',
     note: payload.note || '',
     titleSource: payload.titleSource || item.titleSource || 'auto',

@@ -49,8 +49,41 @@ public class ExternalResourceSchemaInitializer implements ApplicationRunner {
                     relaxNotNull(database, table.name(), column);
                 }
             }
+            ensureAccessUrlsColumn(database);
         } catch (Exception ex) {
             log.error("failed to relax external resource nullable columns", ex);
+        }
+    }
+
+    private void ensureAccessUrlsColumn(String database) {
+        if (!tableExists(database, "external_resource_item")) {
+            return;
+        }
+        boolean hasAccess = columnExists(database, "external_resource_item", "access_urls");
+        boolean hasLegacy = columnExists(database, "external_resource_item", "preferred_resource_urls");
+        if (hasAccess) {
+            return;
+        }
+        try {
+            if (hasLegacy) {
+                if (database.contains("mysql") || database.contains("mariadb")) {
+                    jdbcTemplate.execute(
+                        "alter table external_resource_item change column preferred_resource_urls access_urls text null"
+                    );
+                } else if (database.contains("postgresql") || database.contains("h2")) {
+                    jdbcTemplate.execute(
+                        "alter table external_resource_item rename column preferred_resource_urls to access_urls"
+                    );
+                } else {
+                    jdbcTemplate.execute("alter table external_resource_item add column access_urls text null");
+                }
+                log.info("renamed external_resource_item.preferred_resource_urls to access_urls");
+                return;
+            }
+            jdbcTemplate.execute("alter table external_resource_item add column access_urls text null");
+            log.info("added external_resource_item.access_urls column");
+        } catch (Exception ex) {
+            log.warn("failed to ensure access_urls column", ex);
         }
     }
 

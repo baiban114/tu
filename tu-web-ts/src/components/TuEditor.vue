@@ -2,7 +2,7 @@
 import { watch, onBeforeUnmount, onMounted, nextTick, ref, computed, provide, inject, type ComputedRef } from 'vue'
 import type { CSSProperties } from 'vue'
 import { useEditor, EditorContent } from '@tiptap/vue-3'
-import type { Block, HeadingSourceBinding, TextAnnotation, TextTagSpan, SpannedBlockInfo } from '@/api/types'
+import type { Block, ExternalResourceEmbedData, HeadingSourceBinding, TextAnnotation, TextTagSpan, SpannedBlockInfo } from '@/api/types'
 import type { JSONContent } from '@tiptap/core'
 import { uploadFile } from '@/api/fileStorage'
 import {
@@ -12,8 +12,10 @@ import {
   getTuEditorExtensions,
   getTuEditorSchemaExtensions,
   createPdfExcerptNodeAttrs,
+  createCompareBlockAttrs,
   ANNOTATION_SIDE_MARKERS_META,
 } from '@/editor'
+import type { CompareSide } from '@/utils/compareBlock'
 import {
   findClipboardImageFileOnly,
   insertHtmlFromClipboard,
@@ -116,6 +118,7 @@ const emit = defineEmits<{
   'open-resource-picker': []
   'open-pdf-excerpt-picker': []
   'edit-pdf-excerpt-source': [blockId: string]
+  'bind-compare-side': [payload: { blockId: string; side: CompareSide }]
   'open-tag-editor': [blockId: string]
   'heading-source-click': [binding: HeadingSourceBinding, context: { blockId: string; title: string; clientX: number; clientY: number }]
   'blockquote-excerpt-click': [binding: HeadingSourceBinding, context: { blockId: string; title: string; clientX: number; clientY: number }]
@@ -260,6 +263,10 @@ provide('onCompoundBadgeClick', handleCompoundBadgeClick)
 
 provide('onEditPdfExcerptSource', (blockId: string) => {
   emit('edit-pdf-excerpt-source', blockId)
+})
+
+provide('onBindCompareSide', (blockId: string, side: CompareSide) => {
+  emit('bind-compare-side', { blockId, side })
 })
 
 // --- Lasso (multi-select) ---
@@ -666,6 +673,10 @@ const insertExternalBlockAfterPos = (type: InsertBlockType, pos: number) => {
     requestPdfExcerptInsertAfterPos(pos)
     return
   }
+  if (type === 'compare') {
+    insertCompareBlockAt(pos)
+    return
+  }
 
   const block = createExternalBlock(type)
   if (!block) return
@@ -687,6 +698,10 @@ const insertExternalBlockAtSelection = (type: InsertBlockType) => {
   if (type === 'pdf-excerpt') {
     pendingPdfExcerptInsertPos = editor.value.state.selection.from
     emit('open-pdf-excerpt-picker')
+    return
+  }
+  if (type === 'compare') {
+    insertCompareBlockAt(null)
     return
   }
 
@@ -720,6 +735,36 @@ const completePendingExternalResourceInsert = (block: Block) => {
   pendingExternalResourceInsertPos = null
 }
 
+/** Reuse the pending external-resource insert caret for a PDF block. */
+const insertPdfExcerptUsingExternalResourcePending = (input: {
+  fileId: string
+  fileName: string
+  viewMode?: 'excerpt' | 'full'
+  startPage: number
+  endPage: number
+  height?: number
+}) => {
+  if (pendingExternalResourceInsertPos != null) {
+    pendingPdfExcerptInsertPos = pendingExternalResourceInsertPos
+    pendingExternalResourceInsertPos = null
+  }
+  return insertPdfExcerptBlock(input)
+}
+
+const insertImageUsingExternalResourcePending = (src: string) => {
+  if (!editor.value || !src.trim()) return false
+  const content = {
+    type: 'image',
+    attrs: { src: src.trim() },
+  }
+  if (pendingExternalResourceInsertPos != null) {
+    const pos = pendingExternalResourceInsertPos
+    pendingExternalResourceInsertPos = null
+    return editor.value.chain().focus().insertContentAt(pos, content).run()
+  }
+  return editor.value.chain().focus().setImage({ src: src.trim() }).run()
+}
+
 const insertPdfExcerptBlock = (input: {
   fileId: string
   fileName: string
@@ -739,6 +784,47 @@ const insertPdfExcerptBlock = (input: {
     return editor.value.chain().focus().insertContentAt(pos, content).run()
   }
   return editor.value.chain().focus().insertContent(content).run()
+}
+
+const insertCompareBlockAt = (pos: number | null) => {
+  if (!editor.value) return false
+  const content = {
+    type: 'compareBlock',
+    attrs: createCompareBlockAttrs(),
+  }
+  if (pos != null) {
+    return editor.value.chain().focus().insertContentAt(pos, content).run()
+  }
+  return editor.value.chain().focus().insertContent(content).run()
+}
+
+const updateCompareBlockSide = (
+  blockId: string,
+  side: CompareSide,
+  externalResource: ExternalResourceEmbedData,
+) => {
+  const ed = editor.value
+  if (!ed || !blockId) return false
+
+  let found: { pos: number; node: import('prosemirror-model').Node } | null = null
+  ed.state.doc.descendants((node, pos) => {
+    if (node.type.name === 'compareBlock' && node.attrs.blockId === blockId) {
+      found = { pos, node }
+      return false
+    }
+    return true
+  })
+  if (!found) return false
+
+  const attrKey = side === 'left' ? 'leftSide' : 'rightSide'
+  return ed.chain().focus().command(({ tr, dispatch }) => {
+    if (!dispatch) return true
+    tr.setNodeMarkup(found!.pos, undefined, {
+      ...found!.node.attrs,
+      [attrKey]: externalResource,
+    })
+    return true
+  }).run()
 }
 
 const updatePdfExcerptBlock = (
@@ -2221,6 +2307,52 @@ defineExpose({
     }).run()
     return true
   },
+  clearBlockquoteExcerptBindingByBlockId: (blockId: string) => {
+    const ed = editor.value
+    if (!ed || !blockId) return false
+    let targetPos = -1
+    let targetAttrs: Record<string, unknown> | null = null
+    ed.state.doc.descendants((node, pos) => {
+      if (node.type.name === 'blockquote' && node.attrs.blockId === blockId) {
+        targetPos = pos
+        targetAttrs = { ...(node.attrs as Record<string, unknown>) }
+        return false
+      }
+      return true
+    })
+    if (targetPos < 0 || !targetAttrs) return false
+    ed.chain().command(({ tr }) => {
+      tr.setNodeMarkup(targetPos, undefined, {
+        ...(targetAttrs as Record<string, unknown>),
+        excerptBinding: null,
+      })
+      return true
+    }).run()
+    return true
+  },
+  clearHeadingSourceBindingByBlockId: (blockId: string) => {
+    const ed = editor.value
+    if (!ed || !blockId) return false
+    let targetPos = -1
+    let targetAttrs: Record<string, unknown> | null = null
+    ed.state.doc.descendants((node, pos) => {
+      if (node.type.name === 'heading' && node.attrs.blockId === blockId) {
+        targetPos = pos
+        targetAttrs = { ...(node.attrs as Record<string, unknown>) }
+        return false
+      }
+      return true
+    })
+    if (targetPos < 0 || !targetAttrs) return false
+    ed.chain().command(({ tr }) => {
+      tr.setNodeMarkup(targetPos, undefined, {
+        ...(targetAttrs as Record<string, unknown>),
+        sourceBinding: null,
+      })
+      return true
+    }).run()
+    return true
+  },
   clearHeadingSourceBinding: () => {
     const found = findHeadingAtSelection()
     const ed = editor.value
@@ -2237,7 +2369,10 @@ defineExpose({
   applyUrlDisplayMode,
   applyUrlEmbedHeight,
   insertPdfExcerptBlock,
+  insertPdfExcerptUsingExternalResourcePending,
+  insertImageUsingExternalResourcePending,
   updatePdfExcerptBlock,
+  updateCompareBlockSide,
   setUrlHoverSuppressed,
   showUrlHoverForInline: (from: number, to: number, url: string, displayMode: UrlDisplayMode = 'link', label?: string) => {
     const ed = editor.value

@@ -25,12 +25,35 @@ import TuEditor from './TuEditor.vue'
 import ResourcePositionLocatorField from './ResourcePositionLocatorField.vue'
 import ResourcePickerExcerptBranch from './ResourcePickerExcerptBranch.vue'
 import { normalizeResourcePositionLocator, resourcePositionDisplay } from '@/utils/resourcePositionLocator'
+import {
+  defaultAccessUrl,
+  extractStoredFileId,
+  guessAccessUrlFileName,
+  listAccessUrls,
+  resolveAccessUrlInsertKind,
+  type AccessUrlInsertKind,
+} from '@/utils/accessUrlInsert'
+import { PDF_EXCERPT_DEFAULT_HEIGHT } from '@/utils/pdfExcerpt'
 
 const EXCERPT_CHILD_LIMIT = 100
+
+export interface ExternalResourcePickerPdfInsert {
+  fileId: string
+  fileName: string
+  viewMode: 'full'
+  startPage: number
+  endPage: number
+  height: number
+}
 
 export interface ExternalResourcePickerSelection {
   title: string
   externalResource: ExternalResourceEmbedData
+  /** Whole-resource insert: chosen access URL (defaults to first). */
+  accessUrl?: string
+  insertKind?: AccessUrlInsertKind
+  pdf?: ExternalResourcePickerPdfInsert
+  imageSrc?: string
 }
 
 export interface ExternalResourcePickerExcerptCreated {
@@ -74,6 +97,8 @@ const excerptIndex = ref<Record<string, ResourceExcerpt[]>>({})
 const chapters = ref<ResourceChapter[]>([])
 const selectedItemId = ref('')
 const selectedExcerptId = ref('')
+const selectedAccessUrl = ref('')
+const insertingWholeResource = ref(false)
 /** 左侧节选树展开节点：`item:{id}` / `ex:{id}`，默认全部收起 */
 const expandedNodeIds = ref<Set<string>>(new Set())
 const createResourceVisible = ref(false)
@@ -125,6 +150,8 @@ const selectedItem = computed(() => items.value.find((item) => item.id === selec
 const selectedItemType = computed(() => selectedItem.value ? typeById.value.get(selectedItem.value.typeId) : null)
 const selectedSupportsExcerpts = computed(() => supportsResourceExcerpts(selectedItemType.value?.code))
 const selectedSupportsBookChapters = computed(() => supportsBookChapters(selectedItemType.value?.code))
+const selectedAccessUrls = computed(() => listAccessUrls(selectedItem.value?.accessUrls))
+const canInsertWholeResource = computed(() => selectedAccessUrls.value.length > 0)
 const isMarkExcerptMode = computed(() => props.mode === 'markExcerpt')
 const isBindSourceMode = computed(() => props.mode === 'bindSource')
 const isSetBasisMode = computed(() => props.mode === 'setBasis')
@@ -468,17 +495,79 @@ const snapshotFor = (item: ResourceItem, excerpt?: ResourceExcerpt) => ({
   excerptNote: excerpt?.note,
 })
 
-const selectResource = (item: ResourceItem) => {
-  emit('select', {
-    title: item.title,
-    externalResource: {
+const selectResource = async (item: ResourceItem) => {
+  const accessUrls = listAccessUrls(item.accessUrls)
+  const accessUrl = (selectedAccessUrl.value.trim() || defaultAccessUrl(accessUrls)).trim()
+  if (!accessUrl) {
+    error.value = '请先在资源实体中配置访问地址，再插入整个资源'
+    return
+  }
+
+  insertingWholeResource.value = true
+  error.value = ''
+  try {
+    const insertKind = await resolveAccessUrlInsertKind(accessUrl)
+    const externalResource: ExternalResourceEmbedData = {
       resourceItemId: item.id,
       resourceExcerptId: null,
       mode: 'resource',
-      snapshot: snapshotFor(item),
-    },
-  })
-  emit('update:visible', false)
+      snapshot: {
+        ...snapshotFor(item),
+        // Prefer access URL for open/locate when falling back to resource card.
+        sourceUrl: accessUrl || item.sourceUrl,
+      },
+    }
+
+    if (insertKind === 'pdf') {
+      const fileId = extractStoredFileId(accessUrl)
+      if (!fileId) {
+        error.value = 'PDF 摘页仅支持站内文件访问地址（/api/files/...）'
+        return
+      }
+      const guessed = guessAccessUrlFileName(accessUrl, item.title)
+      const fileName = guessed.toLowerCase().endsWith('.pdf') ? guessed : `${item.title || 'resource'}.pdf`
+      emit('select', {
+        title: item.title,
+        accessUrl,
+        insertKind: 'pdf',
+        pdf: {
+          fileId,
+          fileName,
+          viewMode: 'full',
+          startPage: 1,
+          endPage: 1,
+          height: PDF_EXCERPT_DEFAULT_HEIGHT,
+        },
+        externalResource,
+      })
+      emit('update:visible', false)
+      return
+    }
+
+    if (insertKind === 'image') {
+      emit('select', {
+        title: item.title,
+        accessUrl,
+        insertKind: 'image',
+        imageSrc: accessUrl,
+        externalResource,
+      })
+      emit('update:visible', false)
+      return
+    }
+
+    emit('select', {
+      title: item.title,
+      accessUrl,
+      insertKind: 'externalResource',
+      externalResource,
+    })
+    emit('update:visible', false)
+  } catch (err) {
+    error.value = err instanceof Error ? err.message : '无法根据访问地址插入'
+  } finally {
+    insertingWholeResource.value = false
+  }
 }
 
 const linkDocumentResource = (item: ResourceItem) => {
@@ -617,7 +706,18 @@ watch(() => [props.initialExcerptText, props.initialExcerptTitle, props.mode], (
 
 watch(selectedItemId, () => {
   selectedExcerptId.value = ''
+  selectedAccessUrl.value = defaultAccessUrl(selectedItem.value?.accessUrls)
   void loadExcerpts()
+})
+
+watch(selectedAccessUrls, (urls) => {
+  if (!urls.length) {
+    selectedAccessUrl.value = ''
+    return
+  }
+  if (!urls.includes(selectedAccessUrl.value)) {
+    selectedAccessUrl.value = urls[0] || ''
+  }
 })
 </script>
 
@@ -809,14 +909,37 @@ watch(selectedItemId, () => {
               >
                 挂靠此资源实体
               </button>
-              <button
-                v-else-if="!isLinkDocumentMode && !isExcerptOnlyMode"
-                type="button"
-                class="resource-picker__primary"
-                @click="selectResource(selectedItem)"
-              >
-                插入整个资源
-              </button>
+              <template v-else-if="!isLinkDocumentMode && !isExcerptOnlyMode">
+                <label class="resource-picker__access-url">
+                  <span class="resource-picker__access-url-label">访问地址</span>
+                  <select
+                    v-model="selectedAccessUrl"
+                    :disabled="!canInsertWholeResource || insertingWholeResource"
+                  >
+                    <option v-if="!canInsertWholeResource" value="" disabled>
+                      未配置访问地址
+                    </option>
+                    <option
+                      v-for="url in selectedAccessUrls"
+                      :key="url"
+                      :value="url"
+                    >
+                      {{ url }}
+                    </option>
+                  </select>
+                </label>
+                <p class="resource-picker__access-url-hint">
+                  默认使用第一条访问地址；PDF 将插入 PDF 摘页块，图片插入图片，其它插入资源卡片。
+                </p>
+                <button
+                  type="button"
+                  class="resource-picker__primary"
+                  :disabled="!canInsertWholeResource || insertingWholeResource"
+                  @click="selectResource(selectedItem)"
+                >
+                  {{ insertingWholeResource ? '插入中…' : '插入整个资源' }}
+                </button>
+              </template>
 
               <div v-if="!isLinkDocumentMode && selectedSupportsExcerpts" class="resource-picker__excerpts">
                 <template v-if="!isMarkExcerptMode">
@@ -1015,6 +1138,40 @@ watch(selectedItemId, () => {
 }
 
 .resource-picker__detail-meta {
+  flex-shrink: 0;
+}
+
+.resource-picker__access-url {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 12px 0 0;
+  flex-shrink: 0;
+}
+
+.resource-picker__access-url-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: #475569;
+}
+
+.resource-picker__access-url select {
+  width: 100%;
+  min-height: 36px;
+  box-sizing: border-box;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  padding: 6px 10px;
+  font-size: 13px;
+  color: #0f172a;
+  background: #fff;
+}
+
+.resource-picker__access-url-hint {
+  margin: 6px 0 0;
+  font-size: 12px;
+  line-height: 1.45;
+  color: #64748b;
   flex-shrink: 0;
 }
 

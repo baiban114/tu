@@ -186,10 +186,10 @@ Deletes remove both indexes immediately. RAG flush uses fingerprint skip (`INDEX
 ### File storage (MinIO / S3)
 
 - **Purpose**: editor paste/upload stores images as URLs (`/api/files/{id}`), not Base64 in markdown. PDF excerpts upload the full PDF once; document blocks reference `fileId` + page range only (no file splitting).
-- **API**: `POST /api/files` (multipart `file`), `GET /api/files/{id}` (inline stream; supports `Range: bytes=…` → `206` for PDF.js partial loading).
+- **API**: `POST /api/files` (multipart `file`, small files); resumable chunked upload `POST /api/files/uploads` + `PUT .../parts/{n}` + `POST .../complete` (≥8MB by default); `GET /api/files/{id}` (inline; `Range` → `206` for PDF.js).
 - **PDF excerpt block**: `pdfExcerptBlock` node + `PdfExcerptPicker` (slash「PDF 摘页」); serialization `<!--tu:pdf-excerpt ...-->` via `src/utils/pdfExcerpt.ts`; render via PDF.js + `src/utils/pdfDocumentCache.ts`.
 - **Standalone MinIO** (when other containers already run): `docker compose -f docker-compose.minio.yml --env-file .env.minio up -d` in `tu-backend/` — Compose project `minio`, container `minio`. See `README-compose.md`.
-- **Config**: `STORAGE_ENABLED`, `STORAGE_S3_ENDPOINT` (default `http://localhost:9000`), `STORAGE_S3_*` credentials/bucket (`tu-files`), `STORAGE_MAX_PDF_FILE_SIZE` (default 200MB). Backend auto-creates bucket on first upload.
+- **Config**: `STORAGE_ENABLED`, `STORAGE_S3_*`, `STORAGE_MAX_PDF_FILE_SIZE` (default 200MB), `STORAGE_MULTIPART_THRESHOLD_BYTES` / `STORAGE_MULTIPART_CHUNK_SIZE_BYTES` (default 8MB), servlet `STORAGE_MULTIPART_MAX_*` (default 200MB/210MB for single-shot). Frontend: `uploadFile()` in `src/api/fileStorage.ts` auto-selects simple vs multipart and resumes via `localStorage`.
 - **Frontend**: `src/api/fileStorage.ts`; `TuEditor` paste uploads via API (mock mode uses `blob:` URLs).
 
 ## RAG service (tu-rag-service)

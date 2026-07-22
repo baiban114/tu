@@ -32,8 +32,9 @@ spring:
     uris: ${ELASTICSEARCH_URIS:http://localhost:9200}
   servlet:
     multipart:
-      max-file-size: ${STORAGE_MULTIPART_MAX_FILE_SIZE:20MB}
-      max-request-size: ${STORAGE_MULTIPART_MAX_REQUEST_SIZE:25MB}
+      # Align with storage.max-pdf-file-size (200MB) so large PDF/resource uploads are not rejected by Tomcat first.
+      max-file-size: ${STORAGE_MULTIPART_MAX_FILE_SIZE:200MB}
+      max-request-size: ${STORAGE_MULTIPART_MAX_REQUEST_SIZE:210MB}
 
 server:
   port: 8080
@@ -93,6 +94,8 @@ storage:
   s3-path-style: ${STORAGE_S3_PATH_STYLE:true}
   max-file-size: ${STORAGE_MAX_FILE_SIZE:20971520}
   max-pdf-file-size: ${STORAGE_MAX_PDF_FILE_SIZE:209715200}
+  multipart-threshold-bytes: ${STORAGE_MULTIPART_THRESHOLD_BYTES:8388608}
+  multipart-chunk-size-bytes: ${STORAGE_MULTIPART_CHUNK_SIZE_BYTES:8388608}
 
 secret:
   # Development fallback key. Override TU_SECRET_ENCRYPTION_KEY in production.

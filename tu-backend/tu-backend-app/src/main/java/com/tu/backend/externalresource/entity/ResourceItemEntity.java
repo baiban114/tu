@@ -38,6 +38,10 @@ public class ResourceItemEntity {
     @Column(name = "source_url", length = 1024)
     private String sourceUrl;
 
+    /** JSON array of in-site access URLs (uploaded files or platform-reachable resources). */
+    @Column(name = "access_urls", columnDefinition = "text")
+    private String accessUrlsJson;
+
     @Column(length = 128)
     private String edition;
 
@@ -117,6 +121,14 @@ public class ResourceItemEntity {
 
     public void setSourceUrl(String sourceUrl) {
         this.sourceUrl = sourceUrl;
+    }
+
+    public String getAccessUrlsJson() {
+        return accessUrlsJson;
+    }
+
+    public void setAccessUrlsJson(String accessUrlsJson) {
+        this.accessUrlsJson = accessUrlsJson;
     }
 
     public String getEdition() {

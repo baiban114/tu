@@ -5,6 +5,7 @@ export type InsertBlockType =
   | 'ref'
   | 'externalResource'
   | 'pdf-excerpt'
+  | 'compare'
   | 'line'
   | 'x6'
   | 'x6-mindmap'
@@ -55,6 +56,7 @@ export const insertOptions: InsertOption[] = [
   { key: 'ref', label: '引用', icon: '🔖', keywords: ['ref', 'reference', 'yinyong'] },
   { key: 'externalResource', label: '外部资源', icon: '▣', keywords: ['resource', 'external', 'book', 'ziyuan', 'tushu'] },
   { key: 'pdf-excerpt', label: 'PDF 摘页', icon: '📄', keywords: ['pdf', '摘页', 'document', 'file'] },
+  { key: 'compare', label: '文本比较', icon: '⧉', keywords: ['compare', 'diff', '对照', '比较', 'merge'] },
   { key: 'line', label: '时间轴', icon: '🕒', keywords: ['timeline', 'line', 'shijianzhou'] },
   { key: 'x6', label: 'X6 画板', icon: '🧩', keywords: ['x6', 'graph', 'draw', 'huaban'] },
   { key: 'x6-mindmap', label: '思维导图', icon: '◇', keywords: ['mindmap', '思维导图', '脑图', 'tree'] },

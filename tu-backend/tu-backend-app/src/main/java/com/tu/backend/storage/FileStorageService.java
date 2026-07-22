@@ -21,8 +21,6 @@ import software.amazon.awssdk.services.s3.model.S3Exception;
 
 import java.io.IOException;
 import java.io.InputStream;
-import java.util.Locale;
-import java.util.Set;
 import java.util.UUID;
 
 @Service
@@ -30,15 +28,6 @@ import java.util.UUID;
 public class FileStorageService {
 
     private static final Logger log = LoggerFactory.getLogger(FileStorageService.class);
-    private static final Set<String> ALLOWED_CONTENT_TYPES = Set.of(
-        "image/png",
-        "image/jpeg",
-        "image/jpg",
-        "image/gif",
-        "image/webp",
-        "image/svg+xml",
-        "application/pdf"
-    );
 
     private final S3Client s3Client;
     private final FileAssetRepository fileAssetRepository;
@@ -68,19 +57,19 @@ public class FileStorageService {
             throw new BusinessException(40000, "file required");
         }
 
-        String contentType = normalizeContentType(file.getContentType());
-        if (file.getSize() > resolveMaxFileSize(contentType)) {
+        String contentType = FileUploadSupport.normalizeContentType(file.getContentType());
+        if (file.getSize() > FileUploadSupport.resolveMaxFileSize(properties, contentType)) {
             throw new BusinessException(40000, "file too large");
         }
 
-        if (!ALLOWED_CONTENT_TYPES.contains(contentType)) {
+        if (!FileUploadSupport.ALLOWED_CONTENT_TYPES.contains(contentType)) {
             throw new BusinessException(40000, "unsupported file type");
         }
 
         ensureBucket();
 
         String id = "file-" + UUID.randomUUID().toString().replace("-", "");
-        String extension = extensionForContentType(contentType);
+        String extension = FileUploadSupport.extensionForContentType(contentType);
         String storageKey = "files/" + id + extension;
 
         try {
@@ -102,7 +91,9 @@ public class FileStorageService {
         FileAssetEntity entity = new FileAssetEntity();
         entity.setId(id);
         entity.setStorageKey(storageKey);
-        entity.setOriginalFilename(StringUtils.cleanPath(safeFilename(file.getOriginalFilename())));
+        entity.setOriginalFilename(StringUtils.cleanPath(
+            FileUploadSupport.safeFilename(file.getOriginalFilename())
+        ));
         entity.setContentType(contentType);
         entity.setSizeBytes(file.getSize());
         fileAssetRepository.save(entity);
@@ -145,13 +136,6 @@ public class FileStorageService {
         }
     }
 
-    private long resolveMaxFileSize(String contentType) {
-        if ("application/pdf".equals(contentType)) {
-            return properties.getMaxPdfFileSize();
-        }
-        return properties.getMaxFileSize();
-    }
-
     private void ensureBucket() {
         String bucket = properties.getS3Bucket();
         try {
@@ -163,34 +147,6 @@ public class FileStorageService {
             s3Client.createBucket(CreateBucketRequest.builder().bucket(bucket).build());
             log.info("Created S3 bucket {}", bucket);
         }
-    }
-
-    private static String normalizeContentType(String contentType) {
-        if (!StringUtils.hasText(contentType)) {
-            return "application/octet-stream";
-        }
-        return contentType.split(";", 2)[0].trim().toLowerCase(Locale.ROOT);
-    }
-
-    private static String extensionForContentType(String contentType) {
-        return switch (contentType) {
-            case "image/png" -> ".png";
-            case "image/jpeg", "image/jpg" -> ".jpg";
-            case "image/gif" -> ".gif";
-            case "image/webp" -> ".webp";
-            case "image/svg+xml" -> ".svg";
-            case "application/pdf" -> ".pdf";
-            default -> "";
-        };
-    }
-
-    private static String safeFilename(String filename) {
-        if (!StringUtils.hasText(filename)) {
-            return "upload";
-        }
-        String cleaned = StringUtils.cleanPath(filename.trim());
-        int slash = Math.max(cleaned.lastIndexOf('/'), cleaned.lastIndexOf('\\'));
-        return slash >= 0 ? cleaned.substring(slash + 1) : cleaned;
     }
 
     public record StoredFile(

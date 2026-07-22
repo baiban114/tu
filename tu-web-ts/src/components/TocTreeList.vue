@@ -9,6 +9,8 @@ import { headingSourceBadgeLabel } from '@/utils/headingSource'
 const props = defineProps<{
   items: TocTreeItem[]
   highlightedBlockId: string | null
+  /** Prefer item id highlight (focus follow); falls back to blockId. */
+  highlightedItemId?: string | null
   sectionTagsByItemId?: Record<string, BlockTag[]>
   isExpanded: (item: TocTreeItem) => boolean
 }>()
@@ -40,12 +42,17 @@ const onSourceClick = (item: TocTreeItem, event: MouseEvent) => {
   emit('source-click', item)
 }
 
-const itemClasses = (item: TocTreeItem, highlightedBlockId: string | null) => [
+function isItemActive(item: TocTreeItem): boolean {
+  if (props.highlightedItemId) return props.highlightedItemId === item.id
+  return Boolean(props.highlightedBlockId && props.highlightedBlockId === item.blockId)
+}
+
+const itemClasses = (item: TocTreeItem) => [
   'page-toc__item',
   item.sourceType === 'ref-group' && item.level === 0
     ? 'page-toc__item--ref'
     : `page-toc__item--level-${item.level}`,
-  { 'page-toc__item--active': highlightedBlockId === item.blockId },
+  { 'page-toc__item--active': isItemActive(item) },
 ]
 
 function visibleSectionTags(item: TocTreeItem): BlockTag[] {
@@ -66,7 +73,8 @@ function extraSectionTagCount(item: TocTreeItem): number {
     >
       <button
         type="button"
-        :class="itemClasses(item, highlightedBlockId)"
+        :data-toc-item-id="item.id"
+        :class="itemClasses(item)"
         @click="onItemClick(item)"
         @contextmenu="onContextMenu(item, $event)"
       >
@@ -109,6 +117,7 @@ function extraSectionTagCount(item: TocTreeItem): number {
         <TocTreeList
           :items="item.children"
           :highlighted-block-id="highlightedBlockId"
+          :highlighted-item-id="highlightedItemId"
           :section-tags-by-item-id="sectionTagsByItemIdMap"
           :is-expanded="isExpanded"
           @click="emit('click', $event)"
@@ -123,8 +132,9 @@ function extraSectionTagCount(item: TocTreeItem): number {
       <button
         type="button"
         class="page-toc__item"
+        :data-toc-item-id="item.id"
         :class="{
-          'page-toc__item--active': highlightedBlockId === item.blockId,
+          'page-toc__item--active': isItemActive(item),
           [`page-toc__item--level-${item.level}`]: true,
         }"
         @click="onItemClick(item)"
@@ -157,8 +167,9 @@ function extraSectionTagCount(item: TocTreeItem): number {
       v-else
       type="button"
       class="page-toc__item"
+      :data-toc-item-id="item.id"
       :class="{
-        'page-toc__item--active': highlightedBlockId === item.blockId,
+        'page-toc__item--active': isItemActive(item),
         [`page-toc__item--level-${item.level}`]: true,
       }"
       @click="onItemClick(item)"

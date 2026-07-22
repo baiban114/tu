@@ -568,6 +568,7 @@ public class ExternalResourceService {
         }
         entity.setIdentityValue(identityValue);
         entity.setSourceUrl(blankToNull(request.sourceUrl()));
+        entity.setAccessUrlsJson(serializeAccessUrls(request.accessUrls()));
         entity.setEdition(blankToNull(request.edition()));
         entity.setNote(blankToNull(request.note()));
         entity.setTitleSource(FieldSource.orAuto(request.titleSource()));
@@ -588,6 +589,7 @@ public class ExternalResourceService {
         }
         entity.setIdentityValue(identityValue);
         entity.setSourceUrl(blankToNull(request.sourceUrl()));
+        entity.setAccessUrlsJson(serializeAccessUrls(request.accessUrls()));
         entity.setEdition(blankToNull(request.edition()));
         entity.setNote(blankToNull(request.note()));
         if (request.titleSource() != null) {
@@ -944,6 +946,7 @@ public class ExternalResourceService {
             entity.getTitle(),
             entity.getIdentityValue(),
             entity.getSourceUrl(),
+            deserializeAccessUrls(entity.getAccessUrlsJson()),
             entity.getEdition(),
             entity.getNote(),
             entity.getTitleSource(),
@@ -996,6 +999,44 @@ public class ExternalResourceService {
             });
         } catch (JsonProcessingException ex) {
             return Map.of();
+        }
+    }
+
+    private List<String> normalizeAccessUrls(List<String> urls) {
+        if (urls == null || urls.isEmpty()) {
+            return List.of();
+        }
+        return urls.stream()
+            .filter(value -> value != null && !value.isBlank())
+            .map(String::trim)
+            .filter(value -> value.length() <= 1024)
+            .distinct()
+            .limit(50)
+            .toList();
+    }
+
+    private String serializeAccessUrls(List<String> urls) {
+        List<String> normalized = normalizeAccessUrls(urls);
+        if (normalized.isEmpty()) {
+            return null;
+        }
+        try {
+            return objectMapper.writeValueAsString(normalized);
+        } catch (JsonProcessingException ex) {
+            throw new BusinessException(50000, "failed to serialize access urls");
+        }
+    }
+
+    private List<String> deserializeAccessUrls(String json) {
+        if (json == null || json.isBlank()) {
+            return List.of();
+        }
+        try {
+            List<String> parsed = objectMapper.readValue(json, new TypeReference<>() {
+            });
+            return normalizeAccessUrls(parsed);
+        } catch (JsonProcessingException ex) {
+            return List.of();
         }
     }
 

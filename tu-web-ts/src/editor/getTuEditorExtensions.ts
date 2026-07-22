@@ -33,6 +33,7 @@ import { TextTagSpanDecorations } from './extensions/TextTagSpanDecorations'
 import { TuLink } from './extensions/TuLink'
 import { UrlEmbedBlockNode } from './extensions/UrlEmbedBlockNode'
 import { PdfExcerptBlockNode } from './extensions/PdfExcerptBlockNode'
+import { CompareBlockNode } from './extensions/CompareBlockNode'
 import { createHtmlInlineRenderExtension } from './extensions/HtmlInlineRender'
 import type { TocCollectContext } from '@/utils/toc/collectFlatTocEntries'
 import type { BlockTag, TextTagSpan } from '@/api/types'
@@ -43,6 +44,7 @@ export type InsertBlockType =
   | 'ref'
   | 'externalResource'
   | 'pdf-excerpt'
+  | 'compare'
   | 'line'
   | 'x6'
   | 'x6-mindmap'
@@ -124,6 +126,7 @@ export function getTuEditorSchemaExtensions(): Extensions {
     MultiTableBlockNode,
     UrlEmbedBlockNode,
     PdfExcerptBlockNode,
+    CompareBlockNode,
     ParagraphNode,
     BlockquoteNode,
   ] as Extensions

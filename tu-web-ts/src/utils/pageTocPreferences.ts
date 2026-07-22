@@ -3,6 +3,11 @@ export interface PageTocPreferences {
   expandedNodeIds: string[];
   /** Whether the right TOC panel is open. */
   panelOpen: boolean;
+  /**
+   * When true, TOC expands/collapses and scrolls to follow the heading
+   * under the editor cursor. Default on.
+   */
+  focusFollow: boolean;
 }
 
 const STORAGE_KEY = 'tu:page-toc-prefs';
@@ -20,6 +25,7 @@ function normalizePreferences(
   return {
     expandedNodeIds: normalizeIds(raw?.expandedNodeIds),
     panelOpen: raw?.panelOpen !== false,
+    focusFollow: raw?.focusFollow !== false,
   };
 }
 
@@ -43,7 +49,7 @@ function readAll(): Record<string, PageTocPreferences> {
 
 export function loadPageTocPreferences(pageId: string): PageTocPreferences {
   if (!pageId.trim()) {
-    return { expandedNodeIds: [], panelOpen: true };
+    return { expandedNodeIds: [], panelOpen: true, focusFollow: true };
   }
   return normalizePreferences(readAll()[pageId.trim()]);
 }
@@ -53,7 +59,10 @@ export function savePageTocPreferences(pageId: string, prefs: PageTocPreferences
   try {
     const all = readAll();
     const normalized = normalizePreferences(prefs);
-    const isDefault = normalized.expandedNodeIds.length === 0 && normalized.panelOpen;
+    const isDefault =
+      normalized.expandedNodeIds.length === 0
+      && normalized.panelOpen
+      && normalized.focusFollow;
     if (isDefault) {
       delete all[pageId.trim()];
     } else {
