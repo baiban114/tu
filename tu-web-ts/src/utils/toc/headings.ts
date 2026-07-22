@@ -37,18 +37,34 @@ export function clampHeadingLevel(level: number): number {
   return Math.min(6, Math.max(1, level))
 }
 
-/** Find the nearest preceding heading level in a ProseMirror document. */
-export function findParentHeadingLevel(doc: ProseMirrorNode, pos: number): number {
+/** Find the nearest preceding heading node before `pos` (exclusive). */
+export function findNearestPrecedingHeading(
+  doc: ProseMirrorNode,
+  pos: number,
+): { pos: number; level: number; text: string } | null {
   let nearestPos = -1
   let nearestLevel = 0
+  let nearestText = ''
   doc.descendants((node, nodePos) => {
     if (node.type.name === 'heading' && nodePos < pos && nodePos > nearestPos) {
       nearestPos = nodePos
       nearestLevel = node.attrs?.level || 1
+      nearestText = node.textContent.trim()
     }
     return true
   })
-  return nearestLevel
+  if (nearestPos < 0) return null
+  return { pos: nearestPos, level: nearestLevel, text: nearestText }
+}
+
+/** Find the nearest preceding heading level in a ProseMirror document. */
+export function findParentHeadingLevel(doc: ProseMirrorNode, pos: number): number {
+  return findNearestPrecedingHeading(doc, pos)?.level ?? 0
+}
+
+/** Plain text of the nearest preceding heading, or empty string. */
+export function findNearestPrecedingHeadingText(doc: ProseMirrorNode, pos: number): string {
+  return findNearestPrecedingHeading(doc, pos)?.text ?? ''
 }
 
 /** Ref wrapper heading level (matches RefBlockView when tocSettings.hideTitle is false). */

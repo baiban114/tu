@@ -72,6 +72,7 @@ class ExternalResourceServiceTest {
         var dto = context.service.createExcerpt("ri-book", new CreateResourceExcerptRequest(
             "  新节选  ",
             null,
+            null,
             " 第 2 章 ",
             "  节选正文  ",
             "  备注  ",
@@ -99,6 +100,7 @@ class ExternalResourceServiceTest {
         var dto = context.service.createExcerpt("ri-book", new CreateResourceExcerptRequest(
             "仅标题节选",
             null,
+            null,
             "p. 1",
             "   ",
             null,
@@ -120,6 +122,7 @@ class ExternalResourceServiceTest {
 
         var dto = context.service.updateExcerpt("re-1", new UpdateResourceExcerptRequest(
             "更新节选",
+            null,
             null,
             "",
             "更新正文",
@@ -144,6 +147,7 @@ class ExternalResourceServiceTest {
 
         assertThatThrownBy(() -> context.service.createExcerpt("ri-article", new CreateResourceExcerptRequest(
             "不允许",
+            null,
             null,
             null,
             "正文",
@@ -171,6 +175,7 @@ class ExternalResourceServiceTest {
         var dto = context.service.createExcerpt("ri-doc", new CreateResourceExcerptRequest(
             "第一章摘要",
             null,
+            null,
             "p. 12",
             "文档节选正文。",
             null,
@@ -197,6 +202,7 @@ class ExternalResourceServiceTest {
 
         var dto = context.service.createExcerpt("ri-link", new CreateResourceExcerptRequest(
             "页面要点",
+            null,
             null,
             "#intro",
             "这是从网页摘录的要点。",
@@ -268,6 +274,7 @@ class ExternalResourceServiceTest {
         var dto = context.service.createExcerpt("ri-book", new CreateResourceExcerptRequest(
             "节选",
             "rc-1",
+            null,
             "p.12",
             "正文",
             null,
@@ -289,6 +296,7 @@ class ExternalResourceServiceTest {
         assertThatThrownBy(() -> context.service.createExcerpt("ri-book", new CreateResourceExcerptRequest(
             "节选",
             "rc-other",
+            null,
             null,
             "正文",
             null,

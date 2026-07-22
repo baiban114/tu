@@ -15,6 +15,7 @@ import { resolvePageDocument } from '@/editor/pageDocument';
 import { getPageContentMock, getPageTreeMock } from '@/mock/store';
 import { mergeKnowledgePointRelationsMock } from '@/mock/knowledgeRelation';
 import { paginateSlice } from '@/utils/clientPagination';
+import { normalizeKnowledgePointTitleFromContent } from '@/utils/knowledgePointTitle';
 import { extractRichTextHeadingsFromBlocks } from '@/utils/toc/headings';
 
 const POINTS_KEY = 'tu-mock-knowledge-points';
@@ -275,11 +276,14 @@ export function createKnowledgePointMock(
 ): KnowledgePoint {
   const points = loadPoints();
   const siblings = points.filter((item) => item.kbId === kbId && item.parentId === (payload.parentId ?? null));
+  const title = payload.sourceAnchor
+    ? normalizeKnowledgePointTitleFromContent(payload.title)
+    : payload.title.trim();
   const point: KnowledgePoint = {
     id: newPointId(),
     kbId,
     parentId: payload.parentId ?? null,
-    title: payload.title.trim(),
+    title,
     summary: payload.summary ?? null,
     status: 'active',
     estimatedHours: payload.estimatedHours ?? null,
@@ -567,9 +571,11 @@ export function ensurePointForAnchorMock(
 ): KnowledgePoint {
   const existing = listKnowledgePointsByLocatorMock(kbId, anchor.locator)[0];
   if (existing) return existing;
-  const resolvedTitle = title?.trim()
-    || (typeof anchor.snapshot?.title === 'string' ? anchor.snapshot.title : '')
-    || '未命名知识点';
+  const resolvedTitle = normalizeKnowledgePointTitleFromContent(
+    title?.trim()
+      || (typeof anchor.snapshot?.title === 'string' ? anchor.snapshot.title : '')
+      || '',
+  );
   return createKnowledgePointMock(kbId, { title: resolvedTitle, sourceAnchor: anchor });
 }
 
@@ -618,7 +624,7 @@ function collectMockCandidates(
   }
 
   for (const page of pages) {
-    const pageTitle = page.title || '未命名页面'
+    const pageTitle = normalizeKnowledgePointTitleFromContent(page.title || '', '未命名页面')
     if (sources.has('page')) {
       put({
         locator: `page:${page.id}`,
@@ -634,7 +640,8 @@ function collectMockCandidates(
 
     if (sources.has('heading') || sources.has('section')) {
       for (const heading of extractHeadingsFromPage(page.id)) {
-        const title = heading.text?.trim() ?? ''
+        const rawTitle = heading.text?.trim() ?? ''
+        const title = normalizeKnowledgePointTitleFromContent(rawTitle, '')
         const blockId = heading.blockId?.trim() ?? ''
         if (!title || !blockId) continue
         if (sources.has('heading')) {
@@ -668,7 +675,7 @@ function collectMockCandidates(
         if (type === 'richtext' || type === 'richText') continue
         const blockId = String(block.id || '').trim()
         if (!blockId) continue
-        const title = blockPreviewTitle(block)
+        const title = normalizeKnowledgePointTitleFromContent(blockPreviewTitle(block), type || '内容块')
         put({
           locator: `page:${page.id}:block:${blockId}`,
           kind: 'block',

@@ -87,30 +87,43 @@ async function generateDocumentMarkingStreamBackend(
   const reader = response.body?.getReader()
   if (!reader) throw new Error('Streaming response is not supported')
 
+  const onAbort = () => {
+    void reader.cancel().catch(() => undefined)
+  }
+  options.signal?.addEventListener('abort', onAbort, { once: true })
+  if (options.signal?.aborted) {
+    onAbort()
+    throw new DOMException('Aborted', 'AbortError')
+  }
+
   const decoder = new TextDecoder()
   let buffer = ''
   let result: DocumentMarkingResponse | null = null
 
-  while (true) {
-    const { done, value } = await reader.read()
-    if (done) break
-    buffer += decoder.decode(value, { stream: true })
-    const blocks = buffer.split('\n\n')
-    buffer = blocks.pop() || ''
-    for (const block of blocks) {
-      const event = parseSseBlock(block.trim())
-      if (!event) continue
-      options.onEvent(event)
-      if (event.phase === 'completed' && event.result) {
-        result = event.result
-      }
-      if (event.phase === 'failed') {
-        throw new Error(event.message || '文档标记分析失败')
-      }
-      if (event.phase === 'cancelled') {
-        throw new DOMException('Aborted', 'AbortError')
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+      const blocks = buffer.split('\n\n')
+      buffer = blocks.pop() || ''
+      for (const block of blocks) {
+        const event = parseSseBlock(block.trim())
+        if (!event) continue
+        options.onEvent(event)
+        if (event.phase === 'completed' && event.result) {
+          result = event.result
+        }
+        if (event.phase === 'failed') {
+          throw new Error(event.message || '文档标记分析失败')
+        }
+        if (event.phase === 'cancelled') {
+          throw new DOMException('Aborted', 'AbortError')
+        }
       }
     }
+  } finally {
+    options.signal?.removeEventListener('abort', onAbort)
   }
 
   if (!result) {

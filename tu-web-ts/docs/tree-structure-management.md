@@ -60,10 +60,10 @@
 
 | 项 | 内容 |
 |----|------|
-| 模型 | `ResourceType` → `ResourceWork` → `ResourceItem` → `ResourceExcerpt`（外键链，非 `parentId` 树） |
-| 持久化 | 各实体独立 CRUD；`clusterKey` 用于 URL 聚类；`ResourceItemRelation` 为**有向关系边** |
-| UI | [`ResourceManagerView.vue`](../src/views/ResourceManagerView.vue) — **分 Tab 平铺表格** |
-| 特点 | **固定深度层级**（约 3～4 层），最适合先做「树形浏览」 |
+| 模型 | `ResourceType` → `ResourceWork` → `ResourceItem` → `ResourceExcerpt`（`parentId` 可嵌套）；图书另有 `ResourceChapter`（`parentId` 树） |
+| 持久化 | 各实体独立 CRUD；节选/章节均为邻接表；`clusterKey` 用于 URL 聚类；`ResourceItemRelation` 为**有向关系边** |
+| UI | [`ResourceManagerView.vue`](../src/views/ResourceManagerView.vue) — Tab 表格；实体表用树形懒加载行展示嵌套节选；节选/章节弹窗用 `TreeListPanel` |
+| 特点 | 类型→归类→实体为固定深度；**节选与章节可无限嵌套** |
 
 ### 2.4 其他（仅参考，v1 不纳入）
 
@@ -198,15 +198,16 @@ ResourceType (根下第一层，或虚拟根「外部资源」)
   └── ResourceWork (同 typeId 过滤)
         └── ResourceItem (workId 匹配；无 work 的 item 可挂「未归类」节点)
               ├── [book] ResourceChapter (parentId 树，前缀 rc:)
-              │     └── ResourceExcerpt (chapterId 匹配)
-              ├── [book] 「未归类节选」 (chapterId 为空时)
-              ├── [document] ResourceExcerpt (扁平，resourceItemId 匹配)
-              └── [web-link] ResourceExcerpt (扁平，resourceItemId 匹配)
+              │     └── ResourceExcerpt (chapterId 匹配；节选可再按 parentId 嵌套)
+              ├── [book] 「未归类节选」 (chapterId 为空时；节选可 parentId 嵌套)
+              ├── [document] ResourceExcerpt (parentId 嵌套，resourceItemId 匹配)
+              └── [web-link] ResourceExcerpt (parentId 嵌套，resourceItemId 匹配)
 ```
 
 - 节点 `id` 建议加前缀避免冲突：`rt:`, `rw:`, `ri:`, `rc:`, `re:`；未归类节选容器为 `re-unassigned:{itemId}`。
 - `label`：实体 `title`；归类可附 `clusterKey` 缩写；章节可附 `locator`。
 - 图书章节挂在 **ResourceItem** 级；节选 `chapterId` 可选，未关联时归入「未归类节选」或（无章节时）直接挂在实体下。
+- 节选支持同实体内 `parentId` 无限嵌套（与章节树同模式）；删除父节选时子节点提升到原父级。
 - 不在 v1 展示 `ResourceItemRelation` 边（属图结构，可后续用「关系」面板）。
 
 ### 7.2 知识库页面列表中的资源文档（只读）
@@ -262,6 +263,8 @@ toggle: (node: TreeNode, expanded: boolean) => void
 ### 9.1 资源管理 [`ResourceManagerView.vue`](../src/views/ResourceManagerView.vue)
 
 - 左侧（或 Tab 内）增加「树形浏览」：`resourcesToTreeNodes` + `TreeListPanel`。
+- **资源实体表**：支持节选的实体行可树形展开，懒加载并以表格子行展示 `parentId` 嵌套节选；子行可编辑排序数字、拖拽调整同级顺序/父子层级，以及编辑/添加子节选/删除。
+- **节选弹窗**：`ElTree` 可拖拽调整层级与顺序；表单「排序」字段可手工编辑。
 - 选中节点：根据 `meta.layer` 切换 Tab 并定位实体（类型 / 归类 / 实体 / 节选）。
 - 「合并归类」对话框：列表已改为表格单选；可 **v1.1** 升级为 `TreeListPanel` 按归类分支选择。
 

@@ -123,6 +123,8 @@ flowchart LR
 
 `sources`：`page` / `heading` / `section` / `block`（兼容别名 `pageTree`、`documentHeadings`）。`generate` 仅创建知识点 + `primary` 证据锚点，不创建 `knowledge_relation`、不设置 `parent_id`（扁平生成）。同 locator 已绑定则跳过（幂等）。`block` 来源为顶层非 richtext 块；v2 单文档页若 embed 仅在 Tiptap 节点内，block 候选可能为空。
 
+从正文/标题等内容推导知识点名称时，会先做**去除序号**预处理（如 `1.`、`一、`、`第1章`、`①`），语义顺序以知识点树的 `parent_id` / `sortOrder` 为准，不以标题里的编号为准（见 `KnowledgePointTitleNormalizer` / `knowledgePointTitle.ts`）。
+
 ### 关系
 
 | 方法 | 路径 |
@@ -165,7 +167,7 @@ flowchart LR
 - 查看：正文内点击标注/依据高亮或**标题节元数据条**（来源 chips + 节标签），均打开同一 `NotePopover`（来源、笔记/依据、关联知识点）；资源管理「知识关联」Tab 为全库视图
 - **AI 标记**：文档页工具栏「AI 分析标记」；来源/依据徽章与关系列表显示 `AI` chip；可「转为手动标记」（`markerSource` → `user`）
 - **标记来源（标题节）**：节手柄「标记来源」后，标题下方显示浅蓝元信息条（`来源` / 类型 / 归类 / 定位 / 节选名）；同条可并排显示节标签 chips；点击打开 `NotePopover`
-- **标记节选**：创建资源库节选后，在文档对应位置写入 `kind=excerpt` 标注，并在 Markdown `>` 引用块（blockquote）上方显示浅蓝元信息条（资源节选 / 类型 / 归类 / 定位）；点击打开 `NotePopover`。绑定持久化为 `<!--tu:blockquote-excerpt ...-->` 注释 + 节点 `excerptBinding`
+- **标记节选**：创建资源库节选后，在文档对应位置写入 `kind=excerpt` 标注，并在 Markdown `>` 引用块（blockquote）上方显示浅蓝元信息条（资源节选 / 类型 / 归类 / 定位）；点击打开 `NotePopover`。绑定持久化为 `<!--tu:blockquote-excerpt ...-->` 注释 + 节点 `excerptBinding`。成功后写入用户「学习进行中」目标（`localStorage`，按用户分键；有 `resourceExcerptId` 优先节选，否则仅为 Item）。下次**粘贴正文**或**新建未绑定引用块并填入内容**时，若进行中目标含节选，划选工具栏上方出现倒计时确认条，确认后复用同一 `HeadingSourceBinding` 并刷新进行中时间戳；文档页顶栏展示「进行中」芯片可跳转资源页或清除
 - 跳转：`navigateKnowledgePoint(pointId)` → 取 `is_primary` 证据 → `navigateKnowledgeAnchor(locator)`
 
 ## 9. Phase 2/3

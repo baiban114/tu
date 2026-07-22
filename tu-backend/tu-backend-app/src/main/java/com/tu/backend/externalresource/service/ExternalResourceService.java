@@ -514,6 +514,7 @@ public class ExternalResourceService {
             entity,
             request.title(),
             request.chapterId(),
+            request.parentId(),
             request.locator(),
             request.excerptText(),
             request.note(),
@@ -533,6 +534,7 @@ public class ExternalResourceService {
             entity,
             request.title(),
             request.chapterId(),
+            request.parentId(),
             request.locator(),
             request.excerptText(),
             request.note(),
@@ -544,7 +546,13 @@ public class ExternalResourceService {
 
     @Transactional
     public void deleteExcerpt(String id) {
-        excerptRepository.delete(findExcerpt(id));
+        ResourceExcerptEntity entity = findExcerpt(id);
+        String parentId = entity.getParentId();
+        for (ResourceExcerptEntity child : excerptRepository.findByParentId(id)) {
+            child.setParentId(parentId);
+            excerptRepository.save(child);
+        }
+        excerptRepository.delete(entity);
     }
 
     private void fillItem(ResourceItemEntity entity, ResourceTypeEntity type, ResourceWorkEntity work, CreateResourceItemRequest request) {
@@ -672,19 +680,21 @@ public class ExternalResourceService {
         ResourceExcerptEntity entity,
         String title,
         String chapterId,
+        String parentId,
         String locator,
         String excerptText,
         String note,
         Integer sortOrder,
         ResourceItemEntity item
     ) {
-        fillExcerpt(entity, title, chapterId, locator, excerptText, note, sortOrder, null, item);
+        fillExcerpt(entity, title, chapterId, parentId, locator, excerptText, note, sortOrder, null, item);
     }
 
     private void fillExcerpt(
         ResourceExcerptEntity entity,
         String title,
         String chapterId,
+        String parentId,
         String locator,
         String excerptText,
         String note,
@@ -694,6 +704,7 @@ public class ExternalResourceService {
     ) {
         entity.setTitle(normalizeRequired(title, "resource excerpt title required"));
         entity.setChapterId(resolveChapterForExcerpt(item, blankToNull(chapterId)));
+        entity.setParentId(resolveParentForExcerpt(item, entity.getId(), blankToNull(parentId)));
         entity.setLocator(blankToNull(locator));
         entity.setExcerptText(blankToNull(excerptText));
         entity.setNote(blankToNull(note));
@@ -704,6 +715,46 @@ public class ExternalResourceService {
             } catch (JsonProcessingException ex) {
                 throw new BusinessException(40000, "invalid excerpt metadata");
             }
+        }
+    }
+
+    private String resolveParentForExcerpt(ResourceItemEntity item, String selfId, String parentId) {
+        if (parentId == null) {
+            return null;
+        }
+        if (selfId != null && selfId.equals(parentId)) {
+            throw new BusinessException(40000, "resource excerpt cannot be its own parent");
+        }
+        ResourceExcerptEntity parent = findExcerpt(parentId);
+        if (!item.getId().equals(parent.getResourceItemId())) {
+            throw new BusinessException(40000, "resource excerpt parent must belong to the same resource item");
+        }
+        if (selfId != null) {
+            Set<String> descendants = collectExcerptDescendantIds(item.getId(), selfId);
+            if (descendants.contains(parentId)) {
+                throw new BusinessException(40000, "resource excerpt parent cannot be a descendant");
+            }
+        }
+        return parent.getId();
+    }
+
+    private Set<String> collectExcerptDescendantIds(String resourceItemId, String excerptId) {
+        List<ResourceExcerptEntity> excerpts = excerptRepository.findByResourceItemId(resourceItemId);
+        Map<String, List<ResourceExcerptEntity>> byParent = excerpts.stream()
+            .collect(Collectors.groupingBy(excerpt -> excerpt.getParentId() == null ? "" : excerpt.getParentId()));
+        Set<String> result = new java.util.HashSet<>();
+        collectExcerptDescendantIds(byParent, excerptId, result);
+        return result;
+    }
+
+    private void collectExcerptDescendantIds(
+        Map<String, List<ResourceExcerptEntity>> byParent,
+        String excerptId,
+        Set<String> result
+    ) {
+        result.add(excerptId);
+        for (ResourceExcerptEntity child : byParent.getOrDefault(excerptId, List.of())) {
+            collectExcerptDescendantIds(byParent, child.getId(), result);
         }
     }
 
@@ -926,6 +977,7 @@ public class ExternalResourceService {
             item == null ? "" : item.getTitle(),
             chapterId,
             chapterId == null ? null : chapterTitles.get(chapterId),
+            entity.getParentId(),
             entity.getTitle(),
             entity.getLocator(),
             entity.getExcerptText(),

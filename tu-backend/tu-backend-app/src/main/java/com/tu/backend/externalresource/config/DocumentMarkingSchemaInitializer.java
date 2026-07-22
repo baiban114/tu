@@ -37,6 +37,16 @@ public class DocumentMarkingSchemaInitializer implements ApplicationRunner {
                 }
                 log.info("added external_resource_excerpt.metadata_json column");
             }
+            if (!columnExists(database, "external_resource_excerpt", "parent_id")) {
+                if (database.contains("mysql") || database.contains("mariadb")) {
+                    jdbcTemplate.execute("alter table external_resource_excerpt add column parent_id varchar(64) null");
+                } else if (database.contains("postgresql")) {
+                    jdbcTemplate.execute("alter table external_resource_excerpt add column parent_id varchar(64) null");
+                } else if (database.contains("h2")) {
+                    jdbcTemplate.execute("alter table external_resource_excerpt add column parent_id varchar(64) null");
+                }
+                log.info("added external_resource_excerpt.parent_id column");
+            }
         } catch (Exception ex) {
             log.warn("failed to ensure document marking schema", ex);
         }

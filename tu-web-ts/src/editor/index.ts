@@ -10,6 +10,7 @@ export { SelectionDecorations, selectionDecorationsKey } from './extensions/Sele
 
 export { ParagraphNode } from './extensions/ParagraphNode'
 export { HeadingNode } from './extensions/HeadingNode'
+export { HeadingEnterFix } from './extensions/HeadingEnterFix'
 export { HeadingSourceDecorations, headingSourceDecorationsKey } from './extensions/HeadingSourceDecorations'
 export { HeadingSectionFold, headingSectionFoldKey } from './extensions/HeadingSectionFold'
 export { X6BlockNode } from './extensions/X6BlockNode'

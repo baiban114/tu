@@ -12,6 +12,7 @@ import com.tu.backend.contenttree.dto.PageOutlineResponseDto;
 import com.tu.backend.contenttree.service.ContentTreeNodeService;
 import com.tu.backend.knowledge.repository.KnowledgeBaseRepository;
 import com.tu.backend.knowledgerelation.SectionLocatorKeyResolver;
+import com.tu.backend.knowledgerelation.KnowledgePointTitleNormalizer;
 import com.tu.backend.knowledgerelation.dto.GenerateKnowledgePointsRequest;
 import com.tu.backend.knowledgerelation.dto.KnowledgeAnchorDto;
 import com.tu.backend.knowledgerelation.dto.KnowledgePointGenerationItemDto;
@@ -188,10 +189,7 @@ public class KnowledgePointGenerationService {
 
     private GenerationCandidate pageCandidate(PageEntity page) {
         String locator = "page:" + page.getId();
-        String title = nullToBlank(page.getTitle());
-        if (title.isBlank()) {
-            title = "未命名页面";
-        }
+        String title = KnowledgePointTitleNormalizer.fromContent(nullToBlank(page.getTitle()), "未命名页面");
         return new GenerationCandidate(locator, "page", title, page.getId(), title, pageAnchor(page));
     }
 
@@ -218,7 +216,8 @@ public class KnowledgePointGenerationService {
             String defaultBlockId = text(block.get("id"));
             for (TiptapDocumentWalker.TiptapHeading heading : TiptapDocumentWalker.extractHeadings(document, defaultBlockId)) {
                 String headingBlockId = heading.blockId();
-                String title = heading.text() == null ? "" : heading.text().trim();
+                String rawTitle = heading.text() == null ? "" : heading.text().trim();
+                String title = KnowledgePointTitleNormalizer.fromContent(rawTitle, "");
                 if (headingBlockId == null || headingBlockId.isBlank() || title.isBlank()) {
                     continue;
                 }
@@ -244,7 +243,7 @@ public class KnowledgePointGenerationService {
             if (node == null) {
                 continue;
             }
-            String title = nullToBlank(node.title());
+            String title = KnowledgePointTitleNormalizer.fromContent(nullToBlank(node.title()), "");
             if (title.isBlank()) {
                 continue;
             }
@@ -290,7 +289,7 @@ public class KnowledgePointGenerationService {
             if (blockId.isBlank()) {
                 continue;
             }
-            String title = blockPreviewLabel(block);
+            String title = KnowledgePointTitleNormalizer.fromContent(blockPreviewLabel(block), "");
             if (title.isBlank()) {
                 title = blockType.isBlank() ? "内容块" : blockType;
             }

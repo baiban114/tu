@@ -482,6 +482,47 @@ function validateChapterParent(
   }
 }
 
+function collectExcerptDescendantIds(resourceItemId: string, rootId: string): string[] {
+  const excerpts = state.resourceExcerpts.filter((entry) => entry.resourceItemId === resourceItemId);
+  const byParent = new Map<string | null, ResourceExcerpt[]>();
+  for (const excerpt of excerpts) {
+    const parentId = excerpt.parentId ?? null;
+    const bucket = byParent.get(parentId) ?? [];
+    bucket.push(excerpt);
+    byParent.set(parentId, bucket);
+  }
+  const result: string[] = [];
+  const walk = (excerptId: string) => {
+    result.push(excerptId);
+    for (const child of byParent.get(excerptId) ?? []) {
+      walk(child.id);
+    }
+  };
+  walk(rootId);
+  return result;
+}
+
+function validateExcerptParent(
+  resourceItemId: string,
+  parentId: string | null | undefined,
+  selfId?: string,
+): void {
+  if (!parentId) return;
+  if (selfId && selfId === parentId) {
+    throw new Error('resource excerpt cannot be its own parent');
+  }
+  const parent = getResourceExcerptOrThrow(parentId);
+  if (parent.resourceItemId !== resourceItemId) {
+    throw new Error('resource excerpt parent must belong to the same resource item');
+  }
+  if (selfId) {
+    const descendants = collectExcerptDescendantIds(resourceItemId, selfId);
+    if (descendants.includes(parentId)) {
+      throw new Error('resource excerpt parent cannot be a descendant');
+    }
+  }
+}
+
 function resolveChapterForExcerpt(resourceItemId: string, chapterId?: string | null): string | undefined {
   const normalized = chapterId?.trim();
   if (!normalized) return undefined;
@@ -1367,6 +1408,8 @@ export function listResourceExcerptsMock(
 export function createResourceExcerptMock(resourceItemId: string, payload: CreateResourceExcerptPayload): ResourceExcerpt {
   const item = getResourceItemOrThrow(resourceItemId);
   ensureExcerptSupportedResourceItem(item);
+  const parentId = payload.parentId?.trim() || null;
+  validateExcerptParent(resourceItemId, parentId);
   const maxOrder = Math.max(-1, ...state.resourceExcerpts
     .filter((excerpt) => excerpt.resourceItemId === resourceItemId)
     .map((excerpt) => excerpt.sortOrder));
@@ -1379,6 +1422,7 @@ export function createResourceExcerptMock(resourceItemId: string, payload: Creat
     title: payload.title.trim(),
     chapterId,
     chapterTitle: chapter?.title,
+    parentId,
     locator: normalizeResourcePositionLocator(payload.locator) || undefined,
     excerptText: payload.excerptText?.trim() || undefined,
     note: payload.note || '',
@@ -1398,12 +1442,15 @@ export function updateResourceExcerptMock(id: string, payload: UpdateResourceExc
   const excerpt = getResourceExcerptOrThrow(id);
   const item = getResourceItemOrThrow(excerpt.resourceItemId);
   ensureExcerptSupportedResourceItem(item);
+  const parentId = payload.parentId?.trim() || null;
+  validateExcerptParent(excerpt.resourceItemId, parentId, excerpt.id);
   const chapterId = resolveChapterForExcerpt(excerpt.resourceItemId, payload.chapterId);
   const chapter = chapterId ? getResourceChapterOrThrow(chapterId) : undefined;
   Object.assign(excerpt, {
     title: payload.title.trim(),
     chapterId,
     chapterTitle: chapter?.title,
+    parentId,
     locator: normalizeResourcePositionLocator(payload.locator) || undefined,
     excerptText: payload.excerptText?.trim() || undefined,
     note: payload.note || '',
@@ -1414,7 +1461,14 @@ export function updateResourceExcerptMock(id: string, payload: UpdateResourceExc
 }
 
 export function deleteResourceExcerptMock(id: string): void {
-  state.resourceExcerpts = state.resourceExcerpts.filter((excerpt) => excerpt.id !== id);
+  const excerpt = getResourceExcerptOrThrow(id);
+  const parentId = excerpt.parentId ?? null;
+  state.resourceExcerpts.forEach((child) => {
+    if (child.parentId === id) {
+      child.parentId = parentId;
+    }
+  });
+  state.resourceExcerpts = state.resourceExcerpts.filter((entry) => entry.id !== id);
   persistState();
 }
 

@@ -15,6 +15,8 @@ public interface ResourceExcerptRepository extends JpaRepository<ResourceExcerpt
 
     List<ResourceExcerptEntity> findByResourceItemId(String resourceItemId);
 
+    List<ResourceExcerptEntity> findByParentId(String parentId);
+
     List<ResourceExcerptEntity> findAllByOrderByUpdatedAtDescCreatedAtDesc();
 
     void deleteByResourceItemId(String resourceItemId);

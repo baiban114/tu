@@ -5,13 +5,23 @@ import { BubbleMenu } from '@tiptap/vue-3/menus'
 import { ElButton, ElDivider } from 'element-plus'
 import { getSelectionToolbarActions, shouldShowSelectionBubbleMenu } from '@/editor/selectionToolbar'
 
+export interface ReuseMarkOffer {
+  label: string
+  /** Countdown duration in ms */
+  durationMs: number
+  /** Bump to restart the progress animation when a new offer appears */
+  token: number
+}
+
 interface Props {
   editor: Editor | null | undefined
   suppressed?: boolean
+  reuseOffer?: ReuseMarkOffer | null
 }
 
 const props = withDefaults(defineProps<Props>(), {
   suppressed: false,
+  reuseOffer: null,
 })
 
 const emit = defineEmits<{
@@ -19,6 +29,8 @@ const emit = defineEmits<{
   (e: 'mark-resource-excerpt'): void
   (e: 'set-excerpt-basis'): void
   (e: 'create-knowledge-relation'): void
+  (e: 'confirm-reuse-mark'): void
+  (e: 'dismiss-reuse-mark'): void
 }>()
 
 const menuRoot = ref<HTMLElement | null>(null)
@@ -109,10 +121,6 @@ watch(
   { immediate: true },
 )
 
-onBeforeUnmount(() => {
-  detachEditorListeners?.()
-})
-
 watch(suppressedRef, () => {
   selectionRevision.value += 1
   const editor = props.editor
@@ -182,6 +190,49 @@ const bubbleFloatingOptions = computed(() => {
     scrollTarget,
   }
 })
+
+const reuseProgress = ref(100)
+let reuseTimer: ReturnType<typeof setInterval> | null = null
+
+function clearReuseTimer() {
+  if (reuseTimer != null) {
+    clearInterval(reuseTimer)
+    reuseTimer = null
+  }
+}
+
+function startReuseCountdown(offer: ReuseMarkOffer) {
+  clearReuseTimer()
+  reuseProgress.value = 100
+  const startedAt = Date.now()
+  const duration = Math.max(1000, offer.durationMs)
+  reuseTimer = setInterval(() => {
+    const remaining = Math.max(0, duration - (Date.now() - startedAt))
+    reuseProgress.value = (remaining / duration) * 100
+    if (remaining <= 0) {
+      clearReuseTimer()
+      emit('dismiss-reuse-mark')
+    }
+  }, 50)
+}
+
+watch(
+  () => props.reuseOffer,
+  (offer) => {
+    clearReuseTimer()
+    if (!offer) {
+      reuseProgress.value = 100
+      return
+    }
+    startReuseCountdown(offer)
+  },
+  { immediate: true },
+)
+
+onBeforeUnmount(() => {
+  clearReuseTimer()
+  detachEditorListeners?.()
+})
 </script>
 
 <template>
@@ -196,68 +247,104 @@ const bubbleFloatingOptions = computed(() => {
   >
     <div
       ref="menuRoot"
-      class="selection-toolbar"
+      class="selection-toolbar-stack"
       @mousedown.prevent.stop
       @click.stop
     >
-      <div class="selection-toolbar__group">
-        <ElButton
-          v-if="actions.canAddNote"
-          size="small"
-          text
-          class="selection-toolbar__btn"
-          @mousedown.prevent.stop
-          @click="emit('add-note')"
-        >
-          标注
-        </ElButton>
-        <template v-if="actions.canMarkResourceExcerpt">
-          <ElDivider v-if="actions.canAddNote" direction="vertical" class="selection-toolbar__divider" />
+      <div
+        v-if="reuseOffer"
+        class="reuse-mark-prompt"
+      >
+        <div class="reuse-mark-prompt__row">
+          <span class="reuse-mark-prompt__text">
+            标记为「{{ reuseOffer.label }}」？
+          </span>
           <ElButton
             size="small"
-            text
             type="primary"
-            class="selection-toolbar__btn"
+            class="reuse-mark-prompt__btn"
             @mousedown.prevent.stop
-            @click="emit('mark-resource-excerpt')"
+            @click="emit('confirm-reuse-mark')"
           >
-            标记节选
+            确认
           </ElButton>
-        </template>
-        <template v-if="actions.canSetExcerptBasis">
-          <ElDivider
-            v-if="actions.canAddNote || actions.canMarkResourceExcerpt"
-            direction="vertical"
-            class="selection-toolbar__divider"
-          />
           <ElButton
             size="small"
             text
-            type="success"
-            class="selection-toolbar__btn"
+            class="reuse-mark-prompt__btn"
             @mousedown.prevent.stop
-            @click="emit('set-excerpt-basis')"
+            @click="emit('dismiss-reuse-mark')"
           >
-            设置依据
+            忽略
           </ElButton>
-        </template>
-        <template v-if="actions.canCreateKnowledgeRelation">
-          <ElDivider
-            v-if="actions.canAddNote || actions.canMarkResourceExcerpt || actions.canSetExcerptBasis"
-            direction="vertical"
-            class="selection-toolbar__divider"
+        </div>
+        <div class="reuse-mark-prompt__track">
+          <div
+            class="reuse-mark-prompt__progress"
+            :style="{ width: `${reuseProgress}%` }"
           />
+        </div>
+      </div>
+      <div class="selection-toolbar">
+        <div class="selection-toolbar__group">
           <ElButton
+            v-if="actions.canAddNote"
             size="small"
             text
-            type="primary"
             class="selection-toolbar__btn"
             @mousedown.prevent.stop
-            @click="emit('create-knowledge-relation')"
+            @click="emit('add-note')"
           >
-            建立关联
+            标注
           </ElButton>
-        </template>
+          <template v-if="actions.canMarkResourceExcerpt">
+            <ElDivider v-if="actions.canAddNote" direction="vertical" class="selection-toolbar__divider" />
+            <ElButton
+              size="small"
+              text
+              type="primary"
+              class="selection-toolbar__btn"
+              @mousedown.prevent.stop
+              @click="emit('mark-resource-excerpt')"
+            >
+              标记节选
+            </ElButton>
+          </template>
+          <template v-if="actions.canSetExcerptBasis">
+            <ElDivider
+              v-if="actions.canAddNote || actions.canMarkResourceExcerpt"
+              direction="vertical"
+              class="selection-toolbar__divider"
+            />
+            <ElButton
+              size="small"
+              text
+              type="success"
+              class="selection-toolbar__btn"
+              @mousedown.prevent.stop
+              @click="emit('set-excerpt-basis')"
+            >
+              设置依据
+            </ElButton>
+          </template>
+          <template v-if="actions.canCreateKnowledgeRelation">
+            <ElDivider
+              v-if="actions.canAddNote || actions.canMarkResourceExcerpt || actions.canSetExcerptBasis"
+              direction="vertical"
+              class="selection-toolbar__divider"
+            />
+            <ElButton
+              size="small"
+              text
+              type="primary"
+              class="selection-toolbar__btn"
+              @mousedown.prevent.stop
+              @click="emit('create-knowledge-relation')"
+            >
+              建立关联
+            </ElButton>
+          </template>
+        </div>
       </div>
     </div>
   </BubbleMenu>
@@ -266,6 +353,64 @@ const bubbleFloatingOptions = computed(() => {
 <style scoped>
 .selection-toolbar-host {
   z-index: 50;
+}
+
+.selection-toolbar-stack {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+}
+
+.reuse-mark-prompt {
+  position: relative;
+  min-width: 220px;
+  max-width: 360px;
+  padding: 6px 8px 8px;
+  border: 1px solid var(--el-color-primary-light-5);
+  border-radius: 4px;
+  background: var(--el-bg-color);
+  box-shadow: var(--el-box-shadow-light);
+  overflow: hidden;
+}
+
+.reuse-mark-prompt__row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.reuse-mark-prompt__text {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--el-text-color-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.reuse-mark-prompt__btn {
+  margin: 0;
+  height: 22px;
+  padding: 0 6px;
+  flex-shrink: 0;
+}
+
+.reuse-mark-prompt__track {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 3px;
+  background: var(--el-fill-color);
+}
+
+.reuse-mark-prompt__progress {
+  height: 100%;
+  background: linear-gradient(90deg, var(--el-color-primary), var(--el-color-primary-light-3));
+  transition: width 0.05s linear;
 }
 
 .selection-toolbar {

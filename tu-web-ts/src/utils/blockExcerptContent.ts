@@ -1,7 +1,7 @@
 import type { Block, ExternalResourceEmbedData } from '@/api/types'
 import type { Node as ProseMirrorNode } from '@tiptap/pm/model'
 import { collectFlatTocEntries, type TocCollectContext } from '@/utils/toc/collectFlatTocEntries'
-import type { FlatTocEntry } from '@/utils/toc/headings'
+import { findNearestPrecedingHeadingText, type FlatTocEntry } from '@/utils/toc/headings'
 import { getTocEntrySectionContentRange, getTocSectionBoundaryPos } from '@/utils/toc/tocSections'
 import type { RefGutterHostContext } from '@/editor/refGutterBridge'
 import {
@@ -33,6 +33,17 @@ export function excerptTitleFromText(text: string): string {
     .replace(/^[-*]\s+/, '')
     .replace(/^\d+\.\s+/, '')
     .slice(0, 80)
+}
+
+/** Prefer nearest preceding heading as excerpt title; fall back to first line of text. */
+export function resolveExcerptDefaultTitle(
+  doc: ProseMirrorNode,
+  pos: number,
+  text: string,
+): string {
+  const heading = findNearestPrecedingHeadingText(doc, pos)
+  if (heading) return heading.slice(0, 80)
+  return excerptTitleFromText(text)
 }
 
 function findTopLevelBlock(doc: ProseMirrorNode, blockId: string): { pos: number; node: ProseMirrorNode } | null {
@@ -115,15 +126,16 @@ function excerptFromHeadingSection(
   const entryIndex = flat.findIndex((entry) => (
     entry.blockId === blockId && entry.pos === pos && entry.sourceType === 'local'
   ))
+  const title = headingText.slice(0, 80) || excerptTitleFromText(headingText)
   if (entryIndex < 0) {
-    return { text: headingText, title: excerptTitleFromText(headingText) }
+    return { text: headingText, title }
   }
   const { contentRange } = getTocEntrySectionContentRange(flat, entryIndex, doc)
   const body = contentRange
     ? doc.textBetween(contentRange.from, contentRange.to, '\n\n').trim()
     : ''
   const text = body ? `${headingText}\n\n${body}` : headingText
-  return { text, title: excerptTitleFromText(text) }
+  return { text, title }
 }
 
 export function getBlockExcerptContent(
@@ -146,12 +158,12 @@ export function getBlockExcerptContent(
     if (!ctx) return null
     const text = excerptFromEmbedNode(node, ctx).trim()
     if (!text) return null
-    return { text, title: excerptTitleFromText(text) }
+    return { text, title: resolveExcerptDefaultTitle(doc, pos, text) }
   }
 
   const text = doc.textBetween(from, to, '\n\n').trim()
   if (!text) return null
-  return { text, title: excerptTitleFromText(text) }
+  return { text, title: resolveExcerptDefaultTitle(doc, pos, text) }
 }
 
 export function getTocEntryExcerptContent(

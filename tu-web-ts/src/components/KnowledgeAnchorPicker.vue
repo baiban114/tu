@@ -7,6 +7,7 @@ import { createKnowledgeRelation, listRelationTypes } from '@/api/knowledgeRelat
 import { listResourceExcerpts, listResourceItems } from '@/api/externalResource';
 import type { ResourceExcerpt, ResourceItem } from '@/api/externalResource';
 import { anchorLabel, pageAnchor, resourceExcerptAnchor, resourceItemAnchor } from '@/utils/knowledgeAnchor';
+import { normalizeKnowledgePointTitleFromContent } from '@/utils/knowledgePointTitle';
 import { paginateSlice } from '@/utils/clientPagination';
 import { createKnowledgePoint, listKnowledgePointsByLocator } from '@/api/knowledgePoint';
 
@@ -101,7 +102,7 @@ async function ensurePointForAnchor(anchor: KnowledgeAnchor): Promise<string> {
   const existing = await listKnowledgePointsByLocator(props.kbId, anchor.locator);
   if (existing[0]) return existing[0].id;
   const created = await createKnowledgePoint(props.kbId, {
-    title: anchorLabel(anchor),
+    title: normalizeKnowledgePointTitleFromContent(anchorLabel(anchor)),
     sourceAnchor: anchor,
   });
   return created.id;

@@ -23,7 +23,10 @@ import type { Block, ExternalResourceEmbedData, HeadingSourceBinding } from '@/a
 import { bindingFromExternalResource, basisBindingFromExternalResource } from '@/utils/headingSource'
 import TuEditor from './TuEditor.vue'
 import ResourcePositionLocatorField from './ResourcePositionLocatorField.vue'
+import ResourcePickerExcerptBranch from './ResourcePickerExcerptBranch.vue'
 import { normalizeResourcePositionLocator, resourcePositionDisplay } from '@/utils/resourcePositionLocator'
+
+const EXCERPT_CHILD_LIMIT = 100
 
 export interface ExternalResourcePickerSelection {
   title: string
@@ -70,6 +73,9 @@ const excerpts = ref<ResourceExcerpt[]>([])
 const excerptIndex = ref<Record<string, ResourceExcerpt[]>>({})
 const chapters = ref<ResourceChapter[]>([])
 const selectedItemId = ref('')
+const selectedExcerptId = ref('')
+/** 左侧节选树展开节点：`item:{id}` / `ex:{id}`，默认全部收起 */
+const expandedNodeIds = ref<Set<string>>(new Set())
 const createResourceVisible = ref(false)
 const EXCERPT_EDITOR_BLOCK_ID = 'resource-picker-excerpt-editor'
 
@@ -219,6 +225,84 @@ const filteredExcerpts = computed(() => {
   if (!q) return excerpts.value
   return excerpts.value.filter((excerpt) => excerptMatchesKeyword(excerpt, q))
 })
+
+function itemNodeKey(itemId: string) {
+  return `item:${itemId}`
+}
+
+function isNodeExpanded(key: string) {
+  return expandedNodeIds.value.has(key)
+}
+
+function setNodeExpanded(key: string, expanded: boolean) {
+  const next = new Set(expandedNodeIds.value)
+  if (expanded) next.add(key)
+  else next.delete(key)
+  expandedNodeIds.value = next
+}
+
+function itemSupportsExcerpts(item: ResourceItem) {
+  return supportsResourceExcerpts(typeById.value.get(item.typeId)?.code)
+}
+
+function listExcerptsForItem(itemId: string): ResourceExcerpt[] {
+  return excerptIndex.value[itemId] ?? []
+}
+
+function getDirectChildExcerpts(itemId: string, parentId: string | null): ResourceExcerpt[] {
+  const q = keyword.value.trim().toLowerCase()
+  let list = listExcerptsForItem(itemId)
+    .filter((excerpt) => (excerpt.parentId ?? null) === parentId)
+    .sort((a, b) => a.sortOrder - b.sortOrder || a.title.localeCompare(b.title) || a.id.localeCompare(b.id))
+  if (q) list = list.filter((excerpt) => excerptMatchesKeyword(excerpt, q))
+  return list
+}
+
+function getExpandChildren(itemId: string, parentId: string | null) {
+  const all = getDirectChildExcerpts(itemId, parentId)
+  return {
+    items: all.slice(0, EXCERPT_CHILD_LIMIT),
+    total: all.length,
+    truncated: all.length > EXCERPT_CHILD_LIMIT,
+  }
+}
+
+function hasDirectChildren(itemId: string, parentId: string | null) {
+  return getDirectChildExcerpts(itemId, parentId).length > 0
+}
+
+async function ensureItemExcerptsLoaded(itemId: string) {
+  if (itemId in excerptIndex.value) return
+  try {
+    const result = await listResourceExcerpts(itemId, { page: 0, pageSize: MAX_PAGE_SIZE })
+    excerptIndex.value = { ...excerptIndex.value, [itemId]: result.items }
+    if (selectedItemId.value === itemId) {
+      excerpts.value = result.items
+    }
+  } catch {
+    excerptIndex.value = { ...excerptIndex.value, [itemId]: [] }
+  }
+}
+
+async function toggleItemExcerptExpand(item: ResourceItem) {
+  const key = itemNodeKey(item.id)
+  if (isNodeExpanded(key)) {
+    setNodeExpanded(key, false)
+    return
+  }
+  await ensureItemExcerptsLoaded(item.id)
+  setNodeExpanded(key, true)
+}
+
+function toggleExcerptExpand(excerptId: string) {
+  const key = `ex:${excerptId}`
+  setNodeExpanded(key, !isNodeExpanded(key))
+}
+
+function onLeftExcerptSelect(item: ResourceItem, excerpt: ResourceExcerpt) {
+  selectedItemId.value = item.id
+  onExcerptClick(excerpt)
+}
 
 const resetExcerptForm = () => {
   excerptForm.title = props.initialExcerptTitle || ''
@@ -445,6 +529,21 @@ const selectExcerpt = (excerpt: ResourceExcerpt) => {
   emit('update:visible', false)
 }
 
+const onExcerptClick = (excerpt: ResourceExcerpt) => {
+  if (isMarkExcerptMode.value) {
+    selectedExcerptId.value = excerpt.id
+    return
+  }
+  selectExcerpt(excerpt)
+}
+
+const confirmSelectedExcerpt = () => {
+  const list = listExcerptsForItem(selectedItemId.value)
+  const excerpt = (list.length ? list : excerpts.value).find((item) => item.id === selectedExcerptId.value)
+  if (!excerpt) return
+  selectExcerpt(excerpt)
+}
+
 const createAndInsertExcerpt = async () => {
   const item = selectedItem.value
   if (!item || !selectedSupportsExcerpts.value || !excerptForm.title.trim()) return
@@ -453,6 +552,7 @@ const createAndInsertExcerpt = async () => {
     const excerpt = await createResourceExcerpt(item.id, {
       title: excerptForm.title.trim(),
       chapterId: excerptForm.chapterId?.trim() || undefined,
+      parentId: undefined,
       locator: normalizeResourcePositionLocator(excerptForm.locator.trim()) || undefined,
       excerptText: excerptForm.excerptText.trim() || undefined,
       note: excerptForm.note.trim(),
@@ -488,6 +588,8 @@ watch(() => props.visible, (visible) => {
   keyword.value = ''
   listPage.value = 0
   createResourceVisible.value = false
+  selectedExcerptId.value = ''
+  expandedNodeIds.value = new Set()
   resetExcerptForm()
   resetResourceForm()
   void loadResources()
@@ -514,6 +616,7 @@ watch(() => [props.initialExcerptText, props.initialExcerptTitle, props.mode], (
 })
 
 watch(selectedItemId, () => {
+  selectedExcerptId.value = ''
   void loadExcerpts()
 })
 </script>
@@ -549,17 +652,75 @@ watch(selectedItemId, () => {
           </div>
           <div class="resource-picker__list-scroll">
             <el-scrollbar>
-              <button
-                v-for="item in pagedFilteredItems"
-                :key="item.id"
-                type="button"
-                class="resource-picker__item"
-                :class="{ 'resource-picker__item--active': selectedItemId === item.id }"
-                @click="selectedItemId = item.id"
-              >
-                <span class="resource-picker__item-title">{{ item.title }}</span>
-                <small>{{ item.typeName }} · {{ item.workTitle || '未归类' }} · {{ item.identityFieldLabel }}: {{ item.identityValue || '未填写' }}</small>
-              </button>
+              <template v-if="isMarkExcerptMode">
+                <div
+                  v-for="item in pagedFilteredItems"
+                  :key="item.id"
+                  class="resource-picker__tree-item"
+                >
+                  <div class="resource-picker__item-row">
+                    <button
+                      v-if="itemSupportsExcerpts(item)"
+                      type="button"
+                      class="resource-picker__expand"
+                      :aria-label="isNodeExpanded(itemNodeKey(item.id)) ? '收起节选' : '展开节选'"
+                      @click.stop="toggleItemExcerptExpand(item)"
+                    >
+                      {{ isNodeExpanded(itemNodeKey(item.id)) ? '▼' : '▶' }}
+                    </button>
+                    <span
+                      v-else
+                      class="resource-picker__expand resource-picker__expand--placeholder"
+                    />
+                    <button
+                      type="button"
+                      class="resource-picker__item"
+                      :class="{ 'resource-picker__item--active': selectedItemId === item.id }"
+                      @click="selectedItemId = item.id"
+                    >
+                      <span class="resource-picker__item-title">{{ item.title }}</span>
+                      <small>{{ item.typeName }} · {{ item.workTitle || '未归类' }} · {{ item.identityFieldLabel }}: {{ item.identityValue || '未填写' }}</small>
+                    </button>
+                  </div>
+                  <div
+                    v-if="isNodeExpanded(itemNodeKey(item.id))"
+                    class="resource-picker__excerpt-children"
+                  >
+                    <ResourcePickerExcerptBranch
+                      v-if="getExpandChildren(item.id, null).total > 0"
+                      :item="item"
+                      :parent-id="null"
+                      :depth="0"
+                      :excerpts="listExcerptsForItem(item.id)"
+                      :expanded-ids="expandedNodeIds"
+                      :selected-excerpt-id="selectedExcerptId"
+                      :keyword="keyword"
+                      @toggle="toggleExcerptExpand"
+                      @select="(excerpt) => onLeftExcerptSelect(item, excerpt)"
+                    />
+                    <p
+                      v-else-if="item.id in excerptIndex"
+                      class="resource-picker__tree-empty"
+                    >
+                      {{ keyword.trim() ? '没有匹配的节选' : '暂无节选' }}
+                    </p>
+                    <p v-else class="resource-picker__tree-empty">加载中…</p>
+                  </div>
+                </div>
+              </template>
+              <template v-else>
+                <button
+                  v-for="item in pagedFilteredItems"
+                  :key="item.id"
+                  type="button"
+                  class="resource-picker__item"
+                  :class="{ 'resource-picker__item--active': selectedItemId === item.id }"
+                  @click="selectedItemId = item.id"
+                >
+                  <span class="resource-picker__item-title">{{ item.title }}</span>
+                  <small>{{ item.typeName }} · {{ item.workTitle || '未归类' }} · {{ item.identityFieldLabel }}: {{ item.identityValue || '未填写' }}</small>
+                </button>
+              </template>
               <div v-if="!loading && pagedFilteredItems.length === 0" class="resource-picker__empty-slot">
                 <el-empty
                   :description="isLinkDocumentMode ? '没有找到文档资源' : '没有找到外部资源'"
@@ -658,25 +819,41 @@ watch(selectedItemId, () => {
               </button>
 
               <div v-if="!isLinkDocumentMode && selectedSupportsExcerpts" class="resource-picker__excerpts">
-                <div class="resource-picker__section-title">{{ isSetBasisMode ? '可选：具体节选' : '资源节选' }}</div>
-                <button
-                  v-for="excerpt in filteredExcerpts"
-                  :key="excerpt.id"
-                  type="button"
-                  class="resource-picker__excerpt"
-                  @click="selectExcerpt(excerpt)"
-                >
-                  <span>{{ excerpt.title }}</span>
-                  <small v-if="excerpt.chapterTitle">章节：{{ excerpt.chapterTitle }}</small>
-                  <small v-if="excerpt.locator">{{ resourcePositionDisplay(excerpt.locator) || excerpt.locator }}</small>
-                  <em>{{ excerpt.excerptText }}</em>
-                </button>
-                <p v-if="!excerptLoading && filteredExcerpts.length === 0 && !isSetBasisMode" class="resource-picker__empty">
-                  {{ keyword.trim() ? '没有匹配的节选' : '暂无节选' }}
-                </p>
-                <p v-else-if="!excerptLoading && filteredExcerpts.length === 0 && isSetBasisMode" class="resource-picker__empty">
-                  该资源暂无节选，可直接挂靠上方资源实体。
-                </p>
+                <template v-if="!isMarkExcerptMode">
+                  <div class="resource-picker__section-title">{{ isSetBasisMode ? '可选：具体节选' : '资源节选' }}</div>
+                  <button
+                    v-for="excerpt in filteredExcerpts"
+                    :key="excerpt.id"
+                    type="button"
+                    class="resource-picker__excerpt"
+                    @click="onExcerptClick(excerpt)"
+                  >
+                    <span>{{ excerpt.title }}</span>
+                    <small v-if="excerpt.chapterTitle">章节：{{ excerpt.chapterTitle }}</small>
+                    <small v-if="excerpt.locator">{{ resourcePositionDisplay(excerpt.locator) || excerpt.locator }}</small>
+                    <em>{{ excerpt.excerptText }}</em>
+                  </button>
+                  <p v-if="!excerptLoading && filteredExcerpts.length === 0 && !isSetBasisMode" class="resource-picker__empty">
+                    {{ keyword.trim() ? '没有匹配的节选' : '暂无节选' }}
+                  </p>
+                  <p v-else-if="!excerptLoading && filteredExcerpts.length === 0 && isSetBasisMode" class="resource-picker__empty">
+                    该资源暂无节选，可直接挂靠上方资源实体。
+                  </p>
+                </template>
+                <template v-else>
+                  <div class="resource-picker__section-title">新建节选</div>
+                  <p v-if="selectedExcerptId" class="resource-picker__empty">
+                    已在左侧选中节选，可点「添加」标记，或在下方新建节选。
+                  </p>
+                  <button
+                    v-if="selectedExcerptId"
+                    type="button"
+                    class="resource-picker__primary"
+                    @click="confirmSelectedExcerpt"
+                  >
+                    添加
+                  </button>
+                </template>
 
                 <form v-if="!isSetBasisMode" class="resource-picker__form" @submit.prevent="createAndInsertExcerpt">
                   <div class="resource-picker__form-fields">
@@ -896,6 +1073,53 @@ watch(selectedItemId, () => {
   margin-bottom: 0;
 }
 
+.resource-picker__tree-item {
+  border-bottom: 1px solid #f1f5f9;
+}
+
+.resource-picker__item-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 2px;
+  min-width: 0;
+}
+
+.resource-picker__expand {
+  flex-shrink: 0;
+  width: 20px;
+  height: 40px;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: #98a2b3;
+  font-size: 10px;
+  line-height: 40px;
+  cursor: pointer;
+}
+
+.resource-picker__expand--placeholder {
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.resource-picker__item-row .resource-picker__item {
+  flex: 1;
+  min-width: 0;
+  border-bottom: 0;
+}
+
+.resource-picker__excerpt-children {
+  padding: 0 0 6px;
+  background: #fafbfc;
+}
+
+.resource-picker__tree-empty {
+  margin: 0;
+  padding: 8px 12px 8px 28px;
+  color: #98a2b3;
+  font-size: 12px;
+}
+
 .resource-picker__item,
 .resource-picker__excerpt {
   display: grid;
@@ -914,6 +1138,12 @@ watch(selectedItemId, () => {
 .resource-picker__item--active,
 .resource-picker__excerpt:hover {
   background: #eff6ff;
+}
+
+.resource-picker__excerpt--selected {
+  border-color: #1677ff;
+  background: #e6f4ff;
+  box-shadow: inset 0 0 0 1px rgba(22, 119, 255, 0.35);
 }
 
 .resource-picker__item-title,

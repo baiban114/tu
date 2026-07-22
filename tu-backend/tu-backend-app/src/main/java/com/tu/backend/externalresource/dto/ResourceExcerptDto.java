@@ -6,6 +6,7 @@ public record ResourceExcerptDto(
     String resourceItemTitle,
     String chapterId,
     String chapterTitle,
+    String parentId,
     String title,
     String locator,
     String excerptText,

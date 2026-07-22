@@ -22,6 +22,7 @@ import { MultiTableBlockNode } from './extensions/MultiTableBlockNode'
 import { ParagraphNode } from './extensions/ParagraphNode'
 import { BlockquoteNode } from './extensions/BlockquoteNode'
 import { HeadingNode } from './extensions/HeadingNode'
+import { HeadingEnterFix } from './extensions/HeadingEnterFix'
 import { CodeBlockNode } from './extensions/CodeBlockNode'
 import { HeadingSourceDecorations } from './extensions/HeadingSourceDecorations'
 import { BlockquoteExcerptDecorations } from './extensions/BlockquoteExcerptDecorations'
@@ -106,6 +107,7 @@ export function getTuEditorSchemaExtensions(): Extensions {
     }),
     CodeBlockNode,
     HeadingNode.configure({ levels: [1, 2, 3, 4, 5, 6] }),
+    HeadingEnterFix,
     Image.configure({ inline: false }),
     TuLink.configure({ openOnClick: false }),
     Highlight.configure({ multicolor: true }),

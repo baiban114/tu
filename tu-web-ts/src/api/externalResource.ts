@@ -116,6 +116,8 @@ export interface ResourceExcerpt {
   title: string;
   chapterId?: string | null;
   chapterTitle?: string | null;
+  /** Parent excerpt within the same resource item (nestable). */
+  parentId?: string | null;
   locator?: string;
   excerptText?: string;
   note?: string;

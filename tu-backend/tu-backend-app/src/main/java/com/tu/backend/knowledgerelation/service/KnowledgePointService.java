@@ -5,6 +5,7 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.tu.backend.common.BusinessException;
 import com.tu.backend.common.PageResponse;
+import com.tu.backend.knowledgerelation.KnowledgePointTitleNormalizer;
 import com.tu.backend.knowledgerelation.dto.CreateKnowledgePointAliasRequest;
 import com.tu.backend.knowledgerelation.dto.CreateKnowledgePointAnchorRequest;
 import com.tu.backend.knowledgerelation.dto.CreateKnowledgePointRequest;
@@ -106,6 +107,9 @@ public class KnowledgePointService {
     public KnowledgePointDto createPoint(String kbId, CreateKnowledgePointRequest request) {
         ensureKbExists(kbId);
         String title = request.title().trim();
+        if (request.sourceAnchor() != null) {
+            title = KnowledgePointTitleNormalizer.fromContent(title);
+        }
         if (title.isBlank()) {
             throw new BusinessException(40000, "title is required");
         }
@@ -728,13 +732,13 @@ public class KnowledgePointService {
 
     private String resolveTitle(String title, KnowledgeAnchorDto anchor) {
         if (title != null && !title.isBlank()) {
-            return title.trim();
+            return KnowledgePointTitleNormalizer.fromContent(title);
         }
         Map<String, Object> snapshot = anchor.snapshot();
         if (snapshot != null) {
             Object snapshotTitle = snapshot.get("title");
             if (snapshotTitle != null && !snapshotTitle.toString().isBlank()) {
-                return snapshotTitle.toString().trim();
+                return KnowledgePointTitleNormalizer.fromContent(snapshotTitle.toString());
             }
         }
         return "未命名知识点";

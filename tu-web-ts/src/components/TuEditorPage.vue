@@ -8,6 +8,7 @@ import { resolvePageDocument, toV2PageContent } from '@/editor/pageDocument'
 import TuEditor from './TuEditor.vue'
 import TocTreeList from './TocTreeList.vue'
 import SelectionToolbar from './SelectionToolbar.vue'
+import type { ReuseMarkOffer } from './SelectionToolbar.vue'
 import UrlHoverToolbar from './UrlHoverToolbar.vue'
 import BlockPicker from './BlockPicker.vue'
 import ExternalResourcePicker from './ExternalResourcePicker.vue'
@@ -23,6 +24,18 @@ import KnowledgePointPicker from './KnowledgePointPicker.vue'
 import DocumentMarkingReviewPanel from './DocumentMarkingReviewPanel.vue'
 import { generateDocumentMarkingStream, clearPageAiMarkers } from '@/api/aiDocumentMarking'
 import { applyAiMarkingSuggestions, clearAiMarkersFromDocument } from '@/utils/aiDocumentMarking'
+import {
+  buildLearningInProgressResourceLink,
+  canAutoMarkFromInProgress,
+  clearLearningInProgress,
+  formatLearningInProgressLabel,
+  formatLearningInProgressMarkAsLabel,
+  learningInProgressToBinding,
+  loadLearningInProgress,
+  saveLearningInProgress,
+  type LearningInProgress,
+} from '@/utils/learningInProgress'
+import { useAuthStore } from '@/stores/auth'
 import type { DocumentMarkingSuggestion } from '@/api/types'
 import { useExpandCollapse } from '@/composables/useExpandCollapse'
 import {
@@ -73,6 +86,7 @@ import {
   setActiveTagFilter,
 } from '@/stores/tagFilterSession'
 import { createHeadingBlockId } from '@/utils/headingSource'
+import { createBlockquoteBlockId } from '@/utils/blockquoteExcerpt'
 import { resourceExcerptHeadingBlockId } from '@/utils/resourceDocumentContent'
 import { registerExternalUrlFromPaste, type ResourceExcerpt, type ResourceItem } from '@/api/externalResource'
 import { parseExternalUrl } from '@/utils/externalUrlResource'
@@ -85,6 +99,7 @@ import { useBlockRegistryStore } from '@/stores/blockRegistry'
 import { useOutlineCacheStore } from '@/stores/outlineCache'
 import { clearSectionFoldSession } from '@/stores/sectionFoldSession'
 import type { Node as ProseMirrorNode } from '@tiptap/pm/model'
+import type { Transaction } from '@tiptap/pm/state'
 import {
   buildHeadingTree,
   type FlatTocEntry,
@@ -92,7 +107,14 @@ import {
 } from '@/utils/toc/headings'
 import { collectFlatTocEntries, type TocCollectContext } from '@/utils/toc/collectFlatTocEntries'
 import { resolveRefGroupSectionEntry } from '@/utils/sectionTocResolve'
-import { getBlockExcerptContent, getTocEntryExcerptContent, collectBasisBlockIds, collectTocEntryBasisBlockIds } from '@/utils/blockExcerptContent'
+import {
+  getBlockExcerptContent,
+  getTocEntryExcerptContent,
+  collectBasisBlockIds,
+  collectTocEntryBasisBlockIds,
+  resolveExcerptDefaultTitle,
+  excerptTitleFromText,
+} from '@/utils/blockExcerptContent'
 import { HEADING_SECTION_FOLD_META } from '@/utils/toc/tocSectionFoldActions'
 import { isMindmapBlueprint } from '@/components/x6'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -372,6 +394,7 @@ watch(() => nodeViewToolbar.visible, (visible, wasVisible) => {
 
 const workspaceStore = useWorkspaceStore()
 const editorPreferencesStore = useEditorPreferencesStore()
+const authStore = useAuthStore()
 const router = useRouter()
 const registryStore = useBlockRegistryStore()
 const outlineCacheStore = useOutlineCacheStore()
@@ -571,6 +594,47 @@ interface PendingBasisTarget {
 const pendingBasisTarget = ref<PendingBasisTarget | null>(null)
 const pendingMarkExcerptTarget = ref<PendingBasisTarget | null>(null)
 
+const REUSE_MARK_DURATION_MS = 6000
+const reuseMarkOffer = ref<ReuseMarkOffer | null>(null)
+const reuseMarkBinding = ref<HeadingSourceBinding | null>(null)
+let reuseMarkToken = 0
+/** True after user creates an unbound blockquote (e.g. `>`) until paste/content offers reuse. */
+let armedReuseForNextQuoteContent = false
+let detachReuseMarkListener: (() => void) | null = null
+/** Legacy id-based arming when blockId is already assigned. */
+const armedReuseBlockquoteIds = new Set<string>()
+const learningInProgressTarget = ref<LearningInProgress | null>(null)
+
+function refreshLearningInProgressTarget() {
+  learningInProgressTarget.value = loadLearningInProgress(authStore.user?.id)
+}
+
+function persistLearningInProgressFromBinding(binding: HeadingSourceBinding) {
+  const saved = saveLearningInProgress(authStore.user?.id, binding)
+  if (saved) {
+    learningInProgressTarget.value = saved
+  }
+}
+
+const learningInProgressLabel = computed(() => (
+  learningInProgressTarget.value
+    ? formatLearningInProgressLabel(learningInProgressTarget.value)
+    : ''
+))
+
+function navigateToLearningInProgress() {
+  const target = learningInProgressTarget.value
+  if (!target) return
+  const link = buildLearningInProgressResourceLink(target)
+  void router.push({ path: link.path, query: link.query })
+}
+
+function handleClearLearningInProgress() {
+  clearLearningInProgress(authStore.user?.id)
+  learningInProgressTarget.value = null
+  dismissReuseMarkOffer()
+}
+
 const tiptapEditor = computed(() => tuEditorRef.value?.editor ?? null)
 
 const knowledgeAnchorPickerVisible = ref(false)
@@ -579,11 +643,122 @@ const knowledgeRelationRefreshKey = ref(0)
 
 const documentMarkingPanelVisible = ref(false)
 const documentMarkingLoading = ref(false)
+const documentMarkingAwaitingStart = ref(false)
 const documentMarkingProgress = ref('')
 const documentMarkingSuggestions = ref<DocumentMarkingSuggestion[]>([])
 const documentMarkingSectionTitle = ref('')
+const documentMarkingPendingScope = ref<{
+  sectionHeadingBlockId?: string
+  sectionEmbedBlockId?: string
+  sectionTitle?: string
+} | null>(null)
 let documentMarkingAbort: AbortController | null = null
 
+function stopDocumentMarkingAnalysis() {
+  if (documentMarkingAbort) {
+    documentMarkingAbort.abort()
+    documentMarkingAbort = null
+  }
+  documentMarkingLoading.value = false
+}
+
+function openDocumentMarkingPanel(scope?: {
+  sectionHeadingBlockId?: string
+  sectionEmbedBlockId?: string
+  sectionTitle?: string
+}) {
+  if (!props.editable) return
+  const pageId = workspaceStore.currentPageId
+  const kbId = workspaceStore.currentKbId
+  const editor = tuEditorRef.value?.editor
+  if (!pageId || !kbId || !editor) return
+
+  stopDocumentMarkingAnalysis()
+  documentMarkingPendingScope.value = scope ?? null
+  documentMarkingSuggestions.value = []
+  documentMarkingProgress.value = ''
+  documentMarkingLoading.value = false
+  documentMarkingAwaitingStart.value = true
+  documentMarkingSectionTitle.value = scope?.sectionTitle?.trim() || ''
+  documentMarkingPanelVisible.value = true
+}
+
+const runAiDocumentMarking = async (scope?: {
+  sectionHeadingBlockId?: string
+  sectionEmbedBlockId?: string
+  sectionTitle?: string
+}) => {
+  const pageId = workspaceStore.currentPageId
+  const kbId = workspaceStore.currentKbId
+  const editor = tuEditorRef.value?.editor
+  if (!pageId || !kbId || !editor || !props.editable) return
+
+  stopDocumentMarkingAnalysis()
+  documentMarkingAbort = new AbortController()
+  const abortSignal = documentMarkingAbort.signal
+  documentMarkingPanelVisible.value = true
+  documentMarkingAwaitingStart.value = false
+  documentMarkingLoading.value = true
+  documentMarkingProgress.value = scope?.sectionTitle
+    ? `正在分析「${scope.sectionTitle}」…`
+    : '正在分析文档…'
+  documentMarkingSuggestions.value = []
+  documentMarkingSectionTitle.value = scope?.sectionTitle?.trim() || ''
+
+  try {
+    const response = await generateDocumentMarkingStream(
+      {
+        pageId,
+        kbId,
+        sectionHeadingBlockId: scope?.sectionHeadingBlockId ?? null,
+        sectionEmbedBlockId: scope?.sectionEmbedBlockId ?? null,
+        sectionTitle: scope?.sectionTitle ?? null,
+      },
+      {
+        signal: abortSignal,
+        onEvent: (event) => {
+          if (event.message) documentMarkingProgress.value = event.message
+        },
+      },
+    )
+    if (abortSignal.aborted) return
+    documentMarkingSuggestions.value = response.suggestions
+  } catch (err) {
+    if (err instanceof DOMException && err.name === 'AbortError') return
+    ElMessage.error(err instanceof Error ? err.message : '文档标记分析失败')
+    documentMarkingAwaitingStart.value = true
+    documentMarkingSuggestions.value = []
+  } finally {
+    if (documentMarkingAbort?.signal === abortSignal) {
+      documentMarkingAbort = null
+    }
+    documentMarkingLoading.value = false
+  }
+}
+
+const handleAiDocumentMarking = () => {
+  openDocumentMarkingPanel()
+}
+
+const handleStartDocumentMarking = () => {
+  void runAiDocumentMarking(documentMarkingPendingScope.value ?? undefined)
+}
+
+const handleCancelDocumentMarking = () => {
+  stopDocumentMarkingAnalysis()
+  documentMarkingAwaitingStart.value = false
+  documentMarkingPendingScope.value = null
+}
+
+const handleSectionAiMarkingFromGutter = (entryId: string) => {
+  const editor = tuEditorRef.value?.editor
+  if (!editor) return
+  const flat = collectFlatTocEntries(editor.state.doc, tocCollectContext.value)
+  const entry = flat.find((item) => item.id === entryId)
+  if (!entry) return
+  const scope = buildDocumentMarkingSectionScope(entry)
+  openDocumentMarkingPanel(scope)
+}
 const selectionToolbarSuppressed = computed(() => (
   !editorPreferencesStore.selectionToolbarEnabled
   || nodeViewToolbar.visible
@@ -927,16 +1102,12 @@ const normalizeResourceExcerptSelectionText = (value: string): string => {
   return text
 }
 
-const buildResourceExcerptTitle = (text: string): string => {
-  const firstLine = text
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .find(Boolean) || '来自文档的节选'
-  return firstLine
-    .replace(/^#+\s+/, '')
-    .replace(/^[-*]\s+/, '')
-    .replace(/^\d+\.\s+/, '')
-    .slice(0, 80)
+const buildResourceExcerptTitle = (text: string, pos?: number): string => {
+  const editor = tuEditorRef.value?.editor
+  if (editor && pos != null) {
+    return resolveExcerptDefaultTitle(editor.state.doc, pos, text)
+  }
+  return excerptTitleFromText(text)
 }
 
 const handleMarkResourceExcerptFromSelection = () => {
@@ -944,11 +1115,12 @@ const handleMarkResourceExcerptFromSelection = () => {
   const payload = getSelectionAnnotationPayload(selectionFrom.value, selectionTo.value)
   const excerptText = normalizeResourceExcerptSelectionText(payload.selectedText || selectedText.value)
   if (!excerptText) return
-  openMarkBlockExcerptPicker(excerptText, buildResourceExcerptTitle(excerptText), {
+  const from = payload.from ?? selectionFrom.value
+  openMarkBlockExcerptPicker(excerptText, buildResourceExcerptTitle(excerptText, from), {
     selectedText: excerptText,
     contextBefore: payload.contextBefore,
     contextAfter: payload.contextAfter,
-    from: payload.from ?? selectionFrom.value,
+    from,
     to: payload.to ?? selectionTo.value,
     scope: 'text',
   })
@@ -959,7 +1131,8 @@ const openMarkBlockExcerptPicker = (text: string, title: string, target?: Pendin
   if (!excerptText) return
   pendingMarkExcerptTarget.value = target ?? null
   pendingResourceExcerptText.value = excerptText
-  pendingResourceExcerptTitle.value = title || buildResourceExcerptTitle(excerptText)
+  const fallbackPos = target?.from
+  pendingResourceExcerptTitle.value = title || buildResourceExcerptTitle(excerptText, fallbackPos)
   resourcePickerMode.value = 'markExcerpt'
   showResourcePicker.value = true
 }
@@ -1127,6 +1300,8 @@ const saveMarkExcerptAnnotation = (binding: HeadingSourceBinding) => {
   applyBlockquoteExcerptBinding(binding, target)
   emitLocalContentChange()
   pendingMarkExcerptTarget.value = null
+  persistLearningInProgressFromBinding(binding)
+  dismissReuseMarkOffer()
   showToast(`已标记节选：${binding.snapshot.excerptTitle || binding.snapshot.resourceTitle || '外部资源'}`)
 }
 
@@ -1167,6 +1342,371 @@ const applyBlockquoteExcerptBinding = (binding: HeadingSourceBinding, target: Pe
   if (!blockId) return
   tuEditorRef.value?.applyBlockquoteExcerptBindingByBlockId?.(blockId, binding)
 }
+
+function dismissReuseMarkOffer() {
+  reuseMarkOffer.value = null
+  reuseMarkBinding.value = null
+}
+
+function presentReuseMarkOffer(binding: HeadingSourceBinding) {
+  if (!props.editable || selectionToolbarSuppressed.value) return
+  if (!canMarkResourceExcerptFromSelection.value) return
+  reuseMarkToken += 1
+  reuseMarkBinding.value = binding
+  reuseMarkOffer.value = {
+    label: formatLearningInProgressMarkAsLabel({
+      resourceItemId: binding.resourceItemId,
+      resourceExcerptId: binding.resourceExcerptId ?? null,
+      snapshot: binding.snapshot,
+      updatedAt: Date.now(),
+    }),
+    durationMs: REUSE_MARK_DURATION_MS,
+    token: reuseMarkToken,
+  }
+}
+
+function collectChangedRange(tr: Transaction): { from: number; to: number } | null {
+  let from = Number.POSITIVE_INFINITY
+  let to = Number.NEGATIVE_INFINITY
+  tr.mapping.maps.forEach((map) => {
+    map.forEach((_oldStart, _oldEnd, newStart, newEnd) => {
+      from = Math.min(from, newStart)
+      to = Math.max(to, newEnd)
+    })
+  })
+  if (!Number.isFinite(from) || !Number.isFinite(to) || from >= to) return null
+  const max = tr.doc.content.size
+  return {
+    from: Math.max(1, Math.min(from, max)),
+    to: Math.max(1, Math.min(to, max)),
+  }
+}
+
+function collectBlockquoteIds(doc: ProseMirrorNode): Set<string> {
+  const ids = new Set<string>()
+  doc.descendants((node) => {
+    if (node.type.name !== 'blockquote') return
+    const id = typeof node.attrs.blockId === 'string' ? node.attrs.blockId : ''
+    if (id) ids.add(id)
+  })
+  return ids
+}
+
+function findBlockquoteTextRange(doc: ProseMirrorNode, blockId: string): { from: number; to: number } | null {
+  let range: { from: number; to: number } | null = null
+  doc.descendants((node, pos) => {
+    if (node.type.name !== 'blockquote' || node.attrs.blockId !== blockId) return true
+    if (node.attrs.excerptBinding) return false
+    if (!node.textContent.trim()) return false
+    range = { from: pos + 1, to: pos + node.nodeSize - 1 }
+    return false
+  })
+  return range
+}
+
+function isPasteTransaction(tr: Transaction): boolean {
+  if (tr.getMeta('paste') != null) return true
+  if (tr.getMeta('uiEvent') === 'paste') return true
+  return false
+}
+
+function scheduleReuseMarkOfferForRange(
+  editor: Editor,
+  range: { from: number; to: number },
+  binding: HeadingSourceBinding,
+) {
+  const text = editor.state.doc.textBetween(range.from, range.to, '\n').trim()
+  if (!text) return
+  nextTick(() => {
+    if (!props.editable || selectionToolbarSuppressed.value) return
+    const live = tuEditorRef.value?.editor
+    if (!live || live.isDestroyed) return
+    live.chain().focus().setTextSelection({ from: range.from, to: range.to }).run()
+    nextTick(() => {
+      presentReuseMarkOffer(binding)
+    })
+  })
+}
+
+function tryOfferReuseMarkAfterTransaction(editor: Editor, tr: Transaction) {
+  if (!props.editable || !tr.docChanged) return
+  const inProgress = loadLearningInProgress(authStore.user?.id)
+  if (!canAutoMarkFromInProgress(inProgress)) return
+  const binding = learningInProgressToBinding(inProgress!)
+
+  const beforeIds = collectBlockquoteIds(tr.before)
+  const afterIds = collectBlockquoteIds(tr.doc)
+  const newlyCreatedIds = new Set<string>()
+  afterIds.forEach((id) => {
+    if (!beforeIds.has(id)) {
+      armedReuseBlockquoteIds.add(id)
+      newlyCreatedIds.add(id)
+    }
+  })
+  Array.from(armedReuseBlockquoteIds).forEach((id) => {
+    if (!afterIds.has(id)) armedReuseBlockquoteIds.delete(id)
+  })
+
+  let createdUnboundQuote = newlyCreatedIds.size > 0
+  if (!createdUnboundQuote) {
+    let beforeCount = 0
+    let afterCount = 0
+    tr.before.descendants((node) => {
+      if (node.type.name === 'blockquote') beforeCount += 1
+    })
+    tr.doc.descendants((node) => {
+      if (node.type.name === 'blockquote') afterCount += 1
+    })
+    createdUnboundQuote = afterCount > beforeCount
+  }
+  if (createdUnboundQuote) {
+    armedReuseForNextQuoteContent = true
+  }
+
+  const isPaste = isPasteTransaction(tr)
+
+  // New unbound quote already containing text
+  for (const blockId of newlyCreatedIds) {
+    const range = findBlockquoteTextRange(tr.doc, blockId)
+    if (!range) continue
+    armedReuseBlockquoteIds.delete(blockId)
+    armedReuseForNextQuoteContent = false
+    scheduleReuseMarkOfferForRange(editor, range, binding)
+    return
+  }
+  if (createdUnboundQuote) {
+    let offered = false
+    tr.doc.descendants((node, pos) => {
+      if (offered || node.type.name !== 'blockquote' || node.attrs.excerptBinding) return true
+      if (!node.textContent.trim()) return true
+      const id = typeof node.attrs.blockId === 'string' ? node.attrs.blockId : ''
+      if (id && beforeIds.has(id)) return true
+      offered = true
+      armedReuseForNextQuoteContent = false
+      scheduleReuseMarkOfferForRange(editor, { from: pos + 1, to: pos + node.nodeSize - 1 }, binding)
+      return false
+    })
+    if (offered) return
+  }
+
+  // Paste into armed quote / plain paste
+  if (isPaste) {
+    for (const blockId of armedReuseBlockquoteIds) {
+      const range = findBlockquoteTextRange(tr.doc, blockId)
+      if (!range) continue
+      armedReuseBlockquoteIds.delete(blockId)
+      armedReuseForNextQuoteContent = false
+      scheduleReuseMarkOfferForRange(editor, range, binding)
+      return
+    }
+    if (armedReuseForNextQuoteContent) {
+      let offered = false
+      tr.doc.descendants((node, pos) => {
+        if (offered || node.type.name !== 'blockquote' || node.attrs.excerptBinding) return true
+        if (!node.textContent.trim()) return true
+        offered = true
+        armedReuseForNextQuoteContent = false
+        scheduleReuseMarkOfferForRange(editor, { from: pos + 1, to: pos + node.nodeSize - 1 }, binding)
+        return false
+      })
+      if (offered) return
+    }
+    const changed = collectChangedRange(tr)
+    if (changed) {
+      armedReuseForNextQuoteContent = false
+      scheduleReuseMarkOfferForRange(editor, changed, binding)
+    }
+  }
+}
+
+function findEnclosingBlockquote(
+  editor: Editor,
+  from: number,
+  to: number,
+): { blockId: string; pos: number; nodeSize: number } | null {
+  let found: { blockId: string; pos: number; nodeSize: number } | null = null
+  editor.state.doc.descendants((node, pos) => {
+    if (node.type.name !== 'blockquote') return true
+    const innerFrom = pos + 1
+    const innerTo = pos + node.nodeSize - 1
+    if (from >= innerFrom && to <= innerTo) {
+      const existingId = typeof node.attrs.blockId === 'string' ? node.attrs.blockId.trim() : ''
+      found = {
+        blockId: existingId || createBlockquoteBlockId(),
+        pos,
+        nodeSize: node.nodeSize,
+      }
+      return false
+    }
+    return true
+  })
+  return found
+}
+
+/**
+ * Ensure the current selection becomes a blockquote sibling after the previous
+ * top-level node (same parent level). Returns the blockquote blockId and inner range.
+ */
+function promoteSelectionToBlockquoteSibling(
+  editor: Editor,
+  from: number,
+  to: number,
+): { blockId: string; from: number; to: number } | null {
+  const existing = findEnclosingBlockquote(editor, from, to)
+  if (existing) {
+    const node = editor.state.doc.nodeAt(existing.pos)
+    if (node && !String(node.attrs.blockId || '').trim()) {
+      editor.chain().command(({ tr }) => {
+        tr.setNodeMarkup(existing.pos, undefined, {
+          ...node.attrs,
+          blockId: existing.blockId,
+        })
+        return true
+      }).run()
+    }
+    return {
+      blockId: existing.blockId,
+      from: existing.pos + 1,
+      to: existing.pos + existing.nodeSize - 1,
+    }
+  }
+
+  const $from = editor.state.doc.resolve(from)
+  if ($from.depth < 1) return null
+  const currentBlockPos = $from.before(1)
+  const currentBlock = $from.node(1)
+  const insertPos = currentBlockPos // after previous sibling = start of current block
+
+  const selectedText = editor.state.doc.textBetween(from, to, '\n').trim()
+  if (!selectedText) return null
+
+  const blockId = createBlockquoteBlockId()
+  const paragraphType = editor.schema.nodes.paragraph
+  const blockquoteType = editor.schema.nodes.blockquote
+  if (!paragraphType || !blockquoteType) return null
+
+  const lines = selectedText.split(/\n/)
+  const paragraphNodes = lines.map((line) =>
+    paragraphType.create(null, line ? editor.schema.text(line) : undefined),
+  )
+  const blockquoteNode = blockquoteType.create(
+    { blockId, excerptBinding: null },
+    paragraphNodes,
+  )
+
+  const deleteFrom = from
+  const deleteTo = to
+  const sameBlock = deleteFrom >= currentBlockPos && deleteTo <= currentBlockPos + currentBlock.nodeSize
+
+  editor.chain().command(({ tr }) => {
+    // Remove original selection first (map carefully)
+    tr.delete(deleteFrom, deleteTo)
+    // After delete, insertPos may shift if delete was before insertPos
+    let mappedInsert = tr.mapping.map(insertPos, -1)
+    // If we emptied the current top-level block, remove it so the new quote sits after previous sibling
+    if (sameBlock) {
+      const mappedBlockPos = tr.mapping.map(currentBlockPos, -1)
+      const mappedBlock = tr.doc.nodeAt(mappedBlockPos)
+      if (mappedBlock && mappedBlock.textContent.trim() === '') {
+        tr.delete(mappedBlockPos, mappedBlockPos + mappedBlock.nodeSize)
+        mappedInsert = tr.mapping.map(insertPos, -1)
+      }
+    }
+    tr.insert(mappedInsert, blockquoteNode)
+    return true
+  }).run()
+
+  // Locate inserted blockquote by blockId
+  let placedFrom = -1
+  let placedTo = -1
+  editor.state.doc.descendants((node, pos) => {
+    if (node.type.name === 'blockquote' && node.attrs.blockId === blockId) {
+      placedFrom = pos + 1
+      placedTo = pos + node.nodeSize - 1
+      return false
+    }
+    return true
+  })
+  if (placedFrom < 0 || placedTo < 0) return null
+  editor.chain().focus().setTextSelection({ from: placedFrom, to: placedTo }).run()
+  return { blockId, from: placedFrom, to: placedTo }
+}
+
+function handleConfirmReuseMark() {
+  const binding = reuseMarkBinding.value
+  const editor = tuEditorRef.value?.editor
+  if (!binding || !editor || editor.isDestroyed) {
+    dismissReuseMarkOffer()
+    return
+  }
+
+  const selFrom = selectionFrom.value
+  const selTo = selectionTo.value
+  const promoted = promoteSelectionToBlockquoteSibling(editor, selFrom, selTo)
+  if (!promoted) {
+    dismissReuseMarkOffer()
+    return
+  }
+
+  // Refresh selection state from promoted range
+  const payload = getSelectionAnnotationPayload(promoted.from, promoted.to)
+  const excerptText = normalizeResourceExcerptSelectionText(payload.selectedText || selectedText.value)
+  if (!excerptText) {
+    dismissReuseMarkOffer()
+    return
+  }
+
+  pendingMarkExcerptTarget.value = {
+    selectedText: excerptText,
+    contextBefore: payload.contextBefore,
+    contextAfter: payload.contextAfter,
+    from: promoted.from,
+    to: promoted.to,
+    scope: 'block',
+    spannedBlockIds: [promoted.blockId],
+    spannedBlockMetadata: [],
+  }
+  saveMarkExcerptAnnotation(binding)
+}
+
+function handleDismissReuseMark() {
+  dismissReuseMarkOffer()
+}
+
+watch(
+  tiptapEditor,
+  (editor, _prev, onCleanup) => {
+    detachReuseMarkListener?.()
+    detachReuseMarkListener = null
+    armedReuseBlockquoteIds.clear()
+    armedReuseForNextQuoteContent = false
+    if (!editor || editor.isDestroyed) return
+
+    const onTransaction = ({ transaction }: { transaction: Transaction }) => {
+      tryOfferReuseMarkAfterTransaction(editor, transaction)
+    }
+    editor.on('transaction', onTransaction)
+    detachReuseMarkListener = () => {
+      if (!editor.isDestroyed) editor.off('transaction', onTransaction)
+    }
+    onCleanup(() => {
+      detachReuseMarkListener?.()
+      detachReuseMarkListener = null
+    })
+  },
+  { immediate: true },
+)
+
+watch(
+  () => authStore.user?.id,
+  () => {
+    refreshLearningInProgressTarget()
+  },
+)
+
+watch(selectionToolbarSuppressed, (suppressed) => {
+  if (suppressed) dismissReuseMarkOffer()
+})
 
 const handleResourceExcerptCreated = (payload: { item: ResourceItem; excerpt: ResourceExcerpt }) => {
   const hadTarget = !!pendingMarkExcerptTarget.value
@@ -1282,66 +1822,6 @@ const handleKnowledgeRelationCreated = () => {
   showToast('已关联到知识点')
 }
 
-const runAiDocumentMarking = async (scope?: {
-  sectionHeadingBlockId?: string
-  sectionEmbedBlockId?: string
-  sectionTitle?: string
-}) => {
-  const pageId = workspaceStore.currentPageId
-  const kbId = workspaceStore.currentKbId
-  const editor = tuEditorRef.value?.editor
-  if (!pageId || !kbId || !editor || !props.editable) return
-
-  documentMarkingAbort?.abort()
-  documentMarkingAbort = new AbortController()
-  documentMarkingPanelVisible.value = true
-  documentMarkingLoading.value = true
-  documentMarkingProgress.value = scope?.sectionTitle
-    ? `正在分析「${scope.sectionTitle}」…`
-    : '正在分析文档…'
-  documentMarkingSuggestions.value = []
-  documentMarkingSectionTitle.value = scope?.sectionTitle?.trim() || ''
-
-  try {
-    const response = await generateDocumentMarkingStream(
-      {
-        pageId,
-        kbId,
-        sectionHeadingBlockId: scope?.sectionHeadingBlockId ?? null,
-        sectionEmbedBlockId: scope?.sectionEmbedBlockId ?? null,
-        sectionTitle: scope?.sectionTitle ?? null,
-      },
-      {
-        signal: documentMarkingAbort.signal,
-        onEvent: (event) => {
-          if (event.message) documentMarkingProgress.value = event.message
-        },
-      },
-    )
-    documentMarkingSuggestions.value = response.suggestions
-  } catch (err) {
-    if (err instanceof DOMException && err.name === 'AbortError') return
-    ElMessage.error(err instanceof Error ? err.message : '文档标记分析失败')
-    documentMarkingPanelVisible.value = false
-  } finally {
-    documentMarkingLoading.value = false
-  }
-}
-
-const handleAiDocumentMarking = () => {
-  void runAiDocumentMarking()
-}
-
-const handleSectionAiMarkingFromGutter = (entryId: string) => {
-  const editor = tuEditorRef.value?.editor
-  if (!editor) return
-  const flat = collectFlatTocEntries(editor.state.doc, tocCollectContext.value)
-  const entry = flat.find((item) => item.id === entryId)
-  if (!entry) return
-  const scope = buildDocumentMarkingSectionScope(entry)
-  void runAiDocumentMarking(scope)
-}
-
 const handleApplyDocumentMarking = async (payload: { selectedIds: string[]; replaceExistingAi: boolean }) => {
   const pageId = workspaceStore.currentPageId
   const kbId = workspaceStore.currentKbId
@@ -1376,6 +1856,8 @@ const handleApplyDocumentMarking = async (payload: { selectedIds: string[]; repl
   })
 
   documentMarkingPanelVisible.value = false
+  documentMarkingAwaitingStart.value = false
+  documentMarkingPendingScope.value = null
   emitLocalContentChange()
   knowledgeRelationRefreshKey.value += 1
   if (result.errors.length) {
@@ -3074,6 +3556,7 @@ onMounted(() => {
   document.addEventListener('click', closeTocContextMenu)
 
   void editorPreferencesStore.load()
+  refreshLearningInProgressTarget()
 
   blockSyncManager.onStatusChange((status, error) => {
     if (status === 'syncing') {
@@ -3089,6 +3572,11 @@ onMounted(() => {
 onBeforeUnmount(() => {
   clearUrlHoverPinTimer()
   clearUrlHoverDismissTimer()
+  dismissReuseMarkOffer()
+  detachReuseMarkListener?.()
+  detachReuseMarkListener = null
+  armedReuseBlockquoteIds.clear()
+  armedReuseForNextQuoteContent = false
   if (annotationPersistTimer) {
     clearTimeout(annotationPersistTimer)
     annotationPersistTimer = null
@@ -3139,6 +3627,28 @@ onBeforeUnmount(() => {
           title="分析整页文档结构并建议知识标记"
         >
           AI 分析标记（整页）
+        </button>
+      </div>
+      <div
+        v-if="learningInProgressTarget"
+        class="learning-in-progress-chip"
+        title="当前学习进行中目标（由标记节选产生）"
+      >
+        <button
+          type="button"
+          class="learning-in-progress-chip__main"
+          @click="navigateToLearningInProgress"
+        >
+          <span class="learning-in-progress-chip__badge">进行中</span>
+          <span class="learning-in-progress-chip__label">{{ learningInProgressLabel }}</span>
+        </button>
+        <button
+          type="button"
+          class="learning-in-progress-chip__clear"
+          title="清除进行中目标"
+          @click="handleClearLearningInProgress"
+        >
+          ×
         </button>
       </div>
     </header>
@@ -3416,10 +3926,13 @@ onBeforeUnmount(() => {
       v-if="editable"
       :editor="tiptapEditor"
       :suppressed="selectionToolbarSuppressed"
+      :reuse-offer="reuseMarkOffer"
       @add-note="handleAddNoteFromSelection"
       @mark-resource-excerpt="handleMarkResourceExcerptFromSelection"
       @set-excerpt-basis="handleSetExcerptBasisFromSelection"
       @create-knowledge-relation="handleCreateKnowledgeRelationFromSelection"
+      @confirm-reuse-mark="handleConfirmReuseMark"
+      @dismiss-reuse-mark="handleDismissReuseMark"
     />
 
     <KnowledgePointPicker
@@ -3541,9 +4054,12 @@ onBeforeUnmount(() => {
       v-model:visible="documentMarkingPanelVisible"
       :suggestions="documentMarkingSuggestions"
       :loading="documentMarkingLoading"
+      :awaiting-start="documentMarkingAwaitingStart"
       :progress-message="documentMarkingProgress"
       :page-title="props.pageTitle"
       :section-title="documentMarkingSectionTitle"
+      @start="handleStartDocumentMarking"
+      @cancel="handleCancelDocumentMarking"
       @apply="handleApplyDocumentMarking"
     />
 
@@ -3590,6 +4106,67 @@ onBeforeUnmount(() => {
   flex-wrap: wrap;
   gap: 6px;
   flex-shrink: 0;
+}
+
+.learning-in-progress-chip {
+  display: inline-flex;
+  align-items: center;
+  max-width: min(360px, 100%);
+  height: 28px;
+  margin-left: auto;
+  border: 1px solid #91caff;
+  border-radius: 14px;
+  background: #e6f4ff;
+  overflow: hidden;
+  flex-shrink: 1;
+  min-width: 0;
+}
+
+.learning-in-progress-chip__main {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  height: 100%;
+  padding: 0 8px 0 10px;
+  border: none;
+  background: transparent;
+  color: #0958d9;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.learning-in-progress-chip__main:hover {
+  background: rgba(22, 119, 255, 0.08);
+}
+
+.learning-in-progress-chip__badge {
+  flex-shrink: 0;
+  font-weight: 600;
+}
+
+.learning-in-progress-chip__label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.learning-in-progress-chip__clear {
+  flex-shrink: 0;
+  width: 24px;
+  height: 100%;
+  border: none;
+  border-left: 1px solid #91caff;
+  background: transparent;
+  color: #1677ff;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+}
+
+.learning-in-progress-chip__clear:hover {
+  background: rgba(22, 119, 255, 0.12);
 }
 
 .toolbar-button {

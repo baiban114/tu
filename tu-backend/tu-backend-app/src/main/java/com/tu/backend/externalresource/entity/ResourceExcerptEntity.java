@@ -23,6 +23,10 @@ public class ResourceExcerptEntity {
     @Column(name = "chapter_id", length = 64)
     private String chapterId;
 
+    /** Optional parent excerpt within the same resource item (nestable excerpts). */
+    @Column(name = "parent_id", length = 64)
+    private String parentId;
+
     @Column(length = 255, nullable = false)
     private String title;
 
@@ -84,6 +88,14 @@ public class ResourceExcerptEntity {
 
     public void setChapterId(String chapterId) {
         this.chapterId = chapterId;
+    }
+
+    public String getParentId() {
+        return parentId;
+    }
+
+    public void setParentId(String parentId) {
+        this.parentId = parentId;
     }
 
     public String getTitle() {

@@ -46,12 +46,9 @@ import {
   type ResourceType,
   type ResourceWork,
   type UrlClusterRule,
+  type UpdateResourceExcerptPayload,
   type VariantKind,
 } from '@/api/externalResource';
-import {
-  createKbResourceLink,
-  deleteKbResourceLink,
-} from '@/api/kbResourceLink';
 import { DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE } from '@/constants/pagination';
 import { parseExternalUrl } from '@/utils/externalUrlResource';
 import { recognizeExcerptFieldsFromUrl } from '@/utils/excerptUrlRecognition';
@@ -73,6 +70,7 @@ import { useObjectModelStore } from '@/stores/objectModel';
 import { useWorkspaceStore } from '@/stores/workspace';
 import TreeListPanel from '@/components/tree/TreeListPanel.vue';
 import ResourcePositionLocatorField from '@/components/ResourcePositionLocatorField.vue';
+import { ElTree } from 'element-plus';
 import {
   listKnowledgeRelations,
   deleteKnowledgeRelation,
@@ -92,10 +90,46 @@ import {
   type ResourceTreeMeta,
   type TreeNode,
 } from '@/utils/tree';
+import {
+  canDropOnNode,
+  computeTreeDropTarget,
+  moveToRootEnd,
+  normalizeDropType,
+  type TreeDropTarget,
+  type TreeDropType,
+  type TreeMovableNode,
+} from '@/utils/tree/drag';
 
 type ResourceTab = 'references' | 'items' | 'works' | 'types' | 'urlRules' | 'objects' | 'orphaned' | 'knowledgePoints' | 'knowledgeRelations' | 'knowledgeGraph';
 type ReferenceCategoryFilter = 'all' | 'internal' | 'external' | 'annotation';
 type ReferenceStatusFilter = 'all' | 'ok' | 'broken' | 'bound' | 'unbound';
+
+/** 资源实体表树形行：实体 + 其下嵌套节选 */
+type ItemTableExcerptRow = {
+  kind: 'excerpt';
+  rowKey: string;
+  id: string;
+  itemId: string;
+  title: string;
+  locatorLabel: string;
+  excerpt: ResourceExcerpt;
+  children?: ItemTableExcerptRow[];
+};
+
+type ItemTableItemRow = ResourceItem & {
+  kind: 'item';
+  rowKey: string;
+  hasChildren: boolean;
+};
+
+type ItemTableRow = ItemTableItemRow | ItemTableExcerptRow;
+
+type ExcerptElTreeNode = {
+  id: string;
+  label: string;
+  excerpt: ResourceExcerpt;
+  children?: ExcerptElTreeNode[];
+};
 
 const route = useRoute();
 const router = useRouter();
@@ -124,6 +158,14 @@ const activeTab = ref<ResourceTab>(getRouteTab());
 const loading = ref(false);
 const referencesLoading = ref(false);
 const excerptsLoading = ref(false);
+/** 实体表懒加载树：按 itemId 缓存节选（与弹窗 excerpts 独立） */
+const itemExcerptCache = ref<Record<string, ResourceExcerpt[]>>({});
+const itemExcerptLoadingIds = ref<Set<string>>(new Set());
+/** 节选变更后 remount 表格，刷新懒加载子树 */
+const itemsTableKey = ref(0);
+const excerptReorderBusy = ref(false);
+const excerptRowDrag = ref<{ itemId: string; excerptId: string } | null>(null);
+const excerptRowDropHint = ref<{ rowKey: string; position: 'before' | 'after' | 'inner' } | null>(null);
 const activeTabLabel = computed(() => TAB_LABELS[activeTab.value]);
 const selectedTypeId = ref('');
 const selectedWorkId = ref('');
@@ -234,6 +276,7 @@ const excerptForm = reactive({
   id: '',
   title: '',
   chapterId: '' as string | null,
+  parentId: '' as string | null,
   locator: '',
   excerptText: '',
   note: '',
@@ -337,6 +380,320 @@ const mergeWorkTreeNodes = computed(() => {
   return resourceWorksToTreeNodes(type, candidates, itemSelectOptions.value);
 });
 const selectedExcerptItem = computed(() => items.value.find((item) => item.id === selectedExcerptItemId.value) || null);
+
+function excerptsToTreeNodes(list: ResourceExcerpt[]) {
+  const flat = list.map((excerpt) => {
+    const locatorLabel = formatExcerptLocatorCell(excerpt);
+    return {
+      id: excerpt.id,
+      parentId: excerpt.parentId ?? null,
+      label: locatorLabel !== '—' ? `${excerpt.title} · ${locatorLabel}` : excerpt.title,
+      order: excerpt.sortOrder,
+      meta: excerpt,
+    };
+  });
+  return buildTreeFromFlat(flat);
+}
+
+const excerptTreeNodes = computed(() => excerptsToTreeNodes(excerpts.value));
+
+const excerptElTreeData = computed((): ExcerptElTreeNode[] => {
+  const toEl = (nodes: ReturnType<typeof excerptsToTreeNodes>): ExcerptElTreeNode[] => (
+    nodes.map((node) => ({
+      id: node.id,
+      label: node.label,
+      excerpt: node.meta as ResourceExcerpt,
+      ...(node.children?.length ? { children: toEl(node.children) } : {}),
+    }))
+  );
+  return toEl(excerptTreeNodes.value);
+});
+
+const itemTableRows = computed((): ItemTableItemRow[] => (
+  items.value.map((item) => ({
+    ...item,
+    kind: 'item' as const,
+    rowKey: item.id,
+    hasChildren: supportsExcerptItem(item),
+  }))
+));
+
+function excerptsToItemTableRows(list: ResourceExcerpt[], itemId: string): ItemTableExcerptRow[] {
+  const flat = list.map((excerpt) => ({
+    id: excerpt.id,
+    parentId: excerpt.parentId ?? null,
+    label: excerpt.title,
+    order: excerpt.sortOrder,
+    meta: excerpt,
+  }));
+  const toRows = (nodes: ReturnType<typeof buildTreeFromFlat>): ItemTableExcerptRow[] => (
+    nodes.map((node) => {
+      const excerpt = node.meta as ResourceExcerpt;
+      const nested = node.children?.length ? toRows(node.children) : undefined;
+      return {
+        kind: 'excerpt' as const,
+        rowKey: `ex:${excerpt.id}`,
+        id: excerpt.id,
+        itemId,
+        title: excerpt.title,
+        locatorLabel: formatExcerptLocatorCell(excerpt),
+        excerpt,
+        ...(nested?.length ? { children: nested } : {}),
+      };
+    })
+  );
+  return toRows(buildTreeFromFlat(flat));
+}
+
+function isItemTableExcerptRow(row: ItemTableRow): row is ItemTableExcerptRow {
+  return row.kind === 'excerpt';
+}
+
+function itemRowClassName({ row }: { row: ItemTableRow }) {
+  if (!isItemTableExcerptRow(row)) return 'resource-row';
+  const hint = excerptRowDropHint.value;
+  if (!hint || hint.rowKey !== row.rowKey) return 'resource-row resource-row--excerpt';
+  return `resource-row resource-row--excerpt resource-row--drop-${hint.position}`;
+}
+
+function bumpItemsTableTree() {
+  itemsTableKey.value += 1;
+}
+
+function excerptsToMovableNodes(list: ResourceExcerpt[]): TreeMovableNode[] {
+  return list.map((excerpt) => ({
+    id: excerpt.id,
+    parentId: excerpt.parentId ?? null,
+    sortOrder: excerpt.sortOrder,
+  }));
+}
+
+function buildExcerptUpdatePayload(
+  excerpt: ResourceExcerpt,
+  overrides?: Partial<Pick<ResourceExcerpt, 'parentId' | 'sortOrder'>>,
+): UpdateResourceExcerptPayload {
+  const parentId = overrides && 'parentId' in overrides
+    ? overrides.parentId
+    : excerpt.parentId;
+  return {
+    title: excerpt.title,
+    chapterId: excerpt.chapterId ?? undefined,
+    parentId: parentId?.trim() || undefined,
+    locator: excerpt.locator,
+    excerptText: excerpt.excerptText,
+    note: excerpt.note,
+    sortOrder: overrides?.sortOrder ?? excerpt.sortOrder,
+    metadata: excerpt.metadata,
+  };
+}
+
+async function getExcerptsForReorder(itemId: string): Promise<ResourceExcerpt[]> {
+  if (selectedExcerptItemId.value === itemId && excerpts.value.length > 0) {
+    return excerpts.value.map((entry) => ({ ...entry }));
+  }
+  if (itemId in itemExcerptCache.value) {
+    return (itemExcerptCache.value[itemId] ?? []).map((entry) => ({ ...entry }));
+  }
+  await ensureItemExcerptsCached(itemId);
+  return (itemExcerptCache.value[itemId] ?? []).map((entry) => ({ ...entry }));
+}
+
+async function persistExcerptTreeMove(
+  itemId: string,
+  excerptId: string,
+  target: TreeDropTarget,
+) {
+  if (excerptReorderBusy.value) return;
+  excerptReorderBusy.value = true;
+  try {
+    const original = await getExcerptsForReorder(itemId);
+    const byId = new Map(original.map((entry) => [entry.id, { ...entry }]));
+    const moving = byId.get(excerptId);
+    if (!moving) return;
+
+    const oldParentId = moving.parentId ?? null;
+    const newParentId = target.parentId;
+    moving.parentId = newParentId;
+
+    const siblings = [...byId.values()]
+      .filter((entry) => entry.id !== excerptId && (entry.parentId ?? null) === newParentId)
+      .sort((a, b) => a.sortOrder - b.sortOrder || a.id.localeCompare(b.id));
+    const insertAt = Math.min(Math.max(0, target.sortOrder), siblings.length);
+    siblings.splice(insertAt, 0, moving);
+    siblings.forEach((entry, index) => {
+      entry.sortOrder = index;
+      byId.set(entry.id, entry);
+    });
+
+    if (oldParentId !== newParentId) {
+      const oldSiblings = [...byId.values()]
+        .filter((entry) => entry.id !== excerptId && (entry.parentId ?? null) === oldParentId)
+        .sort((a, b) => a.sortOrder - b.sortOrder || a.id.localeCompare(b.id));
+      oldSiblings.forEach((entry, index) => {
+        entry.sortOrder = index;
+        byId.set(entry.id, entry);
+      });
+    }
+
+    const nextList = [...byId.values()];
+    const changed = nextList.filter((entry) => {
+      const prev = original.find((item) => item.id === entry.id);
+      if (!prev) return true;
+      return (prev.parentId ?? null) !== (entry.parentId ?? null) || prev.sortOrder !== entry.sortOrder;
+    });
+
+    for (const entry of changed) {
+      await updateResourceExcerpt(entry.id, buildExcerptUpdatePayload(entry));
+    }
+
+    setItemExcerptCache(itemId, nextList);
+    if (selectedExcerptItemId.value === itemId) {
+      excerpts.value = nextList;
+      excerptTotal.value = nextList.length;
+    }
+    bumpItemsTableTree();
+    showSuccess('节选顺序已更新');
+  } catch (error) {
+    showError(error);
+    await ensureItemExcerptsCached(itemId, true);
+    if (selectedExcerptItemId.value === itemId) {
+      await loadExcerpts(itemId);
+    }
+    bumpItemsTableTree();
+  } finally {
+    excerptReorderBusy.value = false;
+  }
+}
+
+function allowExcerptTreeDrop(draggingNode: any, dropNode: any, type: TreeDropType) {
+  return canDropOnNode(
+    draggingNode.data.id,
+    dropNode.data.id,
+    type,
+    excerptsToMovableNodes(excerpts.value),
+  );
+}
+
+async function onExcerptTreeDrop(
+  draggingNode: any,
+  dropNode: any,
+  dropType: TreeDropType,
+) {
+  if (!selectedExcerptItemId.value) return;
+  const flat = excerptsToMovableNodes(excerpts.value);
+  const dragging = flat.find((entry) => entry.id === draggingNode.data.id);
+  const drop = flat.find((entry) => entry.id === dropNode.data.id);
+  if (!dragging || !drop) return;
+  const target = computeTreeDropTarget(dragging, drop, normalizeDropType(dropType), flat);
+  await persistExcerptTreeMove(selectedExcerptItemId.value, dragging.id, target);
+}
+
+function onExcerptTreeNodeClick(data: ExcerptElTreeNode) {
+  editExcerpt(data.excerpt);
+}
+
+function resolveExcerptDropPosition(event: DragEvent): 'before' | 'after' | 'inner' {
+  const el = event.currentTarget;
+  if (!(el instanceof HTMLElement)) return 'after';
+  const rect = el.getBoundingClientRect();
+  const ratio = (event.clientY - rect.top) / Math.max(rect.height, 1);
+  if (ratio < 0.28) return 'before';
+  if (ratio > 0.72) return 'after';
+  return 'inner';
+}
+
+function onExcerptRowDragStart(row: ItemTableExcerptRow, event: DragEvent) {
+  excerptRowDrag.value = { itemId: row.itemId, excerptId: row.id };
+  event.dataTransfer?.setData('text/plain', row.id);
+  if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move';
+}
+
+function onExcerptRowDragEnd() {
+  excerptRowDrag.value = null;
+  excerptRowDropHint.value = null;
+}
+
+function onExcerptRowDragOver(row: ItemTableExcerptRow, event: DragEvent) {
+  const drag = excerptRowDrag.value;
+  if (!drag || drag.itemId !== row.itemId || drag.excerptId === row.id) return;
+  const list = itemExcerptCache.value[row.itemId] ?? [];
+  const flat = excerptsToMovableNodes(list);
+  const position = resolveExcerptDropPosition(event);
+  if (!canDropOnNode(drag.excerptId, row.id, position, flat)) {
+    excerptRowDropHint.value = null;
+    return;
+  }
+  event.preventDefault();
+  excerptRowDropHint.value = { rowKey: row.rowKey, position };
+}
+
+async function onExcerptRowDrop(row: ItemTableExcerptRow, event: DragEvent) {
+  const drag = excerptRowDrag.value;
+  excerptRowDropHint.value = null;
+  if (!drag || drag.itemId !== row.itemId || drag.excerptId === row.id) return;
+  event.preventDefault();
+  const list = await getExcerptsForReorder(row.itemId);
+  const flat = excerptsToMovableNodes(list);
+  const dragging = flat.find((entry) => entry.id === drag.excerptId);
+  const drop = flat.find((entry) => entry.id === row.id);
+  if (!dragging || !drop) return;
+  const position = resolveExcerptDropPosition(event);
+  if (!canDropOnNode(drag.excerptId, row.id, position, flat)) return;
+  const target = computeTreeDropTarget(dragging, drop, position, flat);
+  await persistExcerptTreeMove(row.itemId, drag.excerptId, target);
+}
+
+function onItemRowDragOver(row: ItemTableItemRow, event: DragEvent) {
+  const drag = excerptRowDrag.value;
+  if (!drag || drag.itemId !== row.id) return;
+  event.preventDefault();
+  excerptRowDropHint.value = { rowKey: row.rowKey, position: 'inner' };
+}
+
+async function onItemRowDrop(row: ItemTableItemRow, event: DragEvent) {
+  const drag = excerptRowDrag.value;
+  excerptRowDropHint.value = null;
+  if (!drag || drag.itemId !== row.id) return;
+  event.preventDefault();
+  const list = await getExcerptsForReorder(row.id);
+  const flat = excerptsToMovableNodes(list);
+  const dragging = flat.find((entry) => entry.id === drag.excerptId);
+  if (!dragging) return;
+  await persistExcerptTreeMove(row.id, drag.excerptId, moveToRootEnd(dragging, flat));
+}
+
+async function onExcerptSortOrderChange(row: ItemTableExcerptRow, value: number | undefined) {
+  if (value == null || !Number.isFinite(value)) return;
+  const nextOrder = Math.max(0, Math.floor(value));
+  if (nextOrder === row.excerpt.sortOrder) return;
+  await persistExcerptTreeMove(row.itemId, row.id, {
+    parentId: row.excerpt.parentId ?? null,
+    sortOrder: nextOrder,
+  });
+}
+
+function onExcerptSortOrderInputChange(row: ItemTableExcerptRow, value: unknown) {
+  void onExcerptSortOrderChange(row, typeof value === 'number' ? value : undefined);
+}
+
+const excerptParentOptions = computed(() => {
+  const blocked = new Set<string>();
+  if (excerptForm.id) {
+    const walk = (id: string) => {
+      blocked.add(id);
+      excerpts.value
+        .filter((entry) => entry.parentId === id)
+        .forEach((child) => walk(child.id));
+    };
+    walk(excerptForm.id);
+  }
+  return excerpts.value
+    .filter((excerpt) => !blocked.has(excerpt.id))
+    .map((excerpt) => ({
+      value: excerpt.id,
+      label: excerpt.title,
+    }));
+});
 const classNameById = computed(() => new Map(objectModelStore.classes.map((item) => [item.id, item.name])));
 
 function splitLines(value: string): string[] {
@@ -429,6 +786,7 @@ function resetExcerptForm() {
     id: '',
     title: '',
     chapterId: '',
+    parentId: '',
     locator: '',
     excerptText: '',
     note: '',
@@ -436,8 +794,15 @@ function resetExcerptForm() {
   });
 }
 
-function openExcerptCreateRoute() {
+function openExcerptCreateRoute(parentId?: string | null) {
   resetExcerptForm();
+  if (parentId) {
+    excerptForm.parentId = parentId;
+    const parent = excerpts.value.find((entry) => entry.id === parentId);
+    if (parent?.chapterId) {
+      excerptForm.chapterId = parent.chapterId;
+    }
+  }
   excerptPanelRoute.value = 'edit';
 }
 
@@ -712,52 +1077,6 @@ function supportsBookChapterItem(item: ResourceItem): boolean {
   return supportsBookChapters(typeById.value.get(item.typeId)?.code);
 }
 
-function isDocumentResourceItem(item: ResourceItem): boolean {
-  return typeById.value.get(item.typeId)?.code === DOCUMENT_RESOURCE_TYPE_CODE;
-}
-
-const linkedResourceItemIds = computed(() => (
-  new Set(workspaceStore.linkedResourceDocuments.map((link) => link.resourceItemId))
-));
-
-function isLinkedToCurrentKb(item: ResourceItem): boolean {
-  return linkedResourceItemIds.value.has(item.id);
-}
-
-async function linkDocumentToCurrentKb(item: ResourceItem) {
-  const kbId = workspaceStore.currentKbId;
-  if (!kbId) {
-    ElMessage.warning('请先在工作区选择知识库');
-    return;
-  }
-  if (!isDocumentResourceItem(item)) {
-    ElMessage.warning('仅文档型资源可加入知识库页面列表');
-    return;
-  }
-  try {
-    await createKbResourceLink(kbId, { resourceItemId: item.id });
-    await workspaceStore.refreshLinkedResourceDocuments();
-    showSuccess(`已将「${item.title}」加入当前知识库`);
-  } catch (error) {
-    showError(error);
-  }
-}
-
-async function unlinkDocumentFromCurrentKb(item: ResourceItem) {
-  const kbId = workspaceStore.currentKbId;
-  if (!kbId) {
-    ElMessage.warning('请先在工作区选择知识库');
-    return;
-  }
-  try {
-    await deleteKbResourceLink(kbId, item.id);
-    await workspaceStore.refreshLinkedResourceDocuments();
-    showSuccess(`已将「${item.title}」从当前知识库移除`);
-  } catch (error) {
-    showError(error);
-  }
-}
-
 const excerptSelectedTypeCode = computed(() => {
   const item = selectedExcerptItem.value;
   return item ? typeById.value.get(item.typeId)?.code : undefined;
@@ -837,7 +1156,92 @@ function onExcerptUrlPaste(event: ClipboardEvent) {
   void nextTick(() => recognizeExcerptFromUrl());
 }
 
-async function loadExcerpts(resourceItemId: string, page = excerptPage.value) {
+async function fetchAllExcerptsForItem(resourceItemId: string): Promise<ResourceExcerpt[]> {
+  const all: ResourceExcerpt[] = [];
+  let page = 0;
+  let total = Number.POSITIVE_INFINITY;
+  const pageSize = 200;
+  while (all.length < total) {
+    const result = await listResourceExcerpts(resourceItemId, { page, pageSize });
+    total = result.total;
+    all.push(...result.items);
+    if (result.items.length === 0) break;
+    page += 1;
+    if (page > 50) break;
+  }
+  return all;
+}
+
+function setItemExcerptCache(resourceItemId: string, list: ResourceExcerpt[]) {
+  itemExcerptCache.value = { ...itemExcerptCache.value, [resourceItemId]: list };
+}
+
+function clearItemExcerptCache(resourceItemId?: string) {
+  if (!resourceItemId) {
+    itemExcerptCache.value = {};
+    return;
+  }
+  if (!(resourceItemId in itemExcerptCache.value)) return;
+  const next = { ...itemExcerptCache.value };
+  delete next[resourceItemId];
+  itemExcerptCache.value = next;
+}
+
+async function ensureItemExcerptsCached(resourceItemId: string, force = false) {
+  if (!force && resourceItemId in itemExcerptCache.value) return;
+  const loading = new Set(itemExcerptLoadingIds.value);
+  loading.add(resourceItemId);
+  itemExcerptLoadingIds.value = loading;
+  try {
+    const all = await fetchAllExcerptsForItem(resourceItemId);
+    setItemExcerptCache(resourceItemId, all);
+  } catch (error) {
+    showError(error);
+  } finally {
+    const done = new Set(itemExcerptLoadingIds.value);
+    done.delete(resourceItemId);
+    itemExcerptLoadingIds.value = done;
+  }
+}
+
+async function loadItemTableChildren(
+  row: ItemTableRow,
+  _treeNode: unknown,
+  resolve: (data: ItemTableRow[]) => void,
+) {
+  if (row.kind !== 'item') {
+    resolve([]);
+    return;
+  }
+  await ensureItemExcerptsCached(row.id);
+  resolve(excerptsToItemTableRows(itemExcerptCache.value[row.id] ?? [], row.id));
+}
+
+async function resolveItemForExcerptRow(row: ItemTableExcerptRow): Promise<ResourceItem | null> {
+  return items.value.find((entry) => entry.id === row.itemId)
+    ?? itemSelectOptions.value.find((entry) => entry.id === row.itemId)
+    ?? null;
+}
+
+async function openExcerptRow(row: ItemTableExcerptRow) {
+  const item = await resolveItemForExcerptRow(row);
+  if (!item) return;
+  await openExcerptPanel(item);
+  editExcerpt(row.excerpt);
+}
+
+async function openExcerptChildFromRow(row: ItemTableExcerptRow) {
+  const item = await resolveItemForExcerptRow(row);
+  if (!item) return;
+  await openExcerptPanel(item);
+  openExcerptCreateRoute(row.excerpt.id);
+}
+
+async function removeExcerptFromRow(row: ItemTableExcerptRow) {
+  await removeExcerpt(row.excerpt);
+}
+
+async function loadExcerpts(resourceItemId: string, _page = 0) {
   if (!resourceItemId) {
     excerpts.value = [];
     excerptTotal.value = 0;
@@ -846,17 +1250,11 @@ async function loadExcerpts(resourceItemId: string, page = excerptPage.value) {
   }
   excerptsLoading.value = true;
   try {
-    const result = await listResourceExcerpts(resourceItemId, {
-      page,
-      pageSize: excerptPageSize.value,
-    });
-    excerpts.value = result.items;
-    excerptTotal.value = result.total;
-    excerptPage.value = result.page;
-    if (excerptPage.value > 0 && excerpts.value.length === 0 && result.total > 0) {
-      excerptPage.value = Math.max(0, Math.ceil(result.total / excerptPageSize.value) - 1);
-      return loadExcerpts(resourceItemId, excerptPage.value);
-    }
+    const all = await fetchAllExcerptsForItem(resourceItemId);
+    excerpts.value = all;
+    excerptTotal.value = all.length;
+    excerptPage.value = 0;
+    setItemExcerptCache(resourceItemId, all);
     resetExcerptForm();
   } catch (error) {
     showError(error);
@@ -1091,6 +1489,7 @@ async function saveExcerpt() {
     const payload = {
       title: excerptForm.title.trim(),
       chapterId: excerptForm.chapterId?.trim() || undefined,
+      parentId: excerptForm.parentId?.trim() || undefined,
       locator: normalizeResourcePositionLocator(excerptForm.locator.trim()) || undefined,
       excerptText: excerptForm.excerptText.trim() || undefined,
       note: excerptForm.note.trim() || undefined,
@@ -1104,6 +1503,7 @@ async function saveExcerpt() {
       showSuccess('节选已创建');
     }
     await loadExcerpts(selectedExcerptItem.value.id, excerptPage.value);
+    bumpItemsTableTree();
     excerptPanelRoute.value = 'list';
     resetExcerptForm();
     await refreshReferences();
@@ -1384,6 +1784,7 @@ function editExcerpt(excerpt: ResourceExcerpt) {
     id: excerpt.id,
     title: excerpt.title,
     chapterId: excerpt.chapterId || '',
+    parentId: excerpt.parentId || '',
     locator: excerpt.locator || '',
     excerptText: excerpt.excerptText,
     note: excerpt.note || '',
@@ -1536,6 +1937,8 @@ async function removeItem(item: ResourceItem) {
     );
     await removeResourceItem(item.id);
     showSuccess('已从资源库移除该资源实体');
+    clearItemExcerptCache(item.id);
+    bumpItemsTableTree();
     if (selectedExcerptItemId.value === item.id) {
       clearExcerptPanel();
     }
@@ -1548,12 +1951,14 @@ async function removeItem(item: ResourceItem) {
 
 async function removeExcerpt(excerpt: ResourceExcerpt) {
   try {
-    await confirmAction(`确定删除节选「${excerpt.title}」？`, '删除节选');
+    await confirmAction(`确定删除节选「${excerpt.title}」？子节选将提升到上一级。`, '删除节选');
     await deleteResourceExcerpt(excerpt.id);
     showSuccess('节选已删除');
+    excerptPanelRoute.value = 'list';
     if (selectedExcerptItem.value) {
-      await loadExcerpts(selectedExcerptItem.value.id, excerptPage.value);
+      await loadExcerpts(selectedExcerptItem.value.id, 0);
     }
+    bumpItemsTableTree();
     await refreshReferences();
   } catch (error) {
     if (error !== 'cancel' && error !== 'close') showError(error);
@@ -2136,53 +2541,115 @@ watch(
             </div>
           </template>
           <el-table
+            :key="itemsTableKey"
             v-loading="loading"
             class="resource-list"
-            :data="items"
-            row-class-name="resource-row"
+            :data="itemTableRows"
+            row-key="rowKey"
+            lazy
+            :load="loadItemTableChildren"
+            :tree-props="{ children: 'children', hasChildren: 'hasChildren' }"
+            :row-class-name="itemRowClassName"
             empty-text="暂无资源实体"
             stripe
           >
-            <el-table-column prop="title" label="标题" min-width="140" show-overflow-tooltip />
+            <el-table-column prop="title" label="标题" min-width="180" show-overflow-tooltip>
+              <template #default="{ row }">
+                <template v-if="isItemTableExcerptRow(row)">
+                  <div
+                    class="excerpt-row-title-wrap"
+                    :class="{
+                      'excerpt-row-title-wrap--drop-before': excerptRowDropHint?.rowKey === row.rowKey && excerptRowDropHint.position === 'before',
+                      'excerpt-row-title-wrap--drop-after': excerptRowDropHint?.rowKey === row.rowKey && excerptRowDropHint.position === 'after',
+                      'excerpt-row-title-wrap--drop-inner': excerptRowDropHint?.rowKey === row.rowKey && excerptRowDropHint.position === 'inner',
+                    }"
+                    @dragover="onExcerptRowDragOver(row, $event)"
+                    @drop="onExcerptRowDrop(row, $event)"
+                  >
+                    <span
+                      class="excerpt-drag-handle"
+                      title="拖动调整顺序或层级"
+                      draggable="true"
+                      @dragstart.stop="onExcerptRowDragStart(row, $event)"
+                      @dragend="onExcerptRowDragEnd"
+                      @click.stop
+                    >⋮⋮</span>
+                    <span class="excerpt-row-title">{{ row.title }}</span>
+                  </div>
+                </template>
+                <template v-else>
+                  <span
+                    class="item-row-title-drop"
+                    :class="{
+                      'item-row-title-drop--active': excerptRowDropHint?.rowKey === row.rowKey,
+                    }"
+                    @dragover="onItemRowDragOver(row, $event)"
+                    @drop="onItemRowDrop(row, $event)"
+                  >{{ row.title }}</span>
+                </template>
+              </template>
+            </el-table-column>
             <el-table-column label="类型/标识" min-width="160" show-overflow-tooltip>
-              <template #default="{ row }">{{ row.typeName }} · {{ row.identityFieldLabel }}: {{ row.identityValue || '未填写' }}</template>
+              <template #default="{ row }">
+                <template v-if="isItemTableExcerptRow(row)">
+                  节选 · {{ row.locatorLabel }}
+                </template>
+                <template v-else>
+                  {{ row.typeName }} · {{ row.identityFieldLabel }}: {{ row.identityValue || '未填写' }}
+                </template>
+              </template>
+            </el-table-column>
+            <el-table-column label="排序" width="110">
+              <template #default="{ row }">
+                <el-input-number
+                  v-if="isItemTableExcerptRow(row)"
+                  size="small"
+                  :model-value="row.excerpt.sortOrder"
+                  :min="0"
+                  :step="1"
+                  controls-position="right"
+                  :disabled="excerptReorderBusy"
+                  @change="(value: number | undefined) => onExcerptSortOrderInputChange(row, value)"
+                />
+                <span v-else class="row-meta">—</span>
+              </template>
             </el-table-column>
             <el-table-column label="归类/来源" min-width="140" show-overflow-tooltip>
               <template #default="{ row }">
-                <div>{{ row.workTitle || '未归类' }}</div>
-                <span class="row-meta">
-                  {{ row.titleSource === 'manual' ? '标题·手动' : '标题·自动' }}
-                  · {{ row.workIdSource === 'manual' ? '归类·手动' : '归类·自动' }}
-                  <template v-if="row.variantKind"> · {{ row.variantKind }}</template>
-                </span>
+                <template v-if="isItemTableExcerptRow(row)">
+                  <span class="row-meta">—</span>
+                </template>
+                <template v-else>
+                  <div>{{ row.workTitle || '未归类' }}</div>
+                  <span class="row-meta">
+                    {{ row.titleSource === 'manual' ? '标题·手动' : '标题·自动' }}
+                    · {{ row.workIdSource === 'manual' ? '归类·手动' : '归类·自动' }}
+                    <template v-if="row.variantKind"> · {{ row.variantKind }}</template>
+                  </span>
+                </template>
               </template>
             </el-table-column>
             <el-table-column label="URL" min-width="120" show-overflow-tooltip>
               <template #default="{ row }">
-                <el-link v-if="row.sourceUrl" :href="row.sourceUrl" target="_blank" type="primary">{{ row.sourceUrl }}</el-link>
-                <span v-else class="row-meta">-</span>
+                <template v-if="isItemTableExcerptRow(row)">
+                  <span class="row-meta">—</span>
+                </template>
+                <template v-else>
+                  <el-link v-if="row.sourceUrl" :href="row.sourceUrl" target="_blank" type="primary">{{ row.sourceUrl }}</el-link>
+                  <span v-else class="row-meta">-</span>
+                </template>
               </template>
             </el-table-column>
-            <el-table-column label="操作" width="480" fixed="right">
+            <el-table-column label="操作" width="360" fixed="right">
               <template #default="{ row }">
-                <el-space wrap>
+                <el-space v-if="isItemTableExcerptRow(row)" wrap>
+                  <el-button size="small" @click="openExcerptRow(row)">编辑</el-button>
+                  <el-button size="small" @click="openExcerptChildFromRow(row)">添加子节选</el-button>
+                  <el-button size="small" type="danger" plain @click="removeExcerptFromRow(row)">删除</el-button>
+                </el-space>
+                <el-space v-else wrap>
                   <el-button v-if="supportsBookChapterItem(row)" size="small" @click="openChapterPanel(row)">章节</el-button>
                   <el-button v-if="supportsExcerptItem(row)" size="small" @click="openExcerptPanel(row)">节选</el-button>
-                  <el-button
-                    v-if="isDocumentResourceItem(row) && !isLinkedToCurrentKb(row)"
-                    size="small"
-                    type="primary"
-                    plain
-                    :disabled="!workspaceStore.currentKbId"
-                    @click="linkDocumentToCurrentKb(row)"
-                  >加入当前知识库</el-button>
-                  <el-button
-                    v-else-if="isDocumentResourceItem(row)"
-                    size="small"
-                    plain
-                    :disabled="!workspaceStore.currentKbId"
-                    @click="unlinkDocumentFromCurrentKb(row)"
-                  >移出当前知识库</el-button>
                   <el-button size="small" @click="editItem(row)">编辑</el-button>
                   <el-button size="small" @click="openMergeWorkDialog(row)">合并归类</el-button>
                   <el-button size="small" @click="splitItemWork(row)">拆分</el-button>
@@ -2636,50 +3103,28 @@ watch(
           'excerpt-panel__body--edit': excerptPanelRoute === 'edit',
         }"
       >
-        <div v-if="excerptPanelRoute === 'list'" class="excerpt-list">
+        <div v-if="excerptPanelRoute === 'list'" class="excerpt-list excerpt-list--tree">
           <div class="excerpt-list__toolbar">
-            <el-button type="primary" @click="openExcerptCreateRoute">新增节选</el-button>
-            <el-button @click="openResourceDocumentView()">查看全文</el-button>
+            <span class="row-meta">拖拽调整同级顺序与父子层级</span>
+            <el-space wrap>
+              <el-button type="primary" @click="openExcerptCreateRoute()">新增节选</el-button>
+              <el-button @click="openResourceDocumentView()">查看全文</el-button>
+            </el-space>
           </div>
-          <div class="excerpt-list__table-wrap">
-            <el-table
-              class="excerpt-table"
-              :data="excerpts"
-              height="100%"
-              :row-class-name="({ row }: { row: ResourceExcerpt }) => excerptForm.id === row.id ? 'excerpt-row excerpt-row--active' : 'excerpt-row'"
-              empty-text="暂无节选"
-            >
-              <el-table-column prop="title" label="标题" min-width="140" />
-              <el-table-column
-                v-if="supportsBookChapters(excerptSelectedTypeCode)"
-                prop="chapterTitle"
-                label="章节"
-                width="120"
-                show-overflow-tooltip
-              />
-              <el-table-column label="资源定位" width="140" show-overflow-tooltip>
-                <template #default="{ row }">{{ formatExcerptLocatorCell(row) }}</template>
-              </el-table-column>
-              <el-table-column prop="excerptText" label="正文" min-width="240" show-overflow-tooltip />
-              <el-table-column prop="note" label="备注" min-width="120" show-overflow-tooltip />
-              <el-table-column label="操作" width="220" fixed="right">
-                <template #default="{ row }">
-                  <el-space>
-                    <el-button size="small" @click="openResourceDocumentView(row.id)">查看文档</el-button>
-                    <el-button size="small" @click="editExcerpt(row)">编辑</el-button>
-                    <el-button size="small" type="danger" plain @click="removeExcerpt(row)">删除</el-button>
-                  </el-space>
-                </template>
-              </el-table-column>
-            </el-table>
-          </div>
-          <div v-if="excerptTotal > excerptPageSize" class="table-pagination excerpt-list__pagination">
-            <el-pagination
-              layout="total, prev, pager, next"
-              :total="excerptTotal"
-              :page-size="excerptPageSize"
-              :current-page="excerptPage + 1"
-              @current-change="onExcerptPageChange"
+          <div class="excerpt-list__tree-wrap">
+            <p v-if="excerptElTreeData.length === 0" class="excerpt-list__empty">暂无节选，可点击上方新增</p>
+            <ElTree
+              v-else
+              class="excerpt-manage-tree"
+              :data="excerptElTreeData"
+              node-key="id"
+              default-expand-all
+              highlight-current
+              draggable
+              :allow-drop="allowExcerptTreeDrop"
+              :props="{ label: 'label', children: 'children' }"
+              @node-click="onExcerptTreeNodeClick"
+              @node-drop="onExcerptTreeDrop"
             />
           </div>
         </div>
@@ -2713,6 +3158,22 @@ watch(
           <el-form-item label="标题" required>
             <el-input v-model="excerptForm.title" maxlength="255" />
           </el-form-item>
+          <el-form-item label="父节选">
+            <el-select
+              v-model="excerptForm.parentId"
+              clearable
+              filterable
+              placeholder="留空表示根节选"
+              style="width: 100%"
+            >
+              <el-option
+                v-for="option in excerptParentOptions"
+                :key="option.value"
+                :label="option.label"
+                :value="option.value"
+              />
+            </el-select>
+          </el-form-item>
           <el-form-item v-if="supportsBookChapters(excerptSelectedTypeCode)" label="所属章节">
             <el-tree-select
               v-model="excerptForm.chapterId"
@@ -2738,6 +3199,7 @@ watch(
           </el-form-item>
           <el-form-item label="排序">
             <el-input-number v-model="excerptForm.sortOrder" :min="0" :step="1" />
+            <p class="excerpt-url-hint">同级顺序，数字越小越靠前；也可在列表或实体表中拖拽调整</p>
           </el-form-item>
           <el-form-item>
             <el-space wrap>
@@ -2748,7 +3210,23 @@ watch(
               >
                 {{ excerptForm.id ? '保存节选' : '创建节选' }}
               </el-button>
-              <el-button @click="backToExcerptListRoute">取消</el-button>
+              <el-button
+                v-if="excerptForm.id"
+                native-type="button"
+                @click="openExcerptCreateRoute(excerptForm.id)"
+              >
+                添加子节选
+              </el-button>
+              <el-button
+                v-if="excerptForm.id"
+                type="danger"
+                plain
+                native-type="button"
+                @click="() => { const row = excerpts.find((e) => e.id === excerptForm.id); if (row) removeExcerpt(row); }"
+              >
+                删除
+              </el-button>
+              <el-button native-type="button" @click="backToExcerptListRoute">取消</el-button>
             </el-space>
           </el-form-item>
         </el-form>
@@ -3037,6 +3515,71 @@ watch(
   padding: 8px 12px 12px 48px;
 }
 
+.resource-list :deep(.resource-row--excerpt > td) {
+  background: #fafbfc !important;
+}
+
+.excerpt-row-title-wrap {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 2px 0;
+  border-radius: 4px;
+}
+
+.excerpt-row-title-wrap--drop-before {
+  box-shadow: inset 0 2px 0 #3b82f6;
+}
+
+.excerpt-row-title-wrap--drop-after {
+  box-shadow: inset 0 -2px 0 #3b82f6;
+}
+
+.excerpt-row-title-wrap--drop-inner {
+  background: #eff6ff;
+}
+
+.excerpt-drag-handle {
+  flex-shrink: 0;
+  cursor: grab;
+  color: #98a2b3;
+  letter-spacing: -2px;
+  user-select: none;
+  padding: 0 2px;
+  line-height: 1;
+}
+
+.excerpt-drag-handle:active {
+  cursor: grabbing;
+}
+
+.excerpt-row-title {
+  min-width: 0;
+  color: #475467;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.item-row-title-drop {
+  display: inline-block;
+  max-width: 100%;
+  border-radius: 4px;
+  padding: 1px 4px;
+}
+
+.item-row-title-drop--active {
+  background: #eff6ff;
+  outline: 1px dashed #3b82f6;
+}
+
+.resource-list :deep(.resource-row--drop-before > td),
+.resource-list :deep(.resource-row--drop-after > td),
+.resource-list :deep(.resource-row--drop-inner > td) {
+  background: #f8fafc !important;
+}
+
 .table-pagination {
   display: flex;
   justify-content: flex-end;
@@ -3091,8 +3634,36 @@ watch(
 
 .excerpt-list__toolbar {
   display: flex;
-  justify-content: flex-end;
+  align-items: center;
+  justify-content: space-between;
   flex-shrink: 0;
+  gap: 8px;
+}
+
+.excerpt-list__tree-wrap {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  padding: 8px;
+}
+
+.excerpt-list__empty {
+  margin: 0;
+  padding: 24px 8px;
+  color: #667085;
+  font-size: 13px;
+  text-align: center;
+}
+
+.excerpt-manage-tree {
+  background: transparent;
+}
+
+.excerpt-manage-tree :deep(.el-tree-node__content) {
+  height: 34px;
+  border-radius: 6px;
 }
 
 .excerpt-list__table-wrap {

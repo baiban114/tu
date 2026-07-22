@@ -6,6 +6,8 @@ const props = defineProps<{
   visible: boolean
   suggestions: DocumentMarkingSuggestion[]
   loading?: boolean
+  /** 尚未点击「开始分析」 */
+  awaitingStart?: boolean
   progressMessage?: string
   pageTitle?: string
   sectionTitle?: string
@@ -13,6 +15,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   'update:visible': [value: boolean]
+  start: []
   apply: [payload: { selectedIds: string[]; replaceExistingAi: boolean }]
   cancel: []
 }>()
@@ -97,6 +100,9 @@ const dialogTitle = computed(() => {
   return `AI 文档标记建议 · ${displayPageTitle.value}`
 })
 
+const showIdle = computed(() => Boolean(props.awaitingStart) && !props.loading)
+const showReview = computed(() => !props.loading && !showIdle.value)
+
 function toggle(id: string, checked: boolean) {
   const next = new Set(selectedIds.value)
   if (checked) next.add(id)
@@ -110,9 +116,17 @@ function toggleAll(checked: boolean) {
     : new Set()
 }
 
+function setVisible(value: boolean) {
+  emit('update:visible', value)
+  if (!value) emit('cancel')
+}
+
 function close() {
-  emit('update:visible', false)
-  emit('cancel')
+  setVisible(false)
+}
+
+function startAnalysis() {
+  emit('start')
 }
 
 function confirm() {
@@ -135,15 +149,30 @@ function locatorPreview(locator: string): string {
     width="720px"
     class="tu-dialog-viewport"
     destroy-on-close
-    @update:model-value="emit('update:visible', $event)"
-    @close="close"
+    @update:model-value="setVisible"
   >
     <div class="dmr-page-header">
       <span class="dmr-page-header__label">分析页面</span>
       <span class="dmr-page-header__title" :title="displayPageTitle">{{ displayPageTitle }}</span>
     </div>
-    <div v-if="loading" class="dmr-loading">{{ progressMessage || '正在分析…' }}</div>
-    <template v-else>
+    <div v-if="displaySectionTitle" class="dmr-scope">
+      分析范围：本节「{{ displaySectionTitle }}」
+    </div>
+    <div v-else class="dmr-scope">分析范围：整页</div>
+
+    <div v-if="loading" class="dmr-loading">
+      <p>{{ progressMessage || '正在分析…' }}</p>
+      <p class="dmr-loading__hint">关闭弹窗将停止分析</p>
+    </div>
+
+    <div v-else-if="showIdle" class="dmr-idle">
+      <p class="dmr-hint">
+        将根据当前页面内容生成标记建议（来源绑定、依据、关联等）。确认范围后点击「开始分析」。
+      </p>
+      <p class="dmr-hint dmr-hint--secondary">手动标记不会被覆盖；应用前可预览并勾选建议。</p>
+    </div>
+
+    <template v-else-if="showReview">
       <p class="dmr-hint">勾选要应用的建议。手动标记区域不会被覆盖。</p>
       <label class="dmr-replace">
         <input v-model="replaceExistingAi" type="checkbox" />
@@ -154,7 +183,8 @@ function locatorPreview(locator: string): string {
         <button type="button" class="dmr-link" @click="toggleAll(false)">全不选</button>
         <span class="dmr-count">共 {{ suggestions.length }} 条</span>
       </div>
-      <div class="dmr-list">
+      <div v-if="suggestions.length === 0" class="dmr-empty">未生成可用建议，可关闭后重试。</div>
+      <div v-else class="dmr-list">
         <label
           v-for="item in sortedSuggestions"
           :key="item.id"
@@ -193,10 +223,18 @@ function locatorPreview(locator: string): string {
       </div>
     </template>
     <template #footer>
-      <el-button @click="close">取消</el-button>
+      <el-button @click="close">{{ loading ? '停止并关闭' : '取消' }}</el-button>
       <el-button
+        v-if="showIdle"
         type="primary"
-        :disabled="loading || selectedIds.size === 0"
+        @click="startAnalysis"
+      >
+        开始分析
+      </el-button>
+      <el-button
+        v-else-if="showReview"
+        type="primary"
+        :disabled="selectedIds.size === 0"
         @click="confirm"
       >
         应用选中 ({{ selectedIds.size }})
@@ -210,6 +248,19 @@ function locatorPreview(locator: string): string {
   padding: 24px 0;
   text-align: center;
   color: #666;
+}
+.dmr-loading__hint {
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: #999;
+}
+.dmr-idle {
+  padding: 8px 0 16px;
+}
+.dmr-scope {
+  margin: 0 0 12px;
+  font-size: 13px;
+  color: #606266;
 }
 .dmr-page-header {
   display: flex;
@@ -236,6 +287,16 @@ function locatorPreview(locator: string): string {
 .dmr-hint {
   margin: 0 0 12px;
   color: #666;
+  font-size: 13px;
+}
+.dmr-hint--secondary {
+  margin-bottom: 0;
+  color: #909399;
+}
+.dmr-empty {
+  padding: 24px 0;
+  text-align: center;
+  color: #909399;
   font-size: 13px;
 }
 .dmr-replace {
