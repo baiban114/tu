@@ -105,6 +105,29 @@ export function formatLearningInProgressMarkAsLabel(target: LearningInProgress |
     || '外部资源'
 }
 
+/**
+ * Toolbar countdown label: `资源实体名>文档层级` (hierarchy from nearest heading / selection).
+ */
+export function formatReuseMarkOfferLabel(
+  binding: HeadingSourceBinding | LearningInProgress,
+  hierarchyLabel: string,
+): string {
+  const snapshot = 'snapshot' in binding ? binding.snapshot : null
+  const resourceName = (
+    snapshot?.resourceTitle?.trim()
+    || snapshot?.workTitle?.trim()
+    || ''
+  )
+  const hierarchy = hierarchyLabel.trim()
+  if (resourceName && hierarchy) {
+    if (hierarchy === resourceName || hierarchy.startsWith(`${resourceName}>`)) {
+      return hierarchy.slice(0, 120)
+    }
+    return `${resourceName}>${hierarchy}`.slice(0, 120)
+  }
+  return (hierarchy || resourceName || '外部资源').slice(0, 120)
+}
+
 export function buildLearningInProgressResourceLink(target: LearningInProgress): {
   path: string
   query: Record<string, string>

@@ -30,6 +30,7 @@ import {
   canAutoMarkFromInProgress,
   clearLearningInProgress,
   formatLearningInProgressLabel,
+  formatReuseMarkOfferLabel,
   learningInProgressToBinding,
   loadLearningInProgress,
   saveLearningInProgress,
@@ -143,6 +144,10 @@ import {
   getRefInnerBlockExcerptContent,
 } from '@/utils/refInnerGutter'
 import type { Editor } from '@tiptap/vue-3'
+import {
+  collectDocDiffRange,
+  resolveSelectionAfterPasteRules,
+} from '@/editor/reuseMarkSelection'
 
 type TocItem = TocTreeItem
 const NODEVIEW_TYPES = ['x6Block', 'tableBlock', 'multiTableBlock', 'timelineBlock', 'spacerBlock', 'refBlock', 'externalResourceBlock', 'pdfExcerptBlock', 'compareBlock']
@@ -1415,11 +1420,12 @@ function dismissReuseMarkOffer() {
 function presentReuseMarkOffer(binding: HeadingSourceBinding, markAsLabel: string) {
   if (!props.editable || selectionToolbarSuppressed.value) return
   if (!canMarkResourceExcerptFromSelection.value) return
-  if (!markAsLabel.trim()) return
+  const label = formatReuseMarkOfferLabel(binding, markAsLabel)
+  if (!label.trim()) return
   reuseMarkToken += 1
   reuseMarkBinding.value = binding
   reuseMarkOffer.value = {
-    label: markAsLabel.trim(),
+    label,
     durationMs: REUSE_MARK_DURATION_MS,
     token: reuseMarkToken,
   }
@@ -1475,14 +1481,17 @@ function scheduleReuseMarkOfferForRange(
   range: { from: number; to: number },
   binding: HeadingSourceBinding,
 ) {
-  const text = editor.state.doc.textBetween(range.from, range.to, '\n').trim()
+  // TipTap emits `transaction` only after appendTransactions (paste/input rules) are
+  // already applied to editor.state — callers must pass a post-rule range.
+  const resolved = resolveSelectionAfterPasteRules(editor, range.from, range.to) ?? range
+  const text = editor.state.doc.textBetween(resolved.from, resolved.to, '\n').trim()
   if (!text) return
-  const markAsLabel = resolveExcerptDefaultTitle(editor.state.doc, range.from, text)
+  const markAsLabel = resolveExcerptDefaultTitle(editor.state.doc, resolved.from, text)
   nextTick(() => {
     if (!props.editable || selectionToolbarSuppressed.value) return
     const live = tuEditorRef.value?.editor
     if (!live || live.isDestroyed) return
-    live.chain().focus().setTextSelection({ from: range.from, to: range.to }).run()
+    live.chain().focus().setTextSelection({ from: resolved.from, to: resolved.to }).run()
     nextTick(() => {
       presentReuseMarkOffer(binding, markAsLabel)
     })
@@ -1495,8 +1504,12 @@ function tryOfferReuseMarkAfterTransaction(editor: Editor, tr: Transaction) {
   if (!canAutoMarkFromInProgress(inProgress)) return
   const binding = learningInProgressToBinding(inProgress!)
 
+  // Root paste/input-rule appendTransactions are already applied when TipTap emits
+  // `transaction`; always read structure/ranges from the live doc.
+  const liveDoc = editor.state.doc
+
   const beforeIds = collectBlockquoteIds(tr.before)
-  const afterIds = collectBlockquoteIds(tr.doc)
+  const afterIds = collectBlockquoteIds(liveDoc)
   const newlyCreatedIds = new Set<string>()
   afterIds.forEach((id) => {
     if (!beforeIds.has(id)) {
@@ -1515,7 +1528,7 @@ function tryOfferReuseMarkAfterTransaction(editor: Editor, tr: Transaction) {
     tr.before.descendants((node) => {
       if (node.type.name === 'blockquote') beforeCount += 1
     })
-    tr.doc.descendants((node) => {
+    liveDoc.descendants((node) => {
       if (node.type.name === 'blockquote') afterCount += 1
     })
     createdUnboundQuote = afterCount > beforeCount
@@ -1528,7 +1541,7 @@ function tryOfferReuseMarkAfterTransaction(editor: Editor, tr: Transaction) {
 
   // New unbound quote already containing text
   for (const blockId of newlyCreatedIds) {
-    const range = findBlockquoteTextRange(tr.doc, blockId)
+    const range = findBlockquoteTextRange(liveDoc, blockId)
     if (!range) continue
     armedReuseBlockquoteIds.delete(blockId)
     armedReuseForNextQuoteContent = false
@@ -1537,7 +1550,7 @@ function tryOfferReuseMarkAfterTransaction(editor: Editor, tr: Transaction) {
   }
   if (createdUnboundQuote) {
     let offered = false
-    tr.doc.descendants((node, pos) => {
+    liveDoc.descendants((node, pos) => {
       if (offered || node.type.name !== 'blockquote' || node.attrs.excerptBinding) return true
       if (!node.textContent.trim()) return true
       const id = typeof node.attrs.blockId === 'string' ? node.attrs.blockId : ''
@@ -1553,7 +1566,7 @@ function tryOfferReuseMarkAfterTransaction(editor: Editor, tr: Transaction) {
   // Paste into armed quote / plain paste
   if (isPaste) {
     for (const blockId of armedReuseBlockquoteIds) {
-      const range = findBlockquoteTextRange(tr.doc, blockId)
+      const range = findBlockquoteTextRange(liveDoc, blockId)
       if (!range) continue
       armedReuseBlockquoteIds.delete(blockId)
       armedReuseForNextQuoteContent = false
@@ -1562,7 +1575,7 @@ function tryOfferReuseMarkAfterTransaction(editor: Editor, tr: Transaction) {
     }
     if (armedReuseForNextQuoteContent) {
       let offered = false
-      tr.doc.descendants((node, pos) => {
+      liveDoc.descendants((node, pos) => {
         if (offered || node.type.name !== 'blockquote' || node.attrs.excerptBinding) return true
         if (!node.textContent.trim()) return true
         offered = true
@@ -1572,7 +1585,8 @@ function tryOfferReuseMarkAfterTransaction(editor: Editor, tr: Transaction) {
       })
       if (offered) return
     }
-    const changed = collectChangedRange(tr)
+    // Diff against live doc so markdown-link paste rules are already reflected.
+    const changed = collectDocDiffRange(tr.before, liveDoc) ?? collectChangedRange(tr)
     if (changed) {
       armedReuseForNextQuoteContent = false
       scheduleReuseMarkOfferForRange(editor, changed, binding)

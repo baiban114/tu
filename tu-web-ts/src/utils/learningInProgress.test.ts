@@ -6,6 +6,7 @@ import {
   clearLearningInProgress,
   formatLearningInProgressLabel,
   formatLearningInProgressMarkAsLabel,
+  formatReuseMarkOfferLabel,
   learningInProgressFromBinding,
   learningInProgressToBinding,
   loadLearningInProgress,
@@ -80,5 +81,11 @@ describe('learningInProgress', () => {
       resourceItemId: '  ',
     })).toBeNull()
     expect(loadLearningInProgress('u1')).toBeNull()
+  })
+
+  it('formats reuse offer label as resource>hierarchy', () => {
+    expect(formatReuseMarkOfferLabel(sampleBinding, '第二节')).toBe('示例书>第二节')
+    expect(formatReuseMarkOfferLabel(sampleBinding, '示例书>第二节')).toBe('示例书>第二节')
+    expect(formatReuseMarkOfferLabel(sampleBinding, '示例书')).toBe('示例书')
   })
 })

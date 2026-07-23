@@ -910,9 +910,12 @@ export function parseInlineMarkdown(
       continue
     }
 
-    const linkMatch = remaining.match(/^\[(.+?)\]\((.+?)\)/)
+    const linkMatch = remaining.match(/^\[([^\]]+)\]\(([^)\s]+)(?:\s+(?:"([^"]*)"|'([^']*)'))?\)/)
     if (linkMatch) {
-      const linkAttrs: Record<string, unknown> = { href: linkMatch[2] }
+      const href = linkMatch[2]
+      const title = (linkMatch[3] || linkMatch[4] || '').trim() || undefined
+      const linkAttrs: Record<string, unknown> = { href }
+      if (title) linkAttrs.title = title
       if (linkDisplayMode === 'title' && !appliedLinkDisplayMode) {
         linkAttrs.displayMode = 'title'
         appliedLinkDisplayMode = true
@@ -1065,7 +1068,10 @@ function contentToMarkdown(content: JSONContent[]): string {
           else if (mark.type === 'code') text = '`' + text + '`'
           else if (mark.type === 'link') {
             const href = mark.attrs?.href || ''
-            text = '[' + text + '](' + href + ')'
+            const title = typeof mark.attrs?.title === 'string' ? mark.attrs.title.trim() : ''
+            text = title
+              ? '[' + text + '](' + href + ' "' + title.replace(/"/g, '\\"') + '")'
+              : '[' + text + '](' + href + ')'
           }
           else if (mark.type === 'underline') text = '<u>' + text + '</u>'
           else if (mark.type === 'strike') text = '~~' + text + '~~'
