@@ -2083,6 +2083,69 @@ export function searchPagesMock(
   };
 }
 
+export function searchHeadingsMock(
+  q: string,
+  kbId?: string,
+  limit = 20,
+): {
+  items: Array<{
+    nodeId: string;
+    pageId: string;
+    pageTitle: string;
+    kbId: string;
+    sourceBlockId: string | null;
+    level: number | null;
+    text: string;
+    highlight: string | null;
+    previewText: string | null;
+    estimatedHours: number | null;
+    totalEstimatedHours: number | null;
+  }>;
+} {
+  const trimmed = q.trim().toLowerCase();
+  if (!trimmed) return { items: [] };
+
+  const items: Array<{
+    nodeId: string;
+    pageId: string;
+    pageTitle: string;
+    kbId: string;
+    sourceBlockId: string | null;
+    level: number | null;
+    text: string;
+    highlight: string | null;
+    previewText: string | null;
+    estimatedHours: number | null;
+    totalEstimatedHours: number | null;
+  }> = [];
+
+  for (const page of state.pages) {
+    if (kbId && page.kbId !== kbId) continue;
+    const outline = resolveMockPageOutline(page.id);
+    if (!outline) continue;
+    for (const node of outline.nodes) {
+      const text = (node.title || '').trim();
+      if (!text || !text.toLowerCase().includes(trimmed)) continue;
+      items.push({
+        nodeId: node.id,
+        pageId: page.id,
+        pageTitle: page.title,
+        kbId: page.kbId,
+        sourceBlockId: node.sourceBlockId ?? null,
+        level: node.level ?? null,
+        text,
+        highlight: null,
+        previewText: node.previewText ?? null,
+        estimatedHours: node.estimatedHours,
+        totalEstimatedHours: node.totalEstimatedHours,
+      });
+      if (items.length >= limit) return { items };
+    }
+  }
+
+  return { items };
+}
+
 function getPageBlocksForOutline(pageId: string): Block[] {
   const content = state.contents[pageId];
   if (!content) return [];

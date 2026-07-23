@@ -256,6 +256,12 @@ export function createMindmapNode(options: Partial<CellData> & { mindRole?: Mind
           fill: isRoot ? '#003a8c' : '#135200',
           fontSize: isRoot ? 15 : 14,
           fontWeight: isRoot ? 700 : 600,
+          // Relative wrap box: node size minus padding (see mindmapNodeFit).
+          textWrap: {
+            width: -28,
+            height: -20,
+            ellipsis: false,
+          },
         },
       },
       options.attrs ?? {},

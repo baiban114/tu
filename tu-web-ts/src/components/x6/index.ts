@@ -7,3 +7,4 @@ export * from './mindmapConnector';
 export * from './mindmap';
 export * from './mindmapCollapse';
 export * from './mindmapDragReparent';
+export * from './mindmapNodeFit';

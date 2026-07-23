@@ -283,6 +283,8 @@ toggle: (node: TreeNode, expanded: boolean) => void
 
 **聚焦（默认开）：** 目录工具栏「聚焦」开启时，侧栏随编辑器光标所在标题自动展开祖先路径、收起其他分支，并将当前条目滚入可视区并高亮。关闭聚焦后可手动展开/收起，展开状态会持久化；开启聚焦时不持久化临时展开路径。
 
+**思维导图预览：** 页面顶栏与目录工具栏的「思维导图」打开只读预览弹窗，根节点为页面标题，分支由当前 TOC 树生成（`buildMindmapGraphFromToc` / `DocumentOutlineMindmapDialog`）。
+
 **纳入目录：**
 
 - 主文档 Tiptap `heading` 节点（渲染为 `h1`–`h6`）
@@ -375,6 +377,7 @@ tu-web-ts/src/
 | 2026-06 | P0 工具层：`src/utils/tree/` |
 | 2026-06 | P1：`TreeListPanel.vue`、`ResourceManagerView` 左侧资源结构树、关联归类树选择 |
 | 2026-07 | 合并/拆分归类合并为「关联归类」弹窗（已有归类 / 新建独立归类） |
+| 2026-07 | 文档页「思维导图」：由 TOC 生成只读预览弹窗 |
 | 2026-06 | P2/P3 适配器：`adapters/toc.ts`、`adapters/pages.ts`（导出/复用；页面仍用 `el-tree`） |
 
 ## 17. 统一内容树 `content_tree_node`（2026-06）

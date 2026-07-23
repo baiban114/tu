@@ -106,17 +106,29 @@ export function getTuEditorSchemaExtensions(): Extensions {
       paragraph: false,
       codeBlock: false,
       blockquote: false,
+      // Use TuLink (markdown IR/paste) instead of the stock Link from StarterKit.
+      link: false,
+      // Underline is registered below; avoid duplicate mark name.
+      underline: false,
     }),
     CodeBlockNode,
     HeadingNode.configure({ levels: [1, 2, 3, 4, 5, 6] }),
     HeadingEnterFix,
     Image.configure({ inline: false }),
-    TuLink.configure({ openOnClick: false }),
+    TuLink.configure({
+      openOnClick: false,
+      protocols: ['http', 'https', 'mailto', 'page', 'resource'],
+      isAllowedUri: (url, ctx) => {
+        const value = String(url || '').trim()
+        if (value.startsWith('page:') || value.startsWith('resource:')) return true
+        return !!ctx.defaultValidate(url)
+      },
+    }),
     Highlight.configure({ multicolor: true }),
     Underline,
     TaskList,
     TaskItem.configure({ nested: true }),
-    TextAlign.configure({ types: ['heading', 'paragraph'] }),
+    TextAlign.configure({ types: ['heading', 'paragraph', 'image'] }),
     X6BlockNode,
     TimelineBlockNode,
     RefBlockNode,

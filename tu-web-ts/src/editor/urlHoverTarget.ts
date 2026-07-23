@@ -1,7 +1,15 @@
 import type { Editor } from '@tiptap/core'
+import { linkIrSourceKey } from '@/editor/extensions/linkIrSource'
 import { parseExternalUrl } from '@/utils/externalUrlResource'
 import type { UrlDisplayMode } from '@/utils/urlDisplay'
 import { URL_EMBED_DEFAULT_HEIGHT } from '@/utils/urlDisplay'
+
+/** True when a doc range overlaps the active markdown link IR source span. */
+export function overlapsActiveLinkIrSource(editor: Editor, from: number, to: number): boolean {
+  const active = linkIrSourceKey.getState(editor.state)
+  if (!active || active.to <= active.from) return false
+  return from < active.to && to > active.from
+}
 
 function readUrlEmbedHeight(editor: Editor, blockId: string): number {
   let height = URL_EMBED_DEFAULT_HEIGHT
@@ -120,6 +128,8 @@ export function resolveUrlHoverTarget(editor: Editor, event: MouseEvent): UrlHov
     const pos = editor.view.posAtDOM(anchor, 0)
     const linkRange = getLinkRangeAtPos(editor, pos)
     if (!linkRange) return null
+    // Editing markdown IR source must not compete with link/iframe display toolbar.
+    if (overlapsActiveLinkIrSource(editor, linkRange.from, linkRange.to)) return null
     const rect = rectFromRange(editor, linkRange.from, linkRange.to) || anchor.getBoundingClientRect()
     return {
       kind: 'inline',
@@ -135,6 +145,9 @@ export function resolveUrlHoverTarget(editor: Editor, event: MouseEvent): UrlHov
   const coords = editor.view.posAtCoords({ left: event.clientX, top: event.clientY })
   if (!coords) return null
 
+  // IR expands to plain `[label](https://…)` — do not treat the embedded URL as a hover target.
+  if (overlapsActiveLinkIrSource(editor, coords.pos, coords.pos)) return null
+
   const $pos = editor.state.doc.resolve(coords.pos)
   const parent = $pos.parent
   if (!parent.isTextblock) return null
@@ -147,6 +160,7 @@ export function resolveUrlHoverTarget(editor: Editor, event: MouseEvent): UrlHov
 
   const from = parentStart + plainRange.from
   const to = parentStart + plainRange.to
+  if (overlapsActiveLinkIrSource(editor, from, to)) return null
   const rect = rectFromRange(editor, from, to)
   if (!rect) return null
 

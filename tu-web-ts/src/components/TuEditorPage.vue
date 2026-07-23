@@ -23,6 +23,7 @@ import NoteEditor from './NoteEditor.vue'
 import NotePopover from './NotePopover.vue'
 import KnowledgePointPicker from './KnowledgePointPicker.vue'
 import DocumentMarkingReviewPanel from './DocumentMarkingReviewPanel.vue'
+import DocumentOutlineMindmapDialog from './DocumentOutlineMindmapDialog.vue'
 import { generateDocumentMarkingStream, clearPageAiMarkers } from '@/api/aiDocumentMarking'
 import { applyAiMarkingSuggestions, clearAiMarkersFromDocument } from '@/utils/aiDocumentMarking'
 import {
@@ -126,6 +127,7 @@ import {
   blockAnchor,
   buildSelectionAnchor,
   headingAnchor,
+  navigateKnowledgeAnchor,
   sectionAnchor,
   type KnowledgeAnchorNavigateHandlers,
 } from '@/utils/knowledgeAnchor'
@@ -664,6 +666,12 @@ const documentMarkingPendingScope = ref<{
   sectionTitle?: string
 } | null>(null)
 let documentMarkingAbort: AbortController | null = null
+
+const outlineMindmapDialogVisible = ref(false)
+
+function openOutlineMindmapDialog() {
+  outlineMindmapDialogVisible.value = true
+}
 
 function stopDocumentMarkingAnalysis() {
   if (documentMarkingAbort) {
@@ -2589,6 +2597,13 @@ const knowledgeNavigateHandlers = computed<KnowledgeAnchorNavigateHandlers>(() =
   scrollToBlock: scrollToBlockByBlockId,
 }))
 
+async function handleNavigateInternalLink(href: string) {
+  await navigateKnowledgeAnchor(
+    { kind: 'page', locator: href },
+    knowledgeNavigateHandlers.value,
+  )
+}
+
 const findHeadingInEmbedBlock = (blockId: string, headingText?: string): HTMLElement | null => {
   if (!headingText) return null
   const editorDom = tuEditorRef.value?.editor?.view.dom
@@ -3939,6 +3954,13 @@ onBeforeUnmount(() => {
         >
           AI 分析标记（整页）
         </button>
+        <button
+          class="toolbar-button"
+          @click="openOutlineMindmapDialog"
+          title="由当前文档目录结构生成思维导图预览"
+        >
+          思维导图
+        </button>
       </div>
       <div
         v-if="learningInProgressTarget"
@@ -4084,6 +4106,7 @@ onBeforeUnmount(() => {
           @text-tag-spans-mapped="handleTextTagSpansMapped"
           @page-meta-paste="handlePageMetaPaste"
           @url-hover-change="handleUrlHoverChange"
+          @navigate-internal-link="handleNavigateInternalLink"
         />
       </div>
 
@@ -4118,6 +4141,14 @@ onBeforeUnmount(() => {
               @click="toggleAllTocItems"
             >
               {{ allTocItemsExpanded ? '全部收起' : '全部展开' }}
+            </button>
+            <button
+              type="button"
+              class="page-toc__action-btn"
+              title="由当前文档目录结构生成思维导图预览"
+              @click="openOutlineMindmapDialog"
+            >
+              思维导图
             </button>
           </div>
           <div v-show="tocExpanded" ref="tocListRef" class="page-toc__list">
@@ -4385,6 +4416,12 @@ onBeforeUnmount(() => {
       @start="handleStartDocumentMarking"
       @cancel="handleCancelDocumentMarking"
       @apply="handleApplyDocumentMarking"
+    />
+
+    <DocumentOutlineMindmapDialog
+      v-model="outlineMindmapDialogVisible"
+      :page-title="pageTitleDraft || props.pageTitle || '未命名页面'"
+      :toc-items="tocItems"
     />
 
     <!-- Toast 消息 -->

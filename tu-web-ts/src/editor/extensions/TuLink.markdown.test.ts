@@ -40,11 +40,12 @@ describe('markdown link syntax', () => {
       title: '百度首页',
     })
 
-    const plain = ' [Example](https://example.com)'.match(MARKDOWN_LINK_INPUT_RE)
+    const plain = 'prefix[Example](https://example.com)'.match(MARKDOWN_LINK_INPUT_RE)
     expect(parseMarkdownLinkSyntaxMatch(plain!)).toEqual({
       label: 'Example',
       href: 'https://example.com',
       title: null,
     })
+    expect(plain![0]).toBe('[Example](https://example.com)')
   })
 })

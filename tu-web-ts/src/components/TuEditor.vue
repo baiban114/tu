@@ -32,12 +32,23 @@ import {
   type TuPageClipboardMeta,
 } from '@/editor/pageMetaClipboard'
 import { resolveClipboardHtmlSource } from '@/editor/extensions/HtmlInlineRender'
+import { collapseActiveLinkIrSource, linkIrSourceKey } from '@/editor/extensions/linkIrSource'
+import { findLinkLabelEditContext, type LinkLabelEditContext } from '@/editor/linkLabelSuggestRanges'
+import {
+  applyLinkSuggest,
+  fetchLinkSuggestItems,
+  isInternalLocatorHref,
+  type LinkSuggestItem,
+} from '@/editor/linkLabelSuggest'
+import LinkLabelSuggestMenu from './LinkLabelSuggestMenu.vue'
+import { useOutlineCacheStore } from '@/stores/outlineCache'
 import { getAnnotationSelectionPayload } from '@/editor/annotationText'
 import { createGraphFromSource, createGraphSourceMetadata } from '@/utils/graphSources'
 import { createMindmapStarterGraphData } from '@/components/x6'
 import { createHeadingBlockId } from '@/utils/headingSource'
 import { createBlockquoteBlockId } from '@/utils/blockquoteExcerpt'
 import { EDITOR_GUTTER_BTN_SIZE, getContentScrollGutterAnchor, getHandleTriggerBounds, isPointInHandleTriggerZone } from '@/utils/editorGutterLayout'
+import { clampFixedPanelToViewport } from '@/utils/viewportPanel'
 import type { TocCollectContext } from '@/utils/toc/collectFlatTocEntries'
 import { HEADING_SECTION_FOLD_META } from '@/utils/toc/tocSectionFoldActions'
 import { textTagSpanDecorationsMetaKey } from '@/editor/extensions/TextTagSpanDecorations'
@@ -136,6 +147,7 @@ const emit = defineEmits<{
   'line-create-knowledge-relation': [blockId: string]
   'url-hover-change': [target: UrlHoverTarget | null]
   'text-tag-span-click': [spanId: string]
+  'navigate-internal-link': [href: string]
   'text-tag-spans-mapped': [spans: TextTagSpan[]]
   'page-meta-paste': [meta: TuPageClipboardMeta]
 }>()
@@ -143,6 +155,7 @@ const emit = defineEmits<{
 const editorEl = ref<HTMLElement | null>(null)
 const hoverHandleRef = ref<InstanceType<typeof HoverHandle> | null>(null)
 const workspaceStore = useWorkspaceStore()
+const outlineCacheStore = useOutlineCacheStore()
 const tocCollectContext = inject<ComputedRef<TocCollectContext> | undefined>('tocCollectContext', undefined)
 const activeTagFilter = inject<ComputedRef<import('@/api/types').BlockTag | null> | undefined>('activeTagFilter', undefined)
 const sectionTagsMapRef = inject<ComputedRef<SectionTagsMap> | undefined>('sectionTagsMap', undefined)
@@ -216,6 +229,136 @@ const slashQuery = ref('')
 const slashMenuVisible = ref(false)
 const slashMenuTop = ref(0)
 const slashMenuLeft = ref(0)
+
+const linkSuggestVisible = ref(false)
+const linkSuggestItems = ref<LinkSuggestItem[]>([])
+const linkSuggestIndex = ref(0)
+const linkSuggestListActive = ref(false)
+const linkSuggestTop = ref(0)
+const linkSuggestLeft = ref(0)
+const linkSuggestContext = ref<LinkLabelEditContext | null>(null)
+let linkSuggestTimer: ReturnType<typeof setTimeout> | null = null
+let linkSuggestSeq = 0
+
+function clearLinkSuggest() {
+  linkSuggestVisible.value = false
+  linkSuggestItems.value = []
+  linkSuggestIndex.value = 0
+  linkSuggestListActive.value = false
+  linkSuggestContext.value = null
+}
+
+function positionLinkSuggestMenu(from: number) {
+  const ed = editor.value
+  if (!ed) return
+  try {
+    const coords = ed.view.coordsAtPos(from)
+    const pos = clampFixedPanelToViewport(coords.left, coords.bottom + 6, 320, 280)
+    linkSuggestLeft.value = pos.left
+    linkSuggestTop.value = pos.top
+  } catch {
+    // ignore invalid pos
+  }
+}
+
+async function refreshLinkSuggest() {
+  const ed = editor.value
+  if (!ed || !props.editable) {
+    clearLinkSuggest()
+    return
+  }
+  const context = findLinkLabelEditContext(ed.state)
+  linkSuggestContext.value = context
+  if (!context) {
+    clearLinkSuggest()
+    return
+  }
+  const query = context.labelText
+  if (!query.trim()) {
+    clearLinkSuggest()
+    linkSuggestContext.value = context
+    return
+  }
+
+  positionLinkSuggestMenu(context.labelFrom)
+  const seq = ++linkSuggestSeq
+  try {
+    const items = await fetchLinkSuggestItems(query, {
+      kbId: workspaceStore.currentKbId,
+      pageTree: workspaceStore.pageTree,
+      ensurePageOutline: (pageId) => outlineCacheStore.ensurePageOutline(pageId),
+    })
+    if (seq !== linkSuggestSeq) return
+    linkSuggestItems.value = items
+    linkSuggestIndex.value = 0
+    linkSuggestListActive.value = false
+    linkSuggestVisible.value = items.length > 0
+    if (items.length > 0) positionLinkSuggestMenu(context.labelFrom)
+  } catch {
+    if (seq !== linkSuggestSeq) return
+    clearLinkSuggest()
+  }
+}
+
+function scheduleLinkSuggestRefresh() {
+  if (linkSuggestTimer) clearTimeout(linkSuggestTimer)
+  linkSuggestTimer = setTimeout(() => {
+    linkSuggestTimer = null
+    void refreshLinkSuggest()
+  }, 220)
+}
+
+function selectLinkSuggestItem(item: LinkSuggestItem) {
+  const ed = editor.value
+  const context = linkSuggestContext.value ?? (ed ? findLinkLabelEditContext(ed.state) : null)
+  if (!ed || !context) return
+  applyLinkSuggest(ed, context, item)
+  clearLinkSuggest()
+  scheduleLinkSuggestRefresh()
+}
+
+function handleLinkSuggestKeyDown(event: KeyboardEvent): boolean {
+  if (!linkSuggestVisible.value || linkSuggestItems.value.length === 0) return false
+
+  if (event.key === 'Escape') {
+    clearLinkSuggest()
+    return true
+  }
+
+  if (!linkSuggestListActive.value) {
+    if (event.key === 'ArrowDown') {
+      linkSuggestListActive.value = true
+      linkSuggestIndex.value = 0
+      return true
+    }
+    return false
+  }
+
+  if (event.key === 'ArrowDown') {
+    linkSuggestIndex.value = Math.min(
+      linkSuggestItems.value.length - 1,
+      linkSuggestIndex.value + 1,
+    )
+    return true
+  }
+
+  if (event.key === 'ArrowUp') {
+    if (linkSuggestIndex.value <= 0) {
+      linkSuggestListActive.value = false
+      return true
+    }
+    linkSuggestIndex.value -= 1
+    return true
+  }
+
+  if (event.key === 'Enter') {
+    const item = linkSuggestItems.value[linkSuggestIndex.value]
+    if (item) selectLinkSuggestItem(item)
+    return true
+  }
+
+  return false
+}
 
 const filteredSlashOptions = computed(() => {
   const keyword = slashQuery.value.trim().toLowerCase()
@@ -466,8 +609,26 @@ function resolveEditorContent(): JSONContent {
   return blocksToTipTap(props.blocks ?? [])
 }
 
+function collapseLinkIrBeforePersist() {
+  const ed = editor.value
+  if (!ed) return
+  const linkType = ed.schema.marks.link
+  if (!linkType) return
+  const tr = collapseActiveLinkIrSource(
+    ed.state,
+    linkType,
+    (href) => Boolean(href?.trim()),
+  )
+  if (tr) {
+    ed.view.dispatch(tr)
+  }
+}
+
 function emitEditorContent() {
   if (!editor.value) return
+  // IR expand temporarily writes `[label](url)` into the doc; collapse before persist
+  // so autosave never stores expanded source (especially with a retained link mark).
+  collapseLinkIrBeforePersist()
   const json = editor.value.getJSON()
   skipNextContentSync = true
   emit('update:document', json)
@@ -755,14 +916,14 @@ const insertImageUsingExternalResourcePending = (src: string) => {
   if (!editor.value || !src.trim()) return false
   const content = {
     type: 'image',
-    attrs: { src: src.trim() },
+    attrs: { src: src.trim(), textAlign: 'center' },
   }
   if (pendingExternalResourceInsertPos != null) {
     const pos = pendingExternalResourceInsertPos
     pendingExternalResourceInsertPos = null
     return editor.value.chain().focus().insertContentAt(pos, content).run()
   }
-  return editor.value.chain().focus().setImage({ src: src.trim() }).run()
+  return editor.value.chain().focus().setImage({ src: src.trim() }).setTextAlign('center').run()
 }
 
 const insertPdfExcerptBlock = (input: {
@@ -1604,6 +1765,7 @@ const editor = useEditor({
           getSlashClientRect(props)
         },
         onKeyDown: (props: any) => {
+          if (linkSuggestVisible.value) return false
           if (props.event.key === 'Escape') {
             slashMenuVisible.value = false
             slashQuery.value = ''
@@ -1671,7 +1833,7 @@ const editor = useEditor({
         void uploadFile(imageFile)
           .then((result) => {
             if (result.url) {
-              editor.value?.chain().focus().setImage({ src: result.url }).run()
+              editor.value?.chain().focus().setImage({ src: result.url }).setTextAlign('center').run()
             }
           })
           .catch((error: unknown) => {
@@ -1682,11 +1844,26 @@ const editor = useEditor({
       return false
     },
     handleKeyDown: (view, event) => {
+      if (handleLinkSuggestKeyDown(event)) {
+        event.preventDefault()
+        return true
+      }
       if ((event.key === 'Delete' || event.key === 'Backspace') && lassoSelectedBlockIds.value.size > 0) {
         deleteLassoSelected()
         return true
       }
       return false
+    },
+    handleClick: (view, pos, event) => {
+      if (event.button !== 0) return false
+      const $pos = view.state.doc.resolve(pos)
+      const mark = $pos.marks().find((item) => item.type.name === 'link' && item.attrs.href)
+        ?? $pos.nodeAfter?.marks.find((item) => item.type.name === 'link' && item.attrs.href)
+      const href = mark ? String(mark.attrs.href || '') : ''
+      if (!href || !isInternalLocatorHref(href)) return false
+      event.preventDefault()
+      emit('navigate-internal-link', href)
+      return true
     },
   },
   onCreate: () => {
@@ -1716,6 +1893,7 @@ const editor = useEditor({
   },
   onUpdate: ({ transaction }) => {
     if (isInternalUpdate || !editor.value) return
+    clearUrlHoverIfLinkIrActive()
     if (transaction.getMeta(HEADING_SECTION_FOLD_META)) return
     const currentSignature = getDocSignature()
     if (currentSignature === lastDocSignature) return
@@ -1725,14 +1903,17 @@ const editor = useEditor({
       if (!isMounted || !editor.value) return
       emitEditorContent()
     }, 300)
+    scheduleLinkSuggestRefresh()
   },
   onSelectionUpdate: () => {
     if (!isMounted || !editor.value) return
+    clearUrlHoverIfLinkIrActive()
     const { empty, from, to } = editor.value.state.selection
     const payload = empty ? null : getAnnotationSelectionPayload(editor.value.state.doc, from, to)
     const text = payload?.selectedText ?? ''
     const spanned = empty ? { ids: [], metadata: [] } : collectSelectionBlockInfo(from, to)
     emit('selection-change', !empty, text, from, to, payload?.blockId ?? getBlockIdAtPos(from), spanned.ids.length ? spanned.ids : undefined, spanned.metadata.length ? spanned.metadata : undefined)
+    scheduleLinkSuggestRefresh()
   },
 })
 
@@ -1893,6 +2074,11 @@ onBeforeUnmount(() => {
     clearTimeout(debounceTimer)
     debounceTimer = null
   }
+  if (linkSuggestTimer) {
+    clearTimeout(linkSuggestTimer)
+    linkSuggestTimer = null
+  }
+  clearLinkSuggest()
   if (scrollContainer) {
     scrollContainer.removeEventListener('scroll', handleScrollInEditor)
     scrollContainer = null
@@ -1954,8 +2140,21 @@ function emitUrlHoverTarget(target: UrlHoverTarget | null) {
   emit('url-hover-change', target)
 }
 
+/** Drop stale UrlHover when caret enters link IR source (mouse may not move). */
+function clearUrlHoverIfLinkIrActive() {
+  if (!editor.value) return
+  if (!linkIrSourceKey.getState(editor.value.state)) return
+  clearUrlHoverTimer()
+  clearUrlHoverClearTimer()
+  emitUrlHoverTarget(null)
+}
+
 function handleEditorUrlMouseMove(event: MouseEvent) {
   if (!props.editable || !editor.value || urlHoverSuppressed) return
+  if (linkIrSourceKey.getState(editor.value.state)) {
+    clearUrlHoverIfLinkIrActive()
+    return
+  }
   const resolved = resolveUrlHoverTarget(editor.value, event)
   if (!resolved) {
     clearUrlHoverTimer()
@@ -2081,6 +2280,8 @@ async function applyUrlDisplayMode(
 ): Promise<UrlHoverTarget | null> {
   const ed = editor.value
   if (!ed || !props.editable) return null
+  // Never rewrite ranges while markdown IR source is open (would corrupt `[label](url)`).
+  if (linkIrSourceKey.getState(ed.state)) return null
 
   if (mode === 'iframe') {
     if (target.kind === 'iframe') return target
@@ -2411,6 +2612,20 @@ defineExpose({
         <span class="slash-command-menu__label">{{ option.label }}</span>
       </button>
     </div>
+    <div
+      v-if="linkSuggestVisible && linkSuggestItems.length > 0"
+      class="link-label-suggest-menu-host"
+      :style="{ top: `${linkSuggestTop}px`, left: `${linkSuggestLeft}px` }"
+      @mousedown.prevent
+    >
+      <LinkLabelSuggestMenu
+        :items="linkSuggestItems"
+        :active-index="linkSuggestIndex"
+        :list-active="linkSuggestListActive"
+        @select="selectLinkSuggestItem"
+        @hover="(index) => { linkSuggestListActive = true; linkSuggestIndex = index }"
+      />
+    </div>
     <HoverHandle
       v-if="hoverHandle && handleVisible && editor"
       ref="hoverHandleRef"
@@ -2731,14 +2946,39 @@ defineExpose({
 }
 
 .tu-editor-wrapper :deep(.tu-editor-content img) {
+  display: block;
   max-width: 100%;
   height: auto;
   border-radius: 4px;
 }
 
+/* textAlign on TipTap image nodes uses style on <img>; center via auto margins */
+.tu-editor-wrapper :deep(.tu-editor-content img[style*='text-align: center']),
+.tu-editor-wrapper :deep(.tu-editor-content img[style*='text-align:center']) {
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.tu-editor-wrapper :deep(.tu-editor-content img[style*='text-align: right']),
+.tu-editor-wrapper :deep(.tu-editor-content img[style*='text-align:right']) {
+  margin-left: auto;
+  margin-right: 0;
+}
+
 .tu-editor-wrapper :deep(.tu-editor-content a) {
   color: #1677ff;
   text-decoration: underline;
+}
+
+/* IR: caret inside link → expand to markdown source */
+.tu-editor-wrapper :deep(.tu-link-ir-source) {
+  color: #334155;
+  text-decoration: none;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.92em;
+  background: rgba(15, 23, 42, 0.06);
+  border-radius: 3px;
+  box-decoration-break: clone;
 }
 
 .tu-editor-wrapper :deep(.tu-tiptap-selection-retained) {
@@ -2791,6 +3031,11 @@ defineExpose({
   border-radius: 8px;
   background: #ffffff;
   box-shadow: 0 16px 36px rgba(15, 23, 42, 0.14);
+}
+
+.link-label-suggest-menu-host {
+  position: fixed;
+  z-index: 1000003;
 }
 
 .slash-command-menu__item {

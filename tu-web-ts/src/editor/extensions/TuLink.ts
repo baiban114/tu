@@ -1,12 +1,17 @@
 import { InputRule, PasteRule } from '@tiptap/core'
 import Link, { isAllowedUri } from '@tiptap/extension-link'
+import { createLinkIrSourcePlugin } from './linkIrSource'
 
 /** `[label](href)` or `[label](href "title")` / `[label](href 'title')` */
 export const MARKDOWN_LINK_SYNTAX_RE =
   /\[([^\]]+)\]\(([^)\s]+)(?:\s+(?:"([^"]*)"|'([^']*)'))?\)/g
 
+/**
+ * Triggered when the closing `)` is typed. No leading-space requirement so
+ * CJK runs like `你好[文字](url)` still convert (CommonMark allows mid-line links).
+ */
 export const MARKDOWN_LINK_INPUT_RE =
-  /(?:^|\s)\[([^\]]+)\]\(([^)\s]+)(?:\s+(?:"([^"]*)"|'([^']*)'))?\)$/
+  /\[([^\]]+)\]\(([^)\s]+)(?:\s+(?:"([^"]*)"|'([^']*)'))?\)$/
 
 export function parseMarkdownLinkSyntaxMatch(match: RegExpMatchArray): {
   label: string
@@ -109,6 +114,20 @@ export const TuLink = Link.extend({
           )
           tr.setMeta('preventAutolink', true)
         },
+      }),
+    ]
+  },
+
+  addProseMirrorPlugins() {
+    return [
+      ...(this.parent?.() || []),
+      createLinkIrSourcePlugin({
+        getLinkType: () => this.type,
+        isAllowedHref: (href) => !!this.options.isAllowedUri(href, {
+          defaultValidate: (url) => !!isAllowedUri(url, this.options.protocols),
+          protocols: this.options.protocols,
+          defaultProtocol: this.options.defaultProtocol,
+        }),
       }),
     ]
   },

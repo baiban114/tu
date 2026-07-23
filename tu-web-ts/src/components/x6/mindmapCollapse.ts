@@ -17,6 +17,7 @@ import {
   createMindmapNode,
 } from './graphCells';
 import { findMindmapRootId, layoutMindmapGraph, type MindmapDirection } from './mindmap';
+import { fitMindmapNodeToText } from './mindmapNodeFit';
 
 export type { MindmapRefTocContext } from '@/utils/toc/mindmapRefToc';
 
@@ -102,6 +103,7 @@ function upsertRefTocNode(
       refTocTotalHours: flatEntry.totalEstimatedHours,
     });
   }
+  fitMindmapNodeToText(childNode);
 
   ensureMindmapEdge(graph, parentNodeId, childNode.id);
   return childNode;

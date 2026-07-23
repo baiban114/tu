@@ -68,6 +68,8 @@ import {
   findMindmapRootId,
   findMindmapDropTarget,
   layoutMindmapGraph,
+  fitMindmapNodeToText,
+  fitAllMindmapNodesToText,
   relayoutMindmapGraphAfterDelete,
   getLastMindmapDragPointer,
   updateMindmapDragPreview,
@@ -145,6 +147,9 @@ const emit = defineEmits<{
 
 const stageRef = ref<HTMLDivElement | null>(null);
 const containerRef = ref<HTMLDivElement | null>(null);
+const ZOOM_MIN = 0.2;
+const ZOOM_MAX = 3;
+const ZOOM_FACTOR = 1.1;
 const nodeOverlayRefs = ref<Record<string, {
   getMarkdownLinkAnchor?: () => { top: number; left: number } | undefined;
   insertMarkdownLink?: (label: string, url: string, display?: 'link' | 'image') => boolean;
@@ -190,6 +195,9 @@ const toolbarVisible = ref(true);
 const inspectorVisible = ref(true);
 type CanvasInteractionMode = 'select' | 'pan';
 const canvasInteractionMode = ref<CanvasInteractionMode>('select');
+/** Hold Space to temporarily pan (grab cursor), without changing toolbar mode. */
+const spacePanActive = ref(false);
+let stagePointerInside = false;
 let mindmapDragActiveNodeId: string | null = null;
 let mindmapDragMoved = false;
 let mindmapDragSessionStarted = false;
@@ -561,6 +569,120 @@ function updateUndoRedoState() {
   zoomPercent.value = Math.round(graph.zoom() * 100);
 }
 
+/**
+ * Ctrl/Meta + wheel must zoom even when the event target is a stage overlay
+ * (node chrome, collapse buttons) or a scrollable ancestor (e.g. el-dialog).
+ * X6's built-in mousewheel only listens on graph.container, so without this
+ * capture handler the event bubbles and pans/scrolls the page instead.
+ */
+function handleStageCtrlWheel(e: WheelEvent) {
+  if (!graph) return;
+  if (!e.ctrlKey && !e.metaKey) return;
+  e.preventDefault();
+  e.stopPropagation();
+
+  const current = graph.zoom();
+  const next = e.deltaY < 0
+    ? Math.min(ZOOM_MAX, current * ZOOM_FACTOR)
+    : Math.max(ZOOM_MIN, current / ZOOM_FACTOR);
+  if (Math.abs(next - current) < 1e-6) return;
+
+  try {
+    const origin = graph.clientToGraph(e.clientX, e.clientY);
+    graph.zoom(next, { absolute: true, center: origin });
+  } catch {
+    graph.zoom(next, { absolute: true });
+  }
+  updateUndoRedoState();
+}
+
+function bindStageCtrlWheel() {
+  stageRef.value?.addEventListener('wheel', handleStageCtrlWheel, {
+    capture: true,
+    passive: false,
+  });
+}
+
+function unbindStageCtrlWheel() {
+  stageRef.value?.removeEventListener('wheel', handleStageCtrlWheel, {
+    capture: true,
+  } as EventListenerOptions);
+}
+
+function isCanvasTypingTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  const tag = target.tagName;
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true;
+  if (target.isContentEditable) return true;
+  return Boolean(
+    target.closest(
+      'input, textarea, select, [contenteditable="true"], .x6-node-plain-input, .ProseMirror, .tu-editor-content',
+    ),
+  );
+}
+
+function getEffectiveCanvasInteractionMode(): CanvasInteractionMode {
+  return spacePanActive.value ? 'pan' : canvasInteractionMode.value;
+}
+
+function beginSpacePan() {
+  if (spacePanActive.value) return;
+  spacePanActive.value = true;
+  applyCanvasInteractionMode();
+}
+
+function endSpacePan() {
+  if (!spacePanActive.value) return;
+  spacePanActive.value = false;
+  applyCanvasInteractionMode();
+}
+
+function handleSpacePanKeyDown(e: KeyboardEvent) {
+  if (e.code !== 'Space') return;
+  if (e.repeat) return;
+  if (editingNodeId.value != null || edgeInlineEditing.value) return;
+  if (isCanvasTypingTarget(e.target) || isCanvasTypingTarget(document.activeElement)) return;
+  if (!stagePointerInside) return;
+  e.preventDefault();
+  beginSpacePan();
+}
+
+function handleSpacePanKeyUp(e: KeyboardEvent) {
+  if (e.code !== 'Space') return;
+  endSpacePan();
+}
+
+function handleSpacePanWindowBlur() {
+  endSpacePan();
+}
+
+function handleStagePointerEnter() {
+  stagePointerInside = true;
+}
+
+function handleStagePointerLeave() {
+  stagePointerInside = false;
+  endSpacePan();
+}
+
+function bindSpacePanListeners() {
+  window.addEventListener('keydown', handleSpacePanKeyDown, true);
+  window.addEventListener('keyup', handleSpacePanKeyUp, true);
+  window.addEventListener('blur', handleSpacePanWindowBlur);
+  stageRef.value?.addEventListener('pointerenter', handleStagePointerEnter);
+  stageRef.value?.addEventListener('pointerleave', handleStagePointerLeave);
+}
+
+function unbindSpacePanListeners() {
+  window.removeEventListener('keydown', handleSpacePanKeyDown, true);
+  window.removeEventListener('keyup', handleSpacePanKeyUp, true);
+  window.removeEventListener('blur', handleSpacePanWindowBlur);
+  stageRef.value?.removeEventListener('pointerenter', handleStagePointerEnter);
+  stageRef.value?.removeEventListener('pointerleave', handleStagePointerLeave);
+  endSpacePan();
+  stagePointerInside = false;
+}
+
 function getNodeLabel(node: Node) {
   const value = node.attr('label/text');
   return typeof value === 'string' ? value : '';
@@ -847,7 +969,7 @@ function cancelMindmapNodeDrag() {
 function applyCanvasInteractionMode() {
   if (!graph || editingNodeId.value != null || edgeInlineEditing.value) return;
 
-  if (canvasInteractionMode.value === 'pan') {
+  if (getEffectiveCanvasInteractionMode() === 'pan') {
     cancelMindmapNodeDrag();
     graph.options.panning.eventTypes = ['leftMouseDown'];
     graph.enablePanning();
@@ -878,6 +1000,9 @@ function handleNodeOverlayCommit(nodeId: string, text: string) {
   if (node && graph?.isNode(node)) {
     node.attr('label/text', text);
     node.attr('label/visibility', 'visible');
+    if (isMindmap.value && fitMindmapNodeToText(node) && graph) {
+      layoutMindmapGraph(graph, readMindmapDirection(props.graphData));
+    }
   }
   suppressNextNodeInternalClickId = nodeId;
   editingNodeId.value = null;
@@ -1206,6 +1331,7 @@ function applyGraphData(data?: GraphData, fitView = false) {
   graph.cleanSelection();
   syncTaskFlowEdgeState();
   if (isMindmap.value) {
+    fitAllMindmapNodesToText(graph.getNodes());
     layoutMindmapGraph(graph, readMindmapDirection(props.graphData));
   }
   void syncMindmapGraphStateWithOutlines();
@@ -1862,6 +1988,7 @@ function insertRefBlock(
         refTocCollapsed: {},
       },
     }));
+    fitMindmapNodeToText(node);
     graph.cleanSelection();
     graph.select(node);
     void (async () => {
@@ -2005,6 +2132,9 @@ function updateSelectedNodeLabel(value: string) {
     });
     node.attr('label/text', `${value}\n${description}`);
   }
+  if (isMindmap.value && fitMindmapNodeToText(node)) {
+    layoutMindmapGraph(graph, readMindmapDirection(props.graphData));
+  }
   scheduleSync();
 }
 
@@ -2034,6 +2164,9 @@ function updateSelectedNodeSize(key: 'width' | 'height', rawValue: string) {
 
   const size = node.getSize();
   node.resize(key === 'width' ? value : size.width, key === 'height' ? value : size.height);
+  if (isMindmap.value) {
+    fitMindmapNodeToText(node);
+  }
   scheduleSync();
 }
 
@@ -2293,7 +2426,7 @@ function bindGraphEvents() {
 
     if (
       isMindmap.value
-      && canvasInteractionMode.value === 'select'
+      && getEffectiveCanvasInteractionMode() === 'select'
       && graph
     ) {
       const rootId = findMindmapRootId(graph);
@@ -2313,7 +2446,7 @@ function bindGraphEvents() {
     if (
       !isMindmap.value
       || !isEditable.value
-      || canvasInteractionMode.value !== 'select'
+      || getEffectiveCanvasInteractionMode() !== 'select'
       || !graph
       || mindmapDragActiveNodeId !== node.id
     ) {
@@ -2350,7 +2483,7 @@ function bindGraphEvents() {
     if (
       isMindmap.value
       && isEditable.value
-      && canvasInteractionMode.value === 'select'
+      && getEffectiveCanvasInteractionMode() === 'select'
       && graph
       && mindmapDragActiveNodeId === node.id
     ) {
@@ -2380,7 +2513,10 @@ function bindGraphEvents() {
     startUserInteraction();
   });
 
-  graph.on('node:resized', () => {
+  graph.on('node:resized', ({ node }) => {
+    if (isMindmap.value && graph && graph.isNode(node)) {
+      fitMindmapNodeToText(node);
+    }
     finishUserInteraction();
   });
 
@@ -2553,11 +2689,13 @@ function initGraph() {
       eventTypes: ['rightMouseDown'],
     },
     mousewheel: {
+      // Kept as fallback when the wheel lands on the graph SVG itself.
+      // Stage capture handler (handleStageCtrlWheel) covers overlays + dialog hosts.
       enabled: true,
       modifiers: ['ctrl', 'meta'],
-      minScale: 0.2,
-      maxScale: 3,
-      factor: 1.1,
+      minScale: ZOOM_MIN,
+      maxScale: ZOOM_MAX,
+      factor: ZOOM_FACTOR,
     },
     connecting: {
       snap: isMindmap.value ? { radius: 40, anchor: 'center' } : { radius: 28 },
@@ -2599,7 +2737,7 @@ function initGraph() {
       const cell = cellView.cell;
       const mindmapSelectDrag = isMindmap.value
         && isEditable.value
-        && canvasInteractionMode.value === 'select'
+        && getEffectiveCanvasInteractionMode() === 'select'
         && graph?.isNode(cell)
         && cell.getData<Record<string, unknown>>()?.mindRole !== 'root';
       const defaultMovable = isEditable.value && !isMindmap.value;
@@ -2661,6 +2799,8 @@ function initGraph() {
 onMounted(() => {
   nextTick(() => {
     initGraph();
+    bindStageCtrlWheel();
+    bindSpacePanListeners();
 
     if (stageRef.value) {
       resizeObserver = new ResizeObserver(() => {
@@ -2676,6 +2816,8 @@ onBeforeUnmount(() => {
     window.clearTimeout(syncTimer);
   }
   clearMindmapCollapseHideTimer();
+  unbindStageCtrlWheel();
+  unbindSpacePanListeners();
   if (resizeObserver) {
     resizeObserver.disconnect();
     resizeObserver = null;
@@ -2761,7 +2903,7 @@ defineExpose({
           type="button"
           class="tool-button tool-button--icon tool-button--mode"
           :class="{ 'tool-button--active': canvasInteractionMode === 'pan' }"
-          title="拖拽画布"
+          title="拖拽画布（按住空格）"
           aria-label="拖拽模式"
           :aria-pressed="canvasInteractionMode === 'pan'"
           @click="setCanvasInteractionMode('pan')"
@@ -2893,8 +3035,8 @@ defineExpose({
         :class="{
           'x6-stage--library': inspectorTab === 'library',
           'x6-stage--node-editing': isFillLayout && isNodeEditing,
-          'x6-stage--interaction-select': canvasInteractionMode === 'select',
-          'x6-stage--interaction-pan': canvasInteractionMode === 'pan',
+          'x6-stage--interaction-select': !spacePanActive && canvasInteractionMode === 'select',
+          'x6-stage--interaction-pan': spacePanActive || canvasInteractionMode === 'pan',
         }"
         :style="stageStyle"
         @dragover.capture="onMaterialDragOver"
@@ -2986,25 +3128,6 @@ defineExpose({
             @blur="commitEdgeInlineEdit()"
           />
         </div>
-
-        <div class="x6-stage-hint">
-          <template v-if="inspectorTab === 'library' && blockActionsEnabled">
-            <span>点击素材卡片：插入到视口中心</span>
-            <span>拖拽右侧把手：插入到画板指定位置</span>
-          </template>
-          <span v-else-if="blockActionsEnabled">选中后可直接提取为素材</span>
-          <template v-if="isMindmap">
-            <span>Tab 添加子节点 · Enter 添加同级</span>
-            <span>悬浮节点显示展开/收起按钮（避开连接桩）</span>
-            <span>双击节点编辑文字（支持富文本）</span>
-            <span>Delete 删除选中分支（含子节点）· 中心主题不可删除</span>
-          </template>
-          <template v-else>
-            <span>双击空白处快速新建节点</span>
-            <span>拖拽节点四周锚点创建连线</span>
-            <span>双击节点或连线直接改文字</span>
-          </template>
-        </div>
       </div>
 
       <aside v-if="inspectorVisible" class="x6-inspector">
@@ -3047,16 +3170,6 @@ defineExpose({
               </li>
             </ol>
             <p class="inspector-empty">每个任务节点只允许一条前驱和一条后继连线，用于表达明确的先后顺序。</p>
-          </div>
-
-          <div v-if="isMindmap" class="inspector-card">
-            <h4>思维导图</h4>
-            <p class="inspector-empty">树形结构由工具栏或快捷键维护，连线会自动布局为从左到右的分支。</p>
-            <ul class="inspector-tips">
-              <li><code>Tab</code> 为选中节点添加子分支</li>
-              <li><code>Enter</code> 添加同级分支</li>
-              <li>节点支持切换富文本模式并插入素材</li>
-            </ul>
           </div>
 
           <div class="inspector-card">
@@ -3693,29 +3806,6 @@ defineExpose({
 .mindmap-collapse-btn:disabled {
   opacity: 0.55;
   cursor: not-allowed;
-}
-
-.x6-stage-hint {
-  position: absolute;
-  left: 16px;
-  bottom: 16px;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-  max-width: calc(100% - 32px);
-  pointer-events: none;
-}
-
-.x6-stage-hint span {
-  display: inline-flex;
-  align-items: center;
-  padding: 6px 10px;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.88);
-  border: 1px solid rgba(210, 216, 226, 0.9);
-  color: #5f6b7a;
-  font-size: 12px;
-  box-shadow: 0 6px 14px rgba(31, 45, 61, 0.08);
 }
 
 .x6-inspector {

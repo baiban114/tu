@@ -1,6 +1,7 @@
 import type { Editor } from '@tiptap/core'
 import { isTextSelection } from '@tiptap/core'
 import { getAnnotationSelectionPayload } from '@/editor/annotationText'
+import { linkIrSourceKey } from '@/editor/extensions/linkIrSource'
 
 const TEXT_BLOCK_NODE_TYPES = new Set([
   'paragraph',
@@ -92,6 +93,8 @@ export function shouldShowSelectionBubbleMenu(
   menuElement?: HTMLElement | null,
 ): boolean {
   if (suppressed || !editor.isEditable || isMouseSelecting) return false
+  // Markdown link IR source editing owns the caret; bubble menu would fight expand/collapse + label suggest.
+  if (linkIrSourceKey.getState(state)) return false
 
   const { selection } = state
   const { empty } = selection
