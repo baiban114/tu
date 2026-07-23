@@ -131,6 +131,9 @@ export function clipAttrsFromVerticalHits(
 /** Custom event on PDF block root: enter vertical clip marquee mode. */
 export const PDF_EXCERPT_CLIP_SELECT_EVENT = 'tu:pdf-excerpt-clip-select'
 
+/** Custom event on PDF block root: set block height to fit current zoomed content. */
+export const PDF_EXCERPT_FIT_HEIGHT_EVENT = 'tu:pdf-excerpt-fit-height'
+
 export interface PdfExcerptAttrs {
   blockId: string
   fileId: string
@@ -147,6 +150,8 @@ export interface PdfExcerptAttrs {
   sourceHref?: string
   /** Original link label for restoring inline link text. */
   sourceLabel?: string
+  /** Whether PDF region note overlays are shown. Default false. */
+  notesVisible?: boolean
 }
 
 export function parsePdfExcerptComment(attrsStr: string): PdfExcerptAttrs | null {
@@ -161,6 +166,8 @@ export function parsePdfExcerptComment(attrsStr: string): PdfExcerptAttrs | null
     attrs.clipTop != null ? Number(attrs.clipTop) : 0,
     attrs.clipBottom != null ? Number(attrs.clipBottom) : 1,
   )
+  const notesVisibleRaw = String(attrs.notesVisible || '').trim().toLowerCase()
+  const notesVisible = notesVisibleRaw === 'true' || notesVisibleRaw === '1'
   return {
     blockId,
     fileId,
@@ -173,6 +180,7 @@ export function parsePdfExcerptComment(attrsStr: string): PdfExcerptAttrs | null
     clipBottom: clip.clipBottom,
     sourceHref: attrs.sourceHref || undefined,
     sourceLabel: attrs.sourceLabel || undefined,
+    ...(notesVisible ? { notesVisible: true } : {}),
   }
 }
 
@@ -188,7 +196,8 @@ export function serializePdfExcerptComment(attrs: PdfExcerptAttrs): string {
   const sourceLabelAttr = attrs.sourceLabel
     ? ` sourceLabel="${escapeAttr(attrs.sourceLabel)}"`
     : ''
-  return `<!--tu:pdf-excerpt id="${escapeAttr(attrs.blockId)}" fileId="${escapeAttr(attrs.fileId)}" fileName="${escapeAttr(attrs.fileName)}" start="${attrs.startPage}" end="${attrs.endPage}" height="${attrs.height}"${modeAttr}${clipAttr}${sourceHrefAttr}${sourceLabelAttr}-->`
+  const notesVisibleAttr = attrs.notesVisible ? ' notesVisible="true"' : ''
+  return `<!--tu:pdf-excerpt id="${escapeAttr(attrs.blockId)}" fileId="${escapeAttr(attrs.fileId)}" fileName="${escapeAttr(attrs.fileName)}" start="${attrs.startPage}" end="${attrs.endPage}" height="${attrs.height}"${modeAttr}${clipAttr}${sourceHrefAttr}${sourceLabelAttr}${notesVisibleAttr}-->`
 }
 
 export function normalizePdfPageRange(

@@ -9,8 +9,10 @@ import static org.mockito.Mockito.when;
 import com.tu.backend.common.BusinessException;
 import com.tu.backend.knowledgerelation.dto.KnowledgeGraphDto;
 import com.tu.backend.knowledgerelation.dto.RelationTypeDefDto;
+import com.tu.backend.knowledgerelation.entity.KnowledgePointAnchorEntity;
 import com.tu.backend.knowledgerelation.entity.KnowledgePointEntity;
 import com.tu.backend.knowledgerelation.entity.KnowledgeRelationEntity;
+import com.tu.backend.knowledgerelation.repository.KnowledgePointAnchorRepository;
 import com.tu.backend.knowledgerelation.repository.KnowledgePointRepository;
 import com.tu.backend.knowledgerelation.repository.KnowledgeRelationRepository;
 import com.tu.backend.knowledge.repository.KnowledgeBaseRepository;
@@ -25,6 +27,7 @@ class KnowledgeGraphServiceTest {
     private static final String KB_ID = "kb-1";
 
     private KnowledgePointRepository pointRepository;
+    private KnowledgePointAnchorRepository anchorRepository;
     private KnowledgeRelationRepository relationRepository;
     private KnowledgeBaseRepository knowledgeBaseRepository;
     private RelationTypeService relationTypeService;
@@ -33,11 +36,13 @@ class KnowledgeGraphServiceTest {
     @BeforeEach
     void setUp() {
         pointRepository = Mockito.mock(KnowledgePointRepository.class);
+        anchorRepository = Mockito.mock(KnowledgePointAnchorRepository.class);
         relationRepository = Mockito.mock(KnowledgeRelationRepository.class);
         knowledgeBaseRepository = Mockito.mock(KnowledgeBaseRepository.class);
         relationTypeService = Mockito.mock(RelationTypeService.class);
         service = new KnowledgeGraphService(
             pointRepository,
+            anchorRepository,
             relationRepository,
             knowledgeBaseRepository,
             relationTypeService
@@ -120,6 +125,39 @@ class KnowledgeGraphServiceTest {
         assertThatThrownBy(() -> service.getGraph(KB_ID, "prerequisite", null, 2, "out", null, 500))
             .isInstanceOf(BusinessException.class)
             .hasMessageContaining("centerPointId is required");
+    }
+
+    @Test
+    void pageRelationGraphIncludesPagePointsNeighborsAndEdges() {
+        when(anchorRepository.findByPageLocatorPrefix("page:p1", "page:p1:"))
+            .thenReturn(List.of(anchor("kpa-1", "kp-a", "page:p1:heading:h1")));
+        when(pointRepository.findById("kp-a")).thenReturn(java.util.Optional.of(point("kp-a", "A", null, 0)));
+
+        KnowledgeGraphDto graph = service.getPageRelationGraph(KB_ID, "p1", 500);
+
+        assertThat(graph.meta().mode()).isEqualTo("page");
+        assertThat(graph.meta().focusPointIds()).containsExactly("kp-a");
+        assertThat(graph.nodes()).extracting(node -> node.id()).contains("kp-a", "kp-b", "kp-c");
+        assertThat(graph.edges()).hasSize(2);
+    }
+
+    @Test
+    void pageRelationGraphReturnsEmptyWhenNoAnchors() {
+        when(anchorRepository.findByPageLocatorPrefix("page:p-empty", "page:p-empty:")).thenReturn(List.of());
+
+        KnowledgeGraphDto graph = service.getPageRelationGraph(KB_ID, "p-empty", 500);
+
+        assertThat(graph.nodes()).isEmpty();
+        assertThat(graph.edges()).isEmpty();
+        assertThat(graph.meta().warnings()).anyMatch(item -> item.contains("暂无知识点"));
+    }
+
+    private KnowledgePointAnchorEntity anchor(String id, String pointId, String locator) {
+        KnowledgePointAnchorEntity entity = new KnowledgePointAnchorEntity();
+        entity.setId(id);
+        entity.setKnowledgePointId(pointId);
+        entity.setLocator(locator);
+        return entity;
     }
 
     private KnowledgePointEntity point(String id, String title, String parentId, int sortOrder) {

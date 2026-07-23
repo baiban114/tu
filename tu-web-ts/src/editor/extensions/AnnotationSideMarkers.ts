@@ -25,6 +25,7 @@ function annotationOverlapsNode(
   node: ProseMirrorNode,
 ): boolean {
   if (annotation.unresolved) return false
+  if (annotation.scope === 'pdfRegion') return false
   const blockId = String(node.attrs?.blockId || '').trim()
   if (blockId && annotation.spannedBlockIds?.includes(blockId)) return true
   if (typeof annotation.from !== 'number' || typeof annotation.to !== 'number') return false

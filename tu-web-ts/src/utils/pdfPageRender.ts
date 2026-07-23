@@ -5,6 +5,17 @@ const MAX_CONCURRENT_RENDERS = 2
 const PREFETCH_DISTANCE = 1
 const EVICTION_DISTANCE = 5
 const DEFAULT_ZOOM_SCALE = 1
+/** Coalesce same-tick / double ResizeObserver notifications (TOC open is instant). */
+const RESIZE_DEBOUNCE_MS = 48
+const RESIZE_WIDTH_EPSILON_PX = 2
+
+function isPdfRenderingCancelled(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false
+  const name = String((error as { name?: unknown }).name || '')
+  const message = String((error as { message?: unknown }).message || '')
+  return name === 'RenderingCancelledException'
+    || /rendering cancelled/i.test(message)
+}
 
 export interface PdfPageRenderCallbacks {
   getDoc: () => PdfDocumentProxy | null
@@ -29,11 +40,18 @@ export class PdfPageRenderManager {
   private readonly lastHostWidths = new Map<number, number>()
   private suppressResize = false
   private disposed = false
+  private resizeDebounceTimer: ReturnType<typeof setTimeout> | null = null
+  private pendingResizePage: number | null = null
 
   constructor(private readonly callbacks: PdfPageRenderCallbacks) {}
 
   dispose() {
     this.disposed = true
+    if (this.resizeDebounceTimer) {
+      clearTimeout(this.resizeDebounceTimer)
+      this.resizeDebounceTimer = null
+    }
+    this.pendingResizePage = null
     this.cancelAllTasks()
     this.evictAllPages()
     this.renderQueue.length = 0
@@ -83,12 +101,35 @@ export class PdfPageRenderManager {
   }
 
   handleResize(pageNumber: number) {
-    if (this.suppressResize) return
+    if (this.suppressResize || this.disposed) return
+    this.pendingResizePage = pageNumber
+    if (this.resizeDebounceTimer) clearTimeout(this.resizeDebounceTimer)
+    this.resizeDebounceTimer = setTimeout(() => {
+      this.resizeDebounceTimer = null
+      const page = this.pendingResizePage
+      this.pendingResizePage = null
+      if (page != null) this.flushResize(page)
+    }, RESIZE_DEBOUNCE_MS)
+  }
+
+  /** Immediate resize flush (e.g. after sidebar drag settles). */
+  flushPendingResize() {
+    if (this.resizeDebounceTimer) {
+      clearTimeout(this.resizeDebounceTimer)
+      this.resizeDebounceTimer = null
+    }
+    const page = this.pendingResizePage
+    this.pendingResizePage = null
+    if (page != null) this.flushResize(page)
+  }
+
+  private flushResize(pageNumber: number) {
+    if (this.suppressResize || this.disposed) return
 
     const width = this.resolveRenderWidth(pageNumber)
     if (width <= 0) return
 
-    if (this.lastLayoutWidth > 0 && Math.abs(width - this.lastLayoutWidth) < 2) {
+    if (this.lastLayoutWidth > 0 && Math.abs(width - this.lastLayoutWidth) < RESIZE_WIDTH_EPSILON_PX) {
       return
     }
 
@@ -98,16 +139,40 @@ export class PdfPageRenderManager {
 
     this.lastLayoutWidth = width
 
+    // Ignore ResizeObserver chatter from placeholder/height settle until paints finish.
+    this.suppressResize = true
+
+    // Keep current bitmaps on screen (CSS-scaled) so hosts never blank while re-rasterizing.
+    this.scaleDisplayedCanvases(width)
+
     for (const page of pagesToUpdate) {
       if (page < this.rangeStart || page > this.rangeEnd) continue
       this.lastHostWidths.set(page, width)
-      if (this.renderedPages.has(page)) {
-        const task = this.renderTasks.get(page)
-        task?.cancel?.()
+      const task = this.renderTasks.get(page)
+      if (task) {
+        task.cancel?.()
         this.renderTasks.delete(page)
-        this.renderedPages.delete(page)
       }
+      // Drop from rendered set so we can enqueue, but do NOT clear host children.
+      this.renderedPages.delete(page)
       this.enqueueRender(page)
+    }
+    void this.releaseSuppressResizeWhenIdle()
+  }
+
+  /** Stretch existing canvases to the new layout width without clearing the host. */
+  private scaleDisplayedCanvases(newWidth: number) {
+    const cssWidth = Math.max(1, Math.floor(newWidth))
+    for (const pageNumber of this.renderedPages) {
+      const host = this.callbacks.getHost(pageNumber)
+      const canvas = host?.querySelector('canvas')
+      if (!(canvas instanceof HTMLCanvasElement) || canvas.width <= 0) continue
+      const aspect = canvas.height / canvas.width
+      const cssHeight = Math.max(1, Math.round(cssWidth * aspect))
+      canvas.style.width = `${cssWidth}px`
+      canvas.style.height = `${cssHeight}px`
+      this.placeholderHeights.set(pageNumber, cssHeight)
+      this.callbacks.onPlaceholderHeight?.(pageNumber, cssHeight)
     }
   }
 
@@ -243,11 +308,17 @@ export class PdfPageRenderManager {
       this.callbacks.onPlaceholderHeight?.(pageNumber, height)
     } catch (error) {
       this.renderTasks.delete(pageNumber)
-      if (!this.disposed) {
-        this.callbacks.onRenderError(
-          error instanceof Error ? error.message : 'PDF 页面渲染失败',
-        )
+      if (this.disposed) return
+      // Expected when zoom/resize/page switch cancels an in-flight paint — do not surface as UI error.
+      if (isPdfRenderingCancelled(error)) {
+        if (!this.renderedPages.has(pageNumber) && !this.renderQueue.includes(pageNumber)) {
+          this.enqueueRender(pageNumber)
+        }
+        return
       }
+      this.callbacks.onRenderError(
+        error instanceof Error ? error.message : 'PDF 页面渲染失败',
+      )
     }
   }
 

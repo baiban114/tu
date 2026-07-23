@@ -114,6 +114,7 @@ flowchart LR
 | GET | `/api/kbs/{kbId}/knowledge-points/tree` |
 | GET | `/api/kbs/{kbId}/knowledge-points`（分页，`pageSize` 默认 10） |
 | GET | `/api/kbs/{kbId}/knowledge-points/by-locator?locator=…` |
+| GET | `/api/kbs/{kbId}/pages/{pageId}/relation-graph`（query: `maxNodes`；本页证据绑定的知识点 + 一跳语义关联） |
 | GET | `/api/kbs/{kbId}/pages/{pageId}/knowledge-context`（本页绑定点 + `prerequisite` 前驱/后继） |
 | POST | `/api/kbs/{kbId}/knowledge-points` |
 | PATCH/DELETE | `/api/knowledge-points/{id}` |

@@ -33,4 +33,13 @@ public class KnowledgeGraphController {
             knowledgeGraphService.getGraph(kbId, mode, centerPointId, depth, direction, relationTypeKeys, maxNodes)
         );
     }
+
+    @GetMapping("/kbs/{kbId}/pages/{pageId}/relation-graph")
+    public ApiResponse<KnowledgeGraphDto> getPageRelationGraph(
+        @PathVariable String kbId,
+        @PathVariable String pageId,
+        @RequestParam(required = false) Integer maxNodes
+    ) {
+        return ApiResponse.success(knowledgeGraphService.getPageRelationGraph(kbId, pageId, maxNodes));
+    }
 }

@@ -6,6 +6,8 @@ import com.tu.backend.page.repository.PageRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.util.List;
 import java.util.Objects;
@@ -32,10 +34,29 @@ public class ContentTreeIndexService {
         this.indexProperties = indexProperties;
     }
 
+    /**
+     * Best-effort 大纲重建。若当前有活跃事务，延后到 afterCommit 再执行，
+     * 避免重建失败把外层（如 saveContent）事务标成 rollback-only。
+     */
     public void rebuildPageBestEffort(String pageId, String fingerprint) {
         if (pageId == null || pageId.isBlank()) {
             return;
         }
+        runAfterCommitOrNow(() -> doRebuildPage(pageId, fingerprint));
+    }
+
+    public void deletePagesBestEffort(List<String> pageIds) {
+        if (pageIds == null || pageIds.isEmpty()) {
+            return;
+        }
+        runAfterCommitOrNow(() -> doDeletePages(pageIds));
+    }
+
+    public void reindexAll() {
+        pageRepository.findAll().forEach(page -> rebuildPageBestEffort(page.getId(), null));
+    }
+
+    private void doRebuildPage(String pageId, String fingerprint) {
         try {
             if (shouldSkip(pageId, fingerprint)) {
                 return;
@@ -47,10 +68,7 @@ public class ContentTreeIndexService {
         }
     }
 
-    public void deletePagesBestEffort(List<String> pageIds) {
-        if (pageIds == null || pageIds.isEmpty()) {
-            return;
-        }
+    private void doDeletePages(List<String> pageIds) {
         try {
             contentTreeNodeService.deletePageOutlines(pageIds);
             headingSearchIndexService.deletePagesBestEffort(pageIds);
@@ -59,8 +77,17 @@ public class ContentTreeIndexService {
         }
     }
 
-    public void reindexAll() {
-        pageRepository.findAll().forEach(page -> rebuildPageBestEffort(page.getId(), null));
+    private void runAfterCommitOrNow(Runnable task) {
+        if (!TransactionSynchronizationManager.isSynchronizationActive()) {
+            task.run();
+            return;
+        }
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCommit() {
+                task.run();
+            }
+        });
     }
 
     private boolean shouldSkip(String pageId, String fingerprint) {

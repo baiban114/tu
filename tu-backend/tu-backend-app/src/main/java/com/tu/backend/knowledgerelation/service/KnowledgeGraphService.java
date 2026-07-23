@@ -6,8 +6,10 @@ import com.tu.backend.knowledgerelation.dto.KnowledgeGraphEdgeDto;
 import com.tu.backend.knowledgerelation.dto.KnowledgeGraphMetaDto;
 import com.tu.backend.knowledgerelation.dto.KnowledgeGraphNodeDto;
 import com.tu.backend.knowledgerelation.dto.RelationTypeDefDto;
+import com.tu.backend.knowledgerelation.entity.KnowledgePointAnchorEntity;
 import com.tu.backend.knowledgerelation.entity.KnowledgePointEntity;
 import com.tu.backend.knowledgerelation.entity.KnowledgeRelationEntity;
+import com.tu.backend.knowledgerelation.repository.KnowledgePointAnchorRepository;
 import com.tu.backend.knowledgerelation.repository.KnowledgePointRepository;
 import com.tu.backend.knowledgerelation.repository.KnowledgeRelationRepository;
 import com.tu.backend.knowledge.repository.KnowledgeBaseRepository;
@@ -34,17 +36,20 @@ public class KnowledgeGraphService {
     private static final int DEFAULT_DEPTH = 2;
 
     private final KnowledgePointRepository knowledgePointRepository;
+    private final KnowledgePointAnchorRepository knowledgePointAnchorRepository;
     private final KnowledgeRelationRepository knowledgeRelationRepository;
     private final KnowledgeBaseRepository knowledgeBaseRepository;
     private final RelationTypeService relationTypeService;
 
     public KnowledgeGraphService(
         KnowledgePointRepository knowledgePointRepository,
+        KnowledgePointAnchorRepository knowledgePointAnchorRepository,
         KnowledgeRelationRepository knowledgeRelationRepository,
         KnowledgeBaseRepository knowledgeBaseRepository,
         RelationTypeService relationTypeService
     ) {
         this.knowledgePointRepository = knowledgePointRepository;
+        this.knowledgePointAnchorRepository = knowledgePointAnchorRepository;
         this.knowledgeRelationRepository = knowledgeRelationRepository;
         this.knowledgeBaseRepository = knowledgeBaseRepository;
         this.relationTypeService = relationTypeService;
@@ -138,9 +143,114 @@ public class KnowledgeGraphService {
             allPoints.size(),
             allEdges.size(),
             truncated,
-            warnings
+            warnings,
+            List.of()
         );
         return new KnowledgeGraphDto(nodes, edges, meta);
+    }
+
+    @Transactional(readOnly = true)
+    public KnowledgeGraphDto getPageRelationGraph(String kbId, String pageId, Integer maxNodes) {
+        ensureKbExists(kbId);
+        int safeMaxNodes = Math.clamp(maxNodes == null ? DEFAULT_MAX_NODES : maxNodes, 1, 2000);
+        String trimmedPageId = normalize(pageId);
+        if (trimmedPageId == null) {
+            return emptyPageRelationGraph("");
+        }
+
+        String pageLocator = "page:" + trimmedPageId;
+        String pagePrefix = pageLocator + ":";
+        LinkedHashSet<String> pagePointIds = loadPageRelatedPointIds(kbId, pageLocator, pagePrefix);
+
+        Map<String, KnowledgePointEntity> allPoints = loadPointMap(kbId);
+        List<PointEdge> pageEdges = new ArrayList<>();
+        LinkedHashSet<String> neighborIds = new LinkedHashSet<>();
+
+        for (KnowledgeRelationEntity entity : knowledgeRelationRepository.findByKbIdOrderByUpdatedAtDescCreatedAtDesc(kbId)) {
+            String from = normalize(entity.getFromPointId());
+            String to = normalize(entity.getToPointId());
+            if (from == null || to == null) {
+                continue;
+            }
+            boolean fromOnPage = pagePointIds.contains(from);
+            boolean toOnPage = pagePointIds.contains(to);
+            if (!fromOnPage && !toOnPage) {
+                continue;
+            }
+            pageEdges.add(toPointEdge(entity));
+            if (!fromOnPage) {
+                neighborIds.add(from);
+            }
+            if (!toOnPage) {
+                neighborIds.add(to);
+            }
+        }
+
+        LinkedHashSet<String> selectedPointIds = new LinkedHashSet<>(pagePointIds);
+        for (String neighborId : neighborIds) {
+            if (selectedPointIds.size() >= safeMaxNodes) {
+                break;
+            }
+            if (allPoints.containsKey(neighborId)) {
+                selectedPointIds.add(neighborId);
+            }
+        }
+
+        List<String> warnings = new ArrayList<>();
+        if (pagePointIds.isEmpty()) {
+            warnings.add("当前文档暂无知识点证据绑定");
+        }
+        boolean truncated = pagePointIds.size() + neighborIds.size() > selectedPointIds.size();
+        if (truncated) {
+            warnings.add("关联节点已达上限，部分外部关联未展示");
+        }
+
+        List<KnowledgeGraphNodeDto> nodes = selectedPointIds.stream()
+            .map(id -> toNodeDto(allPoints.get(id)))
+            .filter(java.util.Objects::nonNull)
+            .toList();
+
+        Set<String> nodeIdSet = new HashSet<>(selectedPointIds);
+        List<KnowledgeGraphEdgeDto> edges = pageEdges.stream()
+            .filter(edge -> nodeIdSet.contains(edge.fromPointId()) && nodeIdSet.contains(edge.toPointId()))
+            .map(this::toEdgeDto)
+            .toList();
+
+        KnowledgeGraphMetaDto meta = new KnowledgeGraphMetaDto(
+            "page",
+            trimmedPageId,
+            allPoints.size(),
+            pageEdges.size(),
+            truncated,
+            warnings,
+            List.copyOf(pagePointIds)
+        );
+        return new KnowledgeGraphDto(nodes, edges, meta);
+    }
+
+    private KnowledgeGraphDto emptyPageRelationGraph(String pageId) {
+        KnowledgeGraphMetaDto meta = new KnowledgeGraphMetaDto(
+            "page",
+            pageId,
+            0,
+            0,
+            false,
+            List.of("当前文档暂无知识点证据绑定"),
+            List.of()
+        );
+        return new KnowledgeGraphDto(List.of(), List.of(), meta);
+    }
+
+    private LinkedHashSet<String> loadPageRelatedPointIds(String kbId, String pageLocator, String pagePrefix) {
+        LinkedHashSet<String> pagePointIds = new LinkedHashSet<>();
+        for (KnowledgePointAnchorEntity anchor : knowledgePointAnchorRepository.findByPageLocatorPrefix(pageLocator, pagePrefix)) {
+            KnowledgePointEntity entity = knowledgePointRepository.findById(anchor.getKnowledgePointId()).orElse(null);
+            if (entity == null || !kbId.equals(entity.getKbId())) {
+                continue;
+            }
+            pagePointIds.add(entity.getId());
+        }
+        return pagePointIds;
     }
 
     private BfsResult bfsCentered(String center, int depth, int maxNodes, List<PointEdge> edges) {

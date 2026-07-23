@@ -94,6 +94,17 @@ export interface SpannedBlockInfo {
 /** 知识标记来源：缺省视为 user（兼容旧数据） */
 export type KnowledgeMarkerSource = 'user' | 'ai'
 
+/** PDF 摘页块内纵向划选区域锚点（页码 + ratio） */
+export interface PdfRegionAnchor {
+  blockId: string;
+  /** Stable PDF file id — survives PDF↔link conversion when blockId is recreated. */
+  fileId?: string;
+  startPage: number;
+  endPage: number;
+  clipTop: number;
+  clipBottom: number;
+}
+
 export interface TextAnnotation {
   id: string;
   selectedText: string;
@@ -109,9 +120,11 @@ export interface TextAnnotation {
   anchorVersion?: number;
   lastResolvedAt?: number;
   unresolved?: boolean;
-  scope?: 'text' | 'block' | 'compound';
+  scope?: 'text' | 'block' | 'compound' | 'pdfRegion';
   spannedBlockIds?: string[];
   spannedBlockMetadata?: SpannedBlockInfo[];
+  /** PDF 摘页块内划选区域（scope=pdfRegion） */
+  pdfRegion?: PdfRegionAnchor;
   /** note（默认）、依据标注、或已标记的资源节选 */
   kind?: 'note' | 'basis' | 'excerpt';
   /** 依据标注绑定的外部资源节选 */
@@ -505,7 +518,7 @@ export interface KnowledgePointAnchor {
   primary: boolean;
 }
 
-export type KnowledgeGraphMode = 'full' | 'centered' | 'prerequisite';
+export type KnowledgeGraphMode = 'full' | 'centered' | 'prerequisite' | 'page';
 export type KnowledgeGraphDirection = 'out' | 'in' | 'both';
 
 export interface KnowledgeGraphNode {
@@ -534,6 +547,8 @@ export interface KnowledgeGraphMeta {
   totalRelations: number;
   truncated: boolean;
   warnings: string[];
+  /** Page-local knowledge point ids (page relation graph mode). */
+  focusPointIds?: string[];
 }
 
 export interface KnowledgeGraphResponse {

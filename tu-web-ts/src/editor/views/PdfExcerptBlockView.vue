@@ -1,7 +1,9 @@
 <script setup lang="ts">
-import { computed, inject, markRaw, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
+import { computed, inject, markRaw, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch, type ComputedRef } from 'vue'
 import { nodeViewProps, NodeViewWrapper } from '@tiptap/vue-3'
 import { buildFileUrl } from '@/api/fileStorage'
+import type { PdfRegionAnchor, TextAnnotation } from '@/api/types'
+import { collectPdfRegionNotesForBlock } from '@/utils/pdfRegionNotes'
 import ResizableBlockWrapper from '../components/ResizableBlockWrapper.vue'
 import {
   PDF_EXCERPT_DEFAULT_HEIGHT,
@@ -23,6 +25,7 @@ import {
   normalizePdfClipRatio,
   clipAttrsFromVerticalHits,
   PDF_EXCERPT_CLIP_SELECT_EVENT,
+  PDF_EXCERPT_FIT_HEIGHT_EVENT,
   type PdfPageVerticalHit,
 } from '@/utils/pdfExcerpt'
 import { syncResourceHrefWithPdfPages } from '@/editor/linkLabelSuggestQuery'
@@ -42,9 +45,24 @@ import { useExpandCollapse } from '@/composables/useExpandCollapse'
 const props = defineProps(nodeViewProps)
 
 const onEditPdfExcerptSource = inject<(blockId: string) => void>('onEditPdfExcerptSource', () => {})
+const onPublishPdfRegionNote = inject<(payload: PdfRegionAnchor) => void>('onPublishPdfRegionNote', () => {})
+const onPdfRegionAnnotationClick = inject<
+  (payload: { annotationId: string; event: MouseEvent }) => void
+>('onPdfRegionAnnotationClick', () => {})
+const pagePdfRegionAnnotations = inject<ComputedRef<TextAnnotation[]>>(
+  'pagePdfRegionAnnotations',
+  computed(() => []),
+)
 
 const blockId = computed(() => props.node.attrs.blockId || '')
 const fileId = computed(() => String(props.node.attrs.fileId || ''))
+
+const blockPdfRegionAnnotations = computed(() => (
+  collectPdfRegionNotesForBlock(pagePdfRegionAnnotations.value, {
+    blockId: blockId.value,
+    fileId: fileId.value,
+  })
+))
 const fileName = computed(() => String(props.node.attrs.fileName || 'PDF'))
 const viewMode = computed(() => parsePdfExcerptViewMode(String(props.node.attrs.viewMode || 'excerpt')))
 const startPage = computed(() => Number(props.node.attrs.startPage) || 1)
@@ -83,8 +101,12 @@ const clipPending = ref<{
   topHit: PdfPageVerticalHit
   bottomHit: PdfPageVerticalHit
 } | null>(null)
-/** Bumped on pages scroll so selection box re-measures anchored hits. */
-const clipSelectLayoutTick = ref(0)
+/** Bumped on pages scroll so selection box / PDF note overlays re-measure. */
+const overlayLayoutTick = ref(0)
+/** Hide PDF region notes while zoom re-layouts pages; show again after settle. */
+const pdfRegionNotesHiddenForZoom = ref(false)
+/** Persisted on the block (`notesVisible`); default false when unset. */
+const pdfRegionNotesVisible = computed(() => Boolean(props.node.attrs.notesVisible))
 
 let scrollHost: HTMLElement | null = null
 let wheelTarget: HTMLElement | null = null
@@ -94,11 +116,14 @@ let clipSelectRoot: HTMLElement | null = null
 /** Keep viewport center stable across zoom re-layout. */
 let pendingZoomCenter: { xRatio: number; yRatio: number } | null = null
 let zoomCenterRestoreRaf = 0
+let zoomNoteSettleTimer: ReturnType<typeof setTimeout> | null = null
 
 const pageRefs = new Map<number, HTMLElement>()
 let renderManager: PdfPageRenderManager | null = null
 let observer: IntersectionObserver | null = null
 let resizeObserver: ResizeObserver | null = null
+/** Skip ResizeObserver→re-render while applying fit-height (avoids scrollbar width thrash). */
+let suppressPdfResizeObserver = false
 let boundUrl = ''
 let loadGeneration = 0
 let resolvedStartPage = 1
@@ -120,10 +145,20 @@ const metaLabel = computed(() => formatPdfExcerptMetaLabel(
 /** Below `.page-chrome` (z-index 30) — document overlays must never cover page toolbar. */
 const CLIP_SELECT_BOX_Z_INDEX = 20
 
-function measureClipSelectBox(topClientY: number, bottomClientY: number) {
+/**
+ * Measure a fixed overlay covering [topClientY, bottomClientY] within the PDF pages viewport.
+ * @param edgeMarkers When true (clip-select), scrolled-out ranges leave a 3px stub on the
+ *   band edge. When false (saved notes), fully out-of-band ranges return null so overlays
+ *   never hang at the edge without their PDF target.
+ */
+function measureClipSelectBox(
+  topClientY: number,
+  bottomClientY: number,
+  options?: { edgeMarkers?: boolean },
+) {
   const root = pagesScrollRef.value
   if (!root) return null
-  clipSelectLayoutTick.value
+  overlayLayoutTick.value
   const rect = root.getBoundingClientRect()
   const toolbarBottom = getDocumentToolbarBottom()
   // Visible band: intersection of PDF pages viewport and area below document toolbar.
@@ -133,21 +168,19 @@ function measureClipSelectBox(topClientY: number, bottomClientY: number) {
 
   const top = Math.min(topClientY, bottomClientY)
   const bottom = Math.max(topClientY, bottomClientY)
-  const clampedTop = Math.max(bandTop, Math.min(bandBottom, top))
-  const clampedBottom = Math.max(bandTop, Math.min(bandBottom, bottom))
-  if (clampedBottom - clampedTop < 1) {
-    // Anchor scrolled out of the visible band — thin edge marker only inside the band.
-    if (bottom < bandTop) {
-      return {
-        position: 'fixed' as const,
-        left: `${rect.left}px`,
-        width: `${rect.width}px`,
-        top: `${bandTop}px`,
-        height: '3px',
-        zIndex: CLIP_SELECT_BOX_Z_INDEX,
+  // Fully outside the visible band — never pin notes to the edge.
+  if (bottom <= bandTop || top >= bandBottom) {
+    if (options?.edgeMarkers) {
+      if (bottom <= bandTop) {
+        return {
+          position: 'fixed' as const,
+          left: `${rect.left}px`,
+          width: `${rect.width}px`,
+          top: `${bandTop}px`,
+          height: '3px',
+          zIndex: CLIP_SELECT_BOX_Z_INDEX,
+        }
       }
-    }
-    if (top > bandBottom) {
       return {
         position: 'fixed' as const,
         left: `${rect.left}px`,
@@ -159,6 +192,11 @@ function measureClipSelectBox(topClientY: number, bottomClientY: number) {
     }
     return null
   }
+
+  const clampedTop = Math.max(bandTop, top)
+  const clampedBottom = Math.min(bandBottom, bottom)
+  if (clampedBottom - clampedTop < 1) return null
+
   return {
     position: 'fixed' as const,
     left: `${rect.left}px`,
@@ -176,19 +214,67 @@ function getDocumentToolbarBottom(): number {
 }
 
 const clipSelectBoxStyle = computed(() => {
-  clipSelectLayoutTick.value
+  overlayLayoutTick.value
   const pending = clipPending.value
   if (pending) {
     const topY = hitToClientY(pending.topHit)
     const bottomY = hitToClientY(pending.bottomHit)
     if (topY == null || bottomY == null) return null
-    return measureClipSelectBox(topY, bottomY)
+    return measureClipSelectBox(topY, bottomY, { edgeMarkers: true })
   }
   const drag = clipDrag.value
   if (!drag) return null
   const anchorY = hitToClientY(drag.anchorHit)
   if (anchorY == null) return null
-  return measureClipSelectBox(anchorY, drag.currentClientY)
+  return measureClipSelectBox(anchorY, drag.currentClientY, { edgeMarkers: true })
+})
+
+interface PdfRegionOverlayItem {
+  annotationId: string
+  color: string
+  boxStyle: Record<string, string | number>
+  markerStyle: Record<string, string | number>
+}
+
+const pdfRegionOverlays = computed((): PdfRegionOverlayItem[] => {
+  overlayLayoutTick.value
+  if (!pdfRegionNotesVisible.value || pdfRegionNotesHiddenForZoom.value) return []
+  const root = pagesScrollRef.value
+  if (!root) return []
+
+  return blockPdfRegionAnnotations.value.flatMap((ann) => {
+    const region = ann.pdfRegion
+    if (!region) return []
+    const topY = hitToClientY({ pageNumber: region.startPage, ratio: region.clipTop })
+    const bottomY = hitToClientY({ pageNumber: region.endPage, ratio: region.clipBottom })
+    if (topY == null || bottomY == null) return []
+    const box = measureClipSelectBox(topY, bottomY, { edgeMarkers: false })
+    if (!box) return []
+
+    const topPx = Number.parseFloat(String(box.top))
+    const leftPx = Number.parseFloat(String(box.left))
+    const widthPx = Number.parseFloat(String(box.width))
+    const heightPx = Number.parseFloat(String(box.height))
+    if (!Number.isFinite(topPx) || !Number.isFinite(leftPx) || !Number.isFinite(widthPx)) return []
+
+    const markerTop = topPx + Math.max(0, heightPx) / 2 - 14
+    return [{
+      annotationId: ann.id,
+      color: ann.color || '#FFE082',
+      boxStyle: {
+        ...box,
+        pointerEvents: 'auto',
+        cursor: 'pointer',
+        zIndex: CLIP_SELECT_BOX_Z_INDEX - 1,
+      },
+      markerStyle: {
+        position: 'fixed' as const,
+        top: `${markerTop}px`,
+        left: `${leftPx + widthPx + 6}px`,
+        zIndex: CLIP_SELECT_BOX_Z_INDEX,
+      },
+    }]
+  })
 })
 
 /** Floating confirm bar above the selection marquee (teleported; no PDF layout shift). */
@@ -224,6 +310,15 @@ const sidebarEmptyHint = computed(() => (
   sidebarSource.value === 'none'
     ? '该 PDF 无书签目录，请滚动浏览各页'
     : ''
+))
+
+const zoomLabel = computed(() => `${Math.round(zoomScale.value * 100)}%`)
+
+/** Show whenever PDF pages are ready (not hover-gated — hover was easy to miss / covered). */
+const showZoomBadge = computed(() => (
+  !loading.value
+  && !loadError.value
+  && pageCanvases.value.length > 0
 ))
 
 function setPageRef(pageNumber: number, el: unknown) {
@@ -328,7 +423,11 @@ function onSidebarResizeMouseUp() {
   sidebarDragging = false
   document.removeEventListener('mousemove', onSidebarResizeMouseMove)
   document.removeEventListener('mouseup', onSidebarResizeMouseUp)
-  schedulePdfLayoutAfterSidebarResize()
+  const firstPage = pageCanvases.value[0]?.pageNumber
+  if (firstPage != null) {
+    renderManager?.handleResize(firstPage)
+    renderManager?.flushPendingResize()
+  }
 }
 
 function onSidebarResizeMouseDown(event: MouseEvent) {
@@ -436,36 +535,65 @@ function unbindClipSelectListeners() {
   document.removeEventListener('keydown', onClipSelectKeyDown, true)
 }
 
-function onClipSelectPagesScroll() {
-  if (clipDrag.value || clipPending.value) {
-    clipSelectLayoutTick.value += 1
+function onOverlayLayoutScroll() {
+  if (
+    clipDrag.value
+    || clipPending.value
+    || blockPdfRegionAnnotations.value.length > 0
+  ) {
+    overlayLayoutTick.value += 1
   }
 }
 
-let clipSelectScrollRoot: HTMLElement | null = null
+let overlayScrollBound = false
+let overlayScrollRoot: HTMLElement | null = null
 
-function bindClipSelectScrollListener() {
-  pagesScrollRef.value?.addEventListener('scroll', onClipSelectPagesScroll, { passive: true })
-  clipSelectScrollRoot = pagesScrollRef.value?.closest('.content-scroll') as HTMLElement | null
-  clipSelectScrollRoot?.addEventListener('scroll', onClipSelectPagesScroll, { passive: true })
-  window.addEventListener('scroll', onClipSelectPagesScroll, { passive: true, capture: true })
-  window.addEventListener('resize', onClipSelectPagesScroll, { passive: true })
+function bindOverlayScrollListeners() {
+  if (overlayScrollBound) return
+  overlayScrollBound = true
+  pagesScrollRef.value?.addEventListener('scroll', onOverlayLayoutScroll, { passive: true })
+  overlayScrollRoot = pagesScrollRef.value?.closest('.content-scroll') as HTMLElement | null
+  overlayScrollRoot?.addEventListener('scroll', onOverlayLayoutScroll, { passive: true })
+  window.addEventListener('scroll', onOverlayLayoutScroll, { passive: true, capture: true })
+  window.addEventListener('resize', onOverlayLayoutScroll, { passive: true })
 }
 
-function unbindClipSelectScrollListener() {
-  pagesScrollRef.value?.removeEventListener('scroll', onClipSelectPagesScroll)
-  clipSelectScrollRoot?.removeEventListener('scroll', onClipSelectPagesScroll)
-  clipSelectScrollRoot = null
-  window.removeEventListener('scroll', onClipSelectPagesScroll, true)
-  window.removeEventListener('resize', onClipSelectPagesScroll)
+function unbindOverlayScrollListeners() {
+  if (!overlayScrollBound) return
+  overlayScrollBound = false
+  pagesScrollRef.value?.removeEventListener('scroll', onOverlayLayoutScroll)
+  overlayScrollRoot?.removeEventListener('scroll', onOverlayLayoutScroll)
+  overlayScrollRoot = null
+  window.removeEventListener('scroll', onOverlayLayoutScroll, true)
+  window.removeEventListener('resize', onOverlayLayoutScroll)
+}
+
+function syncOverlayScrollListeners() {
+  if (
+    clipSelectActive.value
+    || (pdfRegionNotesVisible.value && blockPdfRegionAnnotations.value.length > 0)
+  ) {
+    void nextTick().then(() => bindOverlayScrollListeners())
+  } else {
+    unbindOverlayScrollListeners()
+  }
+}
+
+function togglePdfRegionNotesVisible() {
+  const next = !pdfRegionNotesVisible.value
+  props.updateAttributes({ notesVisible: next })
+  if (next) {
+    overlayLayoutTick.value += 1
+  }
+  void nextTick().then(() => syncOverlayScrollListeners())
 }
 
 function cancelClipSelect() {
   unbindClipSelectListeners()
-  unbindClipSelectScrollListener()
   clipDrag.value = null
   clipPending.value = null
   clipSelectActive.value = false
+  syncOverlayScrollListeners()
 }
 
 function startClipSelect() {
@@ -474,7 +602,7 @@ function startClipSelect() {
   clipDrag.value = null
   clipPending.value = null
   document.addEventListener('keydown', onClipSelectKeyDown, true)
-  void nextTick().then(() => bindClipSelectScrollListener())
+  syncOverlayScrollListeners()
 }
 
 function toggleClipSelect() {
@@ -546,7 +674,7 @@ function onClipSelectMouseUp(event: MouseEvent) {
   // Keep hint bar mounted (no MessageBox / body scroll-lock) so PDF layout and
   // the fixed selection overlay stay aligned; saved ratios use these hits as-is.
   clipPending.value = orderHits(drag.anchorHit, endHit)
-  clipSelectLayoutTick.value += 1
+  overlayLayoutTick.value += 1
 }
 
 function confirmClipSelect() {
@@ -576,6 +704,33 @@ function confirmClipSelect() {
   cancelClipSelect()
 }
 
+function publishClipNote() {
+  const pending = clipPending.value
+  if (!pending || !blockId.value || !fileId.value) return
+  const next = clipAttrsFromVerticalHits(pending.topHit, pending.bottomHit)
+  onPublishPdfRegionNote({
+    blockId: blockId.value,
+    fileId: fileId.value,
+    startPage: next.startPage,
+    endPage: next.endPage,
+    clipTop: next.clipTop,
+    clipBottom: next.clipBottom,
+  })
+  // Show notes after publish so the new marker is visible immediately (persisted).
+  props.updateAttributes({ notesVisible: true })
+  cancelClipSelect()
+  void nextTick().then(() => {
+    syncOverlayScrollListeners()
+    overlayLayoutTick.value += 1
+  })
+}
+
+function handlePdfRegionOverlayClick(annotationId: string, event: MouseEvent) {
+  event.preventDefault()
+  event.stopPropagation()
+  onPdfRegionAnnotationClick({ annotationId, event })
+}
+
 function redoClipSelect() {
   clipPending.value = null
   clipDrag.value = null
@@ -585,21 +740,124 @@ function onPdfClipSelectEvent() {
   startClipSelect()
 }
 
+function onPdfFitHeightEvent() {
+  fitHeightToContent()
+}
+
 function bindClipSelectEvent() {
   unbindClipSelectEvent()
-  clipSelectRoot = pdfBlockRef.value?.closest<HTMLElement>('[data-block-id]') ?? null
+  // Prefer outer NodeView root so toolbar CustomEvents (dispatched on first
+  // `[data-block-id]`) reach the same element without relying on bubble.
+  clipSelectRoot = (
+    pdfBlockRef.value?.closest('.pdf-excerpt-block-nv')
+    ?? pdfBlockRef.value?.closest('[data-block-id]')
+  ) as HTMLElement | null
   clipSelectRoot?.addEventListener(PDF_EXCERPT_CLIP_SELECT_EVENT, onPdfClipSelectEvent)
+  clipSelectRoot?.addEventListener(PDF_EXCERPT_FIT_HEIGHT_EVENT, onPdfFitHeightEvent)
 }
 
 function unbindClipSelectEvent() {
   clipSelectRoot?.removeEventListener(PDF_EXCERPT_CLIP_SELECT_EVENT, onPdfClipSelectEvent)
+  clipSelectRoot?.removeEventListener(PDF_EXCERPT_FIT_HEIGHT_EVENT, onPdfFitHeightEvent)
   clipSelectRoot = null
 }
 
 function onResize(_width: number | null, nextHeight: number | null) {
   if (nextHeight == null) return
   const clamped = Math.min(PDF_EXCERPT_MAX_HEIGHT, Math.max(PDF_EXCERPT_MIN_HEIGHT, Math.round(nextHeight)))
+  if (Math.abs(clamped - height.value) < 1) return
   props.updateAttributes({ height: clamped })
+}
+
+/** Fixed chrome above the pages scrollport (block header / meta / hints). */
+function measurePdfBlockChromeHeight(): number {
+  const wrap = pdfBlockRef.value?.closest('.resizable-block-wrapper') as HTMLElement | null
+  const pdfBlock = pdfBlockRef.value
+  if (!wrap || !pdfBlock) return 0
+  let chrome = 0
+  for (const child of Array.from(wrap.children)) {
+    const el = child as HTMLElement
+    if (el.classList.contains('resizable-handle')) continue
+    if (el === pdfBlock || el.contains(pdfBlock)) continue
+    chrome += el.offsetHeight
+  }
+  for (const child of Array.from(pdfBlock.children)) {
+    const el = child as HTMLElement
+    if (el.classList.contains('pdf-excerpt-block__content')) continue
+    chrome += el.offsetHeight
+  }
+  return chrome
+}
+
+/**
+ * Natural height of pages scroller content at current zoom/clip.
+ * Prefer summing page boxes; fall back to model heights if DOM not ready.
+ * Avoid scrollHeight/clientHeight — scrollbar width feeds back into PDF re-render.
+ */
+function measurePagesContentHeight(): number {
+  const pagesEl = pagesScrollRef.value
+  if (!pagesEl) return 0
+  const style = getComputedStyle(pagesEl)
+  const padY = (parseFloat(style.paddingTop) || 0) + (parseFloat(style.paddingBottom) || 0)
+  const gap = parseFloat(style.rowGap || style.gap) || 12
+
+  const flowKids = Array.from(pagesEl.children).filter((node): node is HTMLElement => (
+    node instanceof HTMLElement
+  ))
+  if (flowKids.length > 0) {
+    let sum = 0
+    flowKids.forEach((el, index) => {
+      sum += el.offsetHeight
+      if (index < flowKids.length - 1) sum += gap
+    })
+    return Math.ceil(sum + padY)
+  }
+
+  // DOM pages not mounted yet — estimate from placeholder / clip model.
+  const pages = pageCanvases.value
+  if (pages.length === 0) return 0
+  const labelH = 22
+  let sum = 0
+  pages.forEach((page, index) => {
+    const fullH = pageFullHeight(page)
+    const clip = pageClipFor(page.pageNumber)
+    const body = clip
+      ? Math.max(24, (clip.clipBottom - clip.clipTop) * fullH)
+      : fullH
+    sum += labelH + body
+    if (index < pages.length - 1) sum += gap
+  })
+  return Math.ceil(sum + padY)
+}
+
+/**
+ * Set wrapper height so pages area exactly fits current zoom/clip content
+ * (no inner scrollbar, no empty slack).
+ */
+function fitHeightToContent() {
+  if (loading.value || loadError.value || pageCanvases.value.length === 0) return
+  if (!pagesScrollRef.value || !pdfBlockRef.value) return
+
+  const apply = () => {
+    const chrome = measurePdfBlockChromeHeight()
+    const content = measurePagesContentHeight()
+    if (content <= 0) return
+    const next = Math.round(chrome + content)
+    if (Math.abs(next - height.value) < 2) return
+    suppressPdfResizeObserver = true
+    onResize(null, next)
+    // Re-enable after layout + optional scrollbar width settle.
+    window.setTimeout(() => {
+      suppressPdfResizeObserver = false
+    }, 120)
+  }
+
+  // One layout pass after current zoom/clip styles settle — avoid double-apply oscillation.
+  void nextTick().then(() => {
+    requestAnimationFrame(() => {
+      apply()
+    })
+  })
 }
 
 function disposeRenderManager() {
@@ -618,10 +876,14 @@ function createRenderManager() {
     },
     onPlaceholderHeight: (pageNumber, placeholderHeight) => {
       const index = pageCanvases.value.findIndex((page) => page.pageNumber === pageNumber)
-      if (index >= 0) {
-        pageCanvases.value[index] = { ...pageCanvases.value[index], placeholderHeight }
-      }
+      if (index < 0) return
+      const prev = pageCanvases.value[index]
+      if (Math.abs((prev.placeholderHeight || 0) - placeholderHeight) < 1) return
+      pageCanvases.value[index] = { ...prev, placeholderHeight }
       scheduleRestoreZoomCenter()
+      if (blockPdfRegionAnnotations.value.length > 0) {
+        overlayLayoutTick.value += 1
+      }
     },
   })
   renderManager.setRange(resolvedStartPage, resolvedEndPage)
@@ -657,6 +919,24 @@ function scheduleRestoreZoomCenter() {
   })
 }
 
+function scheduleShowPdfRegionNotesAfterZoom() {
+  pdfRegionNotesHiddenForZoom.value = true
+  if (zoomNoteSettleTimer) clearTimeout(zoomNoteSettleTimer)
+  // After zoom center restore (120ms) + page canvas re-layout, remeasure and show.
+  zoomNoteSettleTimer = setTimeout(() => {
+    zoomNoteSettleTimer = null
+    restoreZoomCenter()
+    pendingZoomCenter = null
+    requestAnimationFrame(() => {
+      overlayLayoutTick.value += 1
+      requestAnimationFrame(() => {
+        overlayLayoutTick.value += 1
+        pdfRegionNotesHiddenForZoom.value = false
+      })
+    })
+  }, 180)
+}
+
 function applyZoomScale(nextScale: number) {
   const clamped = Math.min(
     PDF_EXCERPT_ZOOM_MAX,
@@ -667,11 +947,7 @@ function applyZoomScale(nextScale: number) {
   zoomScale.value = clamped
   renderManager?.setZoomScale(clamped)
   scheduleRestoreZoomCenter()
-  // Heights update after re-render; clear anchor shortly after layout settles.
-  window.setTimeout(() => {
-    restoreZoomCenter()
-    pendingZoomCenter = null
-  }, 120)
+  scheduleShowPdfRegionNotesAfterZoom()
 }
 
 function flushZoomDelta() {
@@ -726,6 +1002,7 @@ function setupObserver() {
   }, { root, threshold: 0.05, rootMargin: '120px 0px' })
 
   resizeObserver = new ResizeObserver(() => {
+    if (suppressPdfResizeObserver) return
     const firstPage = pageCanvases.value[0]?.pageNumber
     if (firstPage != null) {
       renderManager?.handleResize(firstPage)
@@ -857,7 +1134,21 @@ onMounted(() => {
   void nextTick().then(() => {
     bindWheelListener()
     bindClipSelectEvent()
+    syncOverlayScrollListeners()
   })
+})
+
+watch(
+  () => blockPdfRegionAnnotations.value.length,
+  () => {
+    syncOverlayScrollListeners()
+    overlayLayoutTick.value += 1
+  },
+)
+
+watch(pdfRegionNotesVisible, () => {
+  syncOverlayScrollListeners()
+  overlayLayoutTick.value += 1
 })
 
 watch(fileUrl, () => {
@@ -905,10 +1196,15 @@ onBeforeUnmount(() => {
     cancelAnimationFrame(zoomCenterRestoreRaf)
     zoomCenterRestoreRaf = 0
   }
+  if (zoomNoteSettleTimer) {
+    clearTimeout(zoomNoteSettleTimer)
+    zoomNoteSettleTimer = null
+  }
+  pdfRegionNotesHiddenForZoom.value = false
   pendingZoomCenter = null
   pendingZoomDelta = 0
   cancelClipSelect()
-  unbindClipSelectScrollListener()
+  unbindOverlayScrollListeners()
   unbindClipSelectEvent()
   unbindWheelListener()
   scrollHost?.removeEventListener(PDF_EXCERPT_SCROLL_EVENT, onPdfExcerptScrollEvent as EventListener)
@@ -960,6 +1256,28 @@ onBeforeUnmount(() => {
           @click.stop="toggleClipSelect"
         >
           {{ clipSelectActive ? '取消划选' : '划选裁剪' }}
+        </button>
+        <button
+          v-if="blockPdfRegionAnnotations.length > 0"
+          type="button"
+          class="pdf-excerpt-block__edit-source"
+          :class="{ 'pdf-excerpt-block__edit-source--active': pdfRegionNotesVisible }"
+          data-node-view-no-drag
+          :title="pdfRegionNotesVisible ? '隐藏 PDF 划选笔记' : '显示 PDF 划选笔记'"
+          @mousedown.stop
+          @click.stop="togglePdfRegionNotesVisible"
+        >
+          {{ pdfRegionNotesVisible ? '隐藏笔记' : `显示笔记${blockPdfRegionAnnotations.length > 1 ? ` ${blockPdfRegionAnnotations.length}` : ''}` }}
+        </button>
+        <button
+          type="button"
+          class="pdf-excerpt-block__edit-source"
+          data-node-view-no-drag
+          title="按当前缩放将块高度调为完整显示全部内容（无滚动条、无空白）"
+          @mousedown.stop
+          @click.stop="fitHeightToContent"
+        >
+          高度 100%
         </button>
       </template>
 
@@ -1068,6 +1386,13 @@ onBeforeUnmount(() => {
           </div>
           <div class="pdf-excerpt-block__main">
             <div
+              v-show="showZoomBadge"
+              class="pdf-excerpt-block__zoom-badge"
+              aria-live="polite"
+            >
+              {{ zoomLabel }}
+            </div>
+            <div
               ref="pagesScrollRef"
               class="pdf-excerpt-block__pages"
               :class="{
@@ -1112,14 +1437,21 @@ onBeforeUnmount(() => {
         @mousedown.stop
       >
         <span class="pdf-excerpt-block__clip-confirm-text">
-          确认应用：{{ clipPendingRangeLabel }}？
+          {{ clipPendingRangeLabel }}
         </span>
         <button
           type="button"
           class="pdf-excerpt-block__clip-confirm-btn pdf-excerpt-block__clip-confirm-btn--primary"
           @click.stop="confirmClipSelect"
         >
-          应用
+          应用裁剪
+        </button>
+        <button
+          type="button"
+          class="pdf-excerpt-block__clip-confirm-btn pdf-excerpt-block__clip-confirm-btn--note"
+          @click.stop="publishClipNote"
+        >
+          发布笔记
         </button>
         <button
           type="button"
@@ -1136,6 +1468,29 @@ onBeforeUnmount(() => {
           取消
         </button>
       </div>
+      <template v-for="overlay in pdfRegionOverlays" :key="overlay.annotationId">
+        <div
+          class="pdf-excerpt-block__pdf-note-region"
+          :style="{
+            ...overlay.boxStyle,
+            borderColor: overlay.color,
+            backgroundColor: `${overlay.color}33`,
+          }"
+          :data-tu-annotation-id="overlay.annotationId"
+          @mousedown.stop
+          @click.stop="handlePdfRegionOverlayClick(overlay.annotationId, $event)"
+        />
+        <button
+          type="button"
+          class="pdf-excerpt-block__pdf-note-marker"
+          :style="overlay.markerStyle"
+          :data-tu-annotation-id="overlay.annotationId"
+          @mousedown.stop
+          @click.stop="handlePdfRegionOverlayClick(overlay.annotationId, $event)"
+        >
+          笔记
+        </button>
+      </template>
     </Teleport>
   </node-view-wrapper>
 </template>
@@ -1359,6 +1714,7 @@ onBeforeUnmount(() => {
   display: flex;
   overflow: hidden;
   cursor: default;
+  position: relative;
 }
 
 .pdf-excerpt-block__pages {
@@ -1374,6 +1730,24 @@ onBeforeUnmount(() => {
   box-sizing: border-box;
   position: relative;
   background: transparent;
+}
+
+.pdf-excerpt-block__zoom-badge {
+  /* Overlay on the main pane (not inside the scrollport) so it stays visible while scrolling. */
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 12;
+  margin: 0;
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: rgba(15, 23, 42, 0.78);
+  color: #f8fafc;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.4;
+  pointer-events: none;
+  user-select: none;
 }
 
 .pdf-excerpt-block__warn {
@@ -1516,5 +1890,43 @@ onBeforeUnmount(() => {
   border-color: #0958d9;
   background: #0958d9;
   color: #fff;
+}
+
+.pdf-excerpt-block__clip-confirm-btn--note {
+  border-color: #f59e0b;
+  background: #fffbeb;
+  color: #b45309;
+}
+
+.pdf-excerpt-block__clip-confirm-btn--note:hover {
+  border-color: #d97706;
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.pdf-excerpt-block__pdf-note-region {
+  box-sizing: border-box;
+  border: 2px solid #ffe082;
+  background: rgba(255, 224, 130, 0.28);
+}
+
+.pdf-excerpt-block__pdf-note-marker {
+  box-sizing: border-box;
+  padding: 2px 8px;
+  border: 1px solid #fbbf24;
+  border-radius: 4px;
+  background: #fffbeb;
+  color: #b45309;
+  font-size: 11px;
+  line-height: 1.4;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.1);
+  pointer-events: auto;
+}
+
+.pdf-excerpt-block__pdf-note-marker:hover {
+  border-color: #f59e0b;
+  background: #fef3c7;
+  color: #92400e;
 }
 </style>

@@ -21,6 +21,7 @@ import com.tu.backend.contenttree.repository.ContentTreeNodeRepository;
 import com.tu.backend.contenttree.repository.ContentTreeScopeRepository;
 import com.tu.backend.page.entity.PageEntity;
 import com.tu.backend.page.repository.PageRepository;
+import jakarta.persistence.EntityManager;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -36,19 +37,22 @@ public class ContentTreeNodeService {
     private final PageRepository pageRepository;
     private final PageContentRepository pageContentRepository;
     private final ObjectMapper objectMapper;
+    private final EntityManager entityManager;
 
     public ContentTreeNodeService(
         ContentTreeNodeRepository nodeRepository,
         ContentTreeScopeRepository scopeRepository,
         PageRepository pageRepository,
         PageContentRepository pageContentRepository,
-        ObjectMapper objectMapper
+        ObjectMapper objectMapper,
+        EntityManager entityManager
     ) {
         this.nodeRepository = nodeRepository;
         this.scopeRepository = scopeRepository;
         this.pageRepository = pageRepository;
         this.pageContentRepository = pageContentRepository;
         this.objectMapper = objectMapper;
+        this.entityManager = entityManager;
     }
 
     @Transactional(readOnly = true)
@@ -134,24 +138,28 @@ public class ContentTreeNodeService {
             ScopeType.PAGE,
             pageId
         );
-        Map<String, ContentTreeNodeEntity> existingById = new HashMap<>();
+
+        // 保留用户手工填写的预估学时；重建时按 stable id 回填。
+        Map<String, BigDecimal> retainedHoursById = new HashMap<>(Math.max(16, existing.size() * 2));
         for (ContentTreeNodeEntity node : existing) {
-            existingById.put(node.getId(), node);
+            if (node.getEstimatedHours() != null) {
+                retainedHoursById.put(node.getId(), node.getEstimatedHours());
+            }
         }
 
-        Set<String> newIds = new HashSet<>();
-        // 用 LinkedHashMap 按 ID 去重：当 stableNodeId 因 title 规范化（trim/lowercase）
-        // 导致两条 extracted 输出相同 ID 时，保留后写入的，避免 saveAll 内 INSERT 冲突。
+        // 全量删除再插入：避免「已加载托管实体 + 批量 DELETE + 新建同 ID」在 flush 时
+        // 触发主键冲突，也避免 MySQL RR 下并发 merge 误判为 INSERT。
+        nodeRepository.deleteByScopeTypeAndScopeId(ScopeType.PAGE, pageId);
+        nodeRepository.flush();
+        entityManager.clear();
+
+        // LinkedHashMap 按 ID 去重：title 规范化后可能碰撞，保留后写入的。
         Map<String, ContentTreeNodeEntity> toSaveById = new LinkedHashMap<>();
         for (OutlineExtractor.ExtractedOutlineNode extractedNode : extracted) {
-            newIds.add(extractedNode.id());
-            ContentTreeNodeEntity entity = existingById.get(extractedNode.id());
-            if (entity == null) {
-                entity = new ContentTreeNodeEntity();
-                entity.setId(extractedNode.id());
-                entity.setScopeType(ScopeType.PAGE);
-                entity.setScopeId(pageId);
-            }
+            ContentTreeNodeEntity entity = new ContentTreeNodeEntity();
+            entity.setId(extractedNode.id());
+            entity.setScopeType(ScopeType.PAGE);
+            entity.setScopeId(pageId);
             entity.setParentId(extractedNode.parentId());
             entity.setTitle(extractedNode.title());
             entity.setSortOrder(extractedNode.sortOrder());
@@ -160,20 +168,8 @@ public class ContentTreeNodeService {
             entity.setSourceType(extractedNode.sourceType());
             entity.setPreviewText(extractedNode.previewText());
             entity.setBlockType(extractedNode.blockType());
+            entity.setEstimatedHours(retainedHoursById.get(extractedNode.id()));
             toSaveById.put(entity.getId(), entity);
-        }
-
-        // 先删除孤儿并立即 flush，确保 DELETE 在 INSERT 之前真正下到 DB，
-        // 否则同事务内 saveAll 的 INSERT 可能先于 DELETE 触发主键冲突。
-        List<ContentTreeNodeEntity> orphans = new ArrayList<>();
-        for (ContentTreeNodeEntity orphan : existing) {
-            if (!newIds.contains(orphan.getId())) {
-                orphans.add(orphan);
-            }
-        }
-        if (!orphans.isEmpty()) {
-            nodeRepository.deleteAllInBatch(orphans);
-            nodeRepository.flush();
         }
 
         List<ContentTreeNodeEntity> toSave = new ArrayList<>(toSaveById.values());

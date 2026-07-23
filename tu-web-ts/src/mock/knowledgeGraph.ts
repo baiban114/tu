@@ -11,7 +11,7 @@ import type {
   KnowledgePoint,
   KnowledgeRelation,
 } from '@/api/types';
-import { getKnowledgePointTreeMock } from '@/mock/knowledgePoint';
+import { getKnowledgePointTreeMock, getPageRelatedPointIdsMock } from '@/mock/knowledgePoint';
 import { listKnowledgeRelationsMock, listRelationTypesMock } from '@/mock/knowledgeRelation';
 
 const PREREQUISITE_TYPE = 'prerequisite';
@@ -289,7 +289,81 @@ export function getKnowledgeGraphMock(kbId: string, params: GetKnowledgeGraphPar
     totalRelations: allEdges.length,
     truncated,
     warnings,
+    focusPointIds: [],
   };
 
   return { nodes, edges, meta };
+}
+
+export function getPageRelationGraphMock(
+  kbId: string,
+  pageId: string,
+  maxNodes = DEFAULT_MAX_NODES,
+): KnowledgeGraphResponse {
+  const trimmedPageId = pageId.trim();
+  const allPoints = flattenTree(getKnowledgePointTreeMock(kbId));
+  const pointById = new Map(allPoints.map((item) => [item.id, item]));
+  const pagePointIds = new Set(getPageRelatedPointIdsMock(kbId, trimmedPageId));
+
+  const allRelations = loadAllRelations(kbId);
+  const validPointIds = new Set(allPoints.map((item) => item.id));
+  const allEdges = toPointEdges(kbId, allRelations, validPointIds, new Set(), 'full');
+  const pageEdges: PointEdge[] = [];
+  const neighborIds = new Set<string>();
+
+  for (const edge of allEdges) {
+    const fromOnPage = pagePointIds.has(edge.fromPointId);
+    const toOnPage = pagePointIds.has(edge.toPointId);
+    if (!fromOnPage && !toOnPage) continue;
+    pageEdges.push(edge);
+    if (!fromOnPage) neighborIds.add(edge.fromPointId);
+    if (!toOnPage) neighborIds.add(edge.toPointId);
+  }
+
+  const selectedIds = new Set<string>(pagePointIds);
+  for (const neighborId of neighborIds) {
+    if (selectedIds.size >= maxNodes) break;
+    if (pointById.has(neighborId)) selectedIds.add(neighborId);
+  }
+
+  const warnings: string[] = [];
+  if (pagePointIds.size === 0) {
+    warnings.push('当前文档暂无知识点证据绑定');
+  }
+  const truncated = pagePointIds.size + neighborIds.size > selectedIds.size;
+  if (truncated) {
+    warnings.push('关联节点已达上限，部分外部关联未展示');
+  }
+
+  const nodes = [...selectedIds]
+    .map((id) => pointById.get(id))
+    .filter((item): item is KnowledgePoint => Boolean(item))
+    .map(toGraphNode);
+
+  const nodeIdSet = new Set(selectedIds);
+  const edges: KnowledgeGraphEdge[] = pageEdges
+    .filter((edge) => nodeIdSet.has(edge.fromPointId) && nodeIdSet.has(edge.toPointId))
+    .map((edge) => ({
+      id: edge.id,
+      fromPointId: edge.fromPointId,
+      toPointId: edge.toPointId,
+      relationTypeKey: edge.relationTypeKey,
+      label: edge.label,
+      color: edge.color,
+      bidirectional: edge.bidirectional,
+    }));
+
+  return {
+    nodes,
+    edges,
+    meta: {
+      mode: 'page',
+      centerPointId: trimmedPageId,
+      totalPoints: allPoints.length,
+      totalRelations: pageEdges.length,
+      truncated,
+      warnings,
+      focusPointIds: [...pagePointIds],
+    },
+  };
 }

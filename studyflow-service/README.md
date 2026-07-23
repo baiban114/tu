@@ -46,7 +46,21 @@ cd studyflow-service
 mvn spring-boot:run
 ```
 
-健康检查：`GET http://localhost:18082/api/learning/health`
+## 个人记录（MVP）
+
+纯文本个人状态记录，路由 `/notes`，API：
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/api/learning/notes?page=&pageSize=` | 分页列表（默认每页 10） |
+| POST | `/api/learning/notes` | 新建 `{ "body": "..." }` |
+| PUT | `/api/learning/notes/{id}` | 更新 body |
+| DELETE | `/api/learning/notes/{id}` | 删除 |
+
+可选请求头 `X-User-Id`（缺省 `local`）。表：`personal_note`（Flyway `V2__personal_note.sql`）。
+
+先启动 PostgreSQL：`docker compose up -d`，再 `mvn spring-boot:run`。
+
 
 ## 环境变量
 

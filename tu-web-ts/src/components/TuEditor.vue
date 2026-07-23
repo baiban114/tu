@@ -2,7 +2,7 @@
 import { watch, onBeforeUnmount, onMounted, nextTick, ref, computed, provide, inject, type ComputedRef } from 'vue'
 import type { CSSProperties } from 'vue'
 import { useEditor, EditorContent } from '@tiptap/vue-3'
-import type { Block, ExternalResourceEmbedData, HeadingSourceBinding, TextAnnotation, TextTagSpan, SpannedBlockInfo } from '@/api/types'
+import type { Block, ExternalResourceEmbedData, HeadingSourceBinding, PdfRegionAnchor, TextAnnotation, TextTagSpan, SpannedBlockInfo } from '@/api/types'
 import type { JSONContent } from '@tiptap/core'
 import { uploadFile } from '@/api/fileStorage'
 import {
@@ -136,6 +136,9 @@ const emit = defineEmits<{
   'annotations-mapped': [annotations: TextAnnotation[]]
   'block-click': [blockId: string, event: MouseEvent]
   'compound-badge-click': [blockId: string, annotationId: string, clientY: number, clientX: number]
+  'publish-pdf-region-note': [payload: PdfRegionAnchor]
+  'pdf-region-annotation-click': [payload: { annotationId: string; event: MouseEvent }]
+  'remount-pdf-region-notes': [payload: { fileId: string; newBlockId: string; previousBlockId?: string }]
   'open-block-picker': []
   'open-resource-picker': []
   'open-pdf-excerpt-picker': []
@@ -456,10 +459,34 @@ const compoundAnnotationBadges = computed(() => {
 
 provide('compoundAnnotationBadges', compoundAnnotationBadges)
 
+const pdfRegionAnnotationsByBlockId = computed(() => {
+  const map: Record<string, TextAnnotation[]> = {}
+  for (const ann of flattenedAnnotations.value) {
+    if (ann.scope !== 'pdfRegion' || !ann.pdfRegion?.blockId) continue
+    const bid = ann.pdfRegion.blockId
+    if (!map[bid]) map[bid] = []
+    map[bid].push(ann)
+  }
+  return map
+})
+provide('pdfRegionAnnotationsByBlockId', pdfRegionAnnotationsByBlockId)
+
+const pagePdfRegionAnnotations = computed(() => (
+  flattenedAnnotations.value.filter((ann) => ann.scope === 'pdfRegion' && !!ann.pdfRegion)
+))
+provide('pagePdfRegionAnnotations', pagePdfRegionAnnotations)
+
 const handleCompoundBadgeClick = (blockId: string, annotationId: string, event: MouseEvent) => {
   emit('compound-badge-click', blockId, annotationId, event.clientY, event.clientX)
 }
 provide('onCompoundBadgeClick', handleCompoundBadgeClick)
+
+provide('onPublishPdfRegionNote', (payload: PdfRegionAnchor) => {
+  emit('publish-pdf-region-note', payload)
+})
+provide('onPdfRegionAnnotationClick', (payload: { annotationId: string; event: MouseEvent }) => {
+  emit('pdf-region-annotation-click', payload)
+})
 
 provide('onEditPdfExcerptSource', (blockId: string) => {
   emit('edit-pdf-excerpt-source', blockId)
@@ -1104,6 +1131,7 @@ const updatePdfExcerptBlock = (
         blockId,
         sourceHref,
         sourceLabel: String(prev.sourceLabel || ''),
+        notesVisible: Boolean(prev.notesVisible),
         clipTop,
         clipBottom,
       }),
@@ -2503,6 +2531,11 @@ async function applyUrlDisplayMode(
     }
     urlHoverBoundToLinkIr = false
     flushContentChange()
+    // Re-attach page-persisted pdfRegion notes (keyed by fileId) onto the new block.
+    emit('remount-pdf-region-notes', {
+      fileId: String(attrs.fileId || ''),
+      newBlockId: String(attrs.blockId || ''),
+    })
     const hover = buildUrlHoverTargetFromPdfBlock(ed, attrs.blockId)
     // Prefer authored source even if attr read races; keeps toolbar「链接」enabled.
     if (hover) {
@@ -2522,6 +2555,15 @@ async function applyUrlDisplayMode(
     if (!found) return null
     const rawSourceHref = String(found.node.attrs.sourceHref || target.url || '').trim()
     if (!rawSourceHref || rawSourceHref.startsWith('file:')) return null
+    const pdfFileId = String(found.node.attrs.fileId || '').trim()
+    // Stamp fileId onto pdfRegion notes before the block id disappears from the doc.
+    if (pdfFileId) {
+      emit('remount-pdf-region-notes', {
+        fileId: pdfFileId,
+        newBlockId: target.blockId,
+        previousBlockId: target.blockId,
+      })
+    }
     const sourceLabel = String(found.node.attrs.sourceLabel || target.label || '').trim()
       || String(found.node.attrs.fileName || rawSourceHref)
 

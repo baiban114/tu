@@ -27,6 +27,7 @@ export const PdfExcerptBlockNode = Node.create({
       height: { default: PDF_EXCERPT_DEFAULT_HEIGHT },
       clipTop: { default: 0 },
       clipBottom: { default: 1 },
+      notesVisible: { default: false },
       sourceHref: {
         default: '',
         parseHTML: (element) => element.getAttribute('data-source-href') || '',
@@ -73,6 +74,7 @@ export function createPdfExcerptNodeAttrs(input: {
   blockId?: string
   sourceHref?: string
   sourceLabel?: string
+  notesVisible?: boolean
 }) {
   const clip = normalizePdfClipRatio(input.clipTop ?? 0, input.clipBottom ?? 1)
   return {
@@ -85,6 +87,7 @@ export function createPdfExcerptNodeAttrs(input: {
     height: input.height ?? PDF_EXCERPT_DEFAULT_HEIGHT,
     clipTop: clip.clipTop,
     clipBottom: clip.clipBottom,
+    notesVisible: Boolean(input.notesVisible),
     sourceHref: input.sourceHref || '',
     sourceLabel: input.sourceLabel || '',
   }

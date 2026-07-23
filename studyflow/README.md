@@ -26,6 +26,8 @@ pnpm dev
 | 应用 | 职责 |
 |------|------|
 | `tu-web-ts` | 知识生产：文档、PDF、知识点 |
-| **StudyFlow** | 学习消费：打卡、掌握度、效率看板 |
+| **StudyFlow** | 学习消费：打卡、掌握度、效率看板；**个人纯文本记录（MVP）** |
 
 浏览器 → `studyflow-service`（REST `/api/learning/**`）→ Dubbo → `tu-backend`（知识库只读）。
+
+本地前端开发时，打开 `http://localhost:5180/notes` 可写个人记录（需 studyflow-service + Postgres 已启动）。

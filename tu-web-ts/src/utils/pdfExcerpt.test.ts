@@ -94,6 +94,44 @@ describe('pdfExcerpt serialization', () => {
     expect(parsePdfExcerptComment(match![1]!)).toEqual(attrs)
   })
 
+  it('roundtrips notesVisible when enabled', () => {
+    const attrs = {
+      blockId: 'pe-notes',
+      fileId: 'file-abc',
+      fileName: 'book.pdf',
+      viewMode: 'excerpt' as const,
+      startPage: 1,
+      endPage: 1,
+      height: 480,
+      clipTop: 0,
+      clipBottom: 1,
+      notesVisible: true,
+    }
+    const comment = serializePdfExcerptComment(attrs)
+    expect(comment).toContain('notesVisible="true"')
+    const match = comment.match(/<!--tu:pdf-excerpt\s+([^>]+)-->/)
+    expect(parsePdfExcerptComment(match![1]!)).toEqual(attrs)
+  })
+
+  it('omits notesVisible when false / unset', () => {
+    const comment = serializePdfExcerptComment({
+      blockId: 'pe-1',
+      fileId: 'f1',
+      fileName: 'a.pdf',
+      viewMode: 'excerpt',
+      startPage: 1,
+      endPage: 1,
+      height: 480,
+      clipTop: 0,
+      clipBottom: 1,
+    })
+    expect(comment).not.toContain('notesVisible=')
+    const parsed = parsePdfExcerptComment(
+      'id="pe-1" fileId="f1" fileName="a.pdf" start="1" end="1" height="480"',
+    )
+    expect(parsed?.notesVisible).toBeUndefined()
+  })
+
   it('defaults missing clip attrs to full page', () => {
     const parsed = parsePdfExcerptComment(
       'id="pe-1" fileId="f1" fileName="a.pdf" start="1" end="1" height="480"',

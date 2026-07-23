@@ -214,6 +214,18 @@ function loadMockRelationsForPoint(kbId: string, pointId: string) {
   }
 }
 
+export function getPageRelatedPointIdsMock(kbId: string, pageId: string): string[] {
+  ensureDemoKnowledgePointsSeed();
+  const trimmedPageId = pageId.trim();
+  const ids = new Set<string>();
+  for (const anchor of loadAnchors()) {
+    if (!locatorBelongsToPage(anchor.locator, trimmedPageId)) continue;
+    const point = loadPoints().find((item) => item.id === anchor.knowledgePointId && item.kbId === kbId);
+    if (point) ids.add(point.id);
+  }
+  return [...ids];
+}
+
 export function getPageKnowledgeContextMock(kbId: string, pageId: string): PageKnowledgeContext {
   ensureDemoKnowledgePointsSeed();
   const trimmedPageId = pageId.trim();

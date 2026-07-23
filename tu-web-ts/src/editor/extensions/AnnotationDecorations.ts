@@ -156,7 +156,12 @@ function rangesOverlap(a: TextAnnotation, b: TextAnnotation): boolean {
 }
 
 function mapAnnotation(annotation: TextAnnotation, mapping: Mapping): TextAnnotation {
-  if (annotation.scope === 'block' || (annotation.scope === 'compound' && typeof annotation.from !== 'number')) {
+  if (
+    annotation.scope === 'block'
+    || annotation.scope === 'pdfRegion'
+    || annotation.pdfRegion
+    || (annotation.scope === 'compound' && typeof annotation.from !== 'number')
+  ) {
     return annotation
   }
   if (typeof annotation.from !== 'number' || typeof annotation.to !== 'number') {
@@ -192,7 +197,13 @@ function resolveAnnotations(doc: ProseMirrorNode, annotations: TextAnnotation[])
 }
 
 function resolveAnnotation(doc: ProseMirrorNode, annotation: TextAnnotation): TextAnnotation {
-  if (annotation.scope === 'block' || (annotation.scope === 'compound' && !annotation.selectedText)) {
+  // PDF region notes are anchored on the PDF block geometry, not doc text ranges.
+  if (
+    annotation.scope === 'pdfRegion'
+    || annotation.pdfRegion
+    || annotation.scope === 'block'
+    || (annotation.scope === 'compound' && !annotation.selectedText)
+  ) {
     return annotation.unresolved === false ? annotation : { ...annotation, unresolved: false }
   }
 
@@ -241,6 +252,7 @@ function markUnresolved(annotation: TextAnnotation): TextAnnotation {
 function createDecorations(doc: ProseMirrorNode, annotations: TextAnnotation[]): DecorationSet {
   const decorations: Decoration[] = []
   for (const annotation of annotations) {
+    if (annotation.scope === 'pdfRegion' || annotation.scope === 'block') continue
     const from = annotation.from
     const to = annotation.to
     if (

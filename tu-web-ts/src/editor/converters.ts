@@ -655,6 +655,7 @@ function parseMarkdownBlocks(markdown: string): JSONContent[] {
               height: parsedPdf.height,
               clipTop: parsedPdf.clipTop,
               clipBottom: parsedPdf.clipBottom,
+              notesVisible: Boolean(parsedPdf.notesVisible),
               sourceHref: parsedPdf.sourceHref || '',
               sourceLabel: parsedPdf.sourceLabel || '',
             },
@@ -1023,6 +1024,7 @@ function nodeToMarkdown(node: JSONContent): string {
         clipBottom: node.attrs?.clipBottom == null ? 1 : Number(node.attrs.clipBottom),
         sourceHref: String(node.attrs?.sourceHref || '') || undefined,
         sourceLabel: String(node.attrs?.sourceLabel || '') || undefined,
+        notesVisible: Boolean(node.attrs?.notesVisible) || undefined,
       })
     }
     case 'bulletList':

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, reactive, watch, computed, onMounted, onBeforeUnmount, nextTick, provide } from 'vue'
 import { useRouter } from 'vue-router'
-import type { Block, BlockTag, EmbeddedObject, ExternalResourceEmbedData, HeadingSourceBinding, PageContent, TextAnnotation, TextTagSpan, SpannedBlockInfo } from '@/api/types'
+import type { Block, BlockTag, EmbeddedObject, ExternalResourceEmbedData, HeadingSourceBinding, PageContent, PdfRegionAnchor, TextAnnotation, TextTagSpan, SpannedBlockInfo } from '@/api/types'
 import type { CompareSide } from '@/utils/compareBlock'
 import type { JSONContent } from '@tiptap/core'
 import { tipTapToBlocks } from '@/editor/converters'
@@ -25,6 +25,7 @@ import NotePopover from './NotePopover.vue'
 import KnowledgePointPicker from './KnowledgePointPicker.vue'
 import DocumentMarkingReviewPanel from './DocumentMarkingReviewPanel.vue'
 import DocumentOutlineMindmapDialog from './DocumentOutlineMindmapDialog.vue'
+import DocumentPageRelationGraphDialog from './DocumentPageRelationGraphDialog.vue'
 import { generateDocumentMarkingStream, clearPageAiMarkers } from '@/api/aiDocumentMarking'
 import { applyAiMarkingSuggestions, clearAiMarkersFromDocument } from '@/utils/aiDocumentMarking'
 import {
@@ -138,7 +139,8 @@ import type { UrlHoverTarget } from '@/editor/urlHoverTarget'
 import { buildUrlHoverTargetFromPdfBlock } from '@/editor/urlHoverTarget'
 import type { UrlDisplayMode } from '@/utils/urlDisplay'
 import { isHttpHref, isInternalLocatorHref } from '@/editor/linkLabelSuggestQuery'
-import { PDF_EXCERPT_SCROLL_EVENT, PDF_EXCERPT_DEFAULT_HEIGHT, PDF_EXCERPT_CLIP_SELECT_EVENT, formatPdfExcerptRangeLabel, parsePdfExcerptViewMode } from '@/utils/pdfExcerpt'
+import { PDF_EXCERPT_SCROLL_EVENT, PDF_EXCERPT_DEFAULT_HEIGHT, PDF_EXCERPT_CLIP_SELECT_EVENT, PDF_EXCERPT_FIT_HEIGHT_EVENT, formatPdfExcerptRangeLabel, parsePdfExcerptViewMode } from '@/utils/pdfExcerpt'
+import { remountPdfRegionNotes } from '@/utils/pdfRegionNotes'
 import {
   REF_GUTTER_DELEGATE_KEY,
   type RefGutterDelegate,
@@ -497,9 +499,21 @@ function handlePdfClipSelectFromToolbar() {
   const blockId = nodeViewToolbar.blockId
   if (!blockId || nodeViewToolbar.sourceType !== 'pdfExcerptBlock') return
   const editorDom = tuEditorRef.value?.editor?.view.dom
-  const root = editorDom?.querySelector<HTMLElement>(`[data-block-id="${CSS.escape(blockId)}"]`)
+  const root = editorDom?.querySelector<HTMLElement>(
+    `.pdf-excerpt-block-nv[data-block-id="${CSS.escape(blockId)}"]`,
+  ) ?? editorDom?.querySelector<HTMLElement>(`[data-block-id="${CSS.escape(blockId)}"]`)
   root?.dispatchEvent(new CustomEvent(PDF_EXCERPT_CLIP_SELECT_EVENT, { bubbles: false }))
   hideNodeViewToolbar()
+}
+
+function handlePdfFitHeightFromToolbar() {
+  const blockId = nodeViewToolbar.blockId
+  if (!blockId || nodeViewToolbar.sourceType !== 'pdfExcerptBlock') return
+  const editorDom = tuEditorRef.value?.editor?.view.dom
+  const root = editorDom?.querySelector<HTMLElement>(
+    `.pdf-excerpt-block-nv[data-block-id="${CSS.escape(blockId)}"]`,
+  ) ?? editorDom?.querySelector<HTMLElement>(`[data-block-id="${CSS.escape(blockId)}"]`)
+  root?.dispatchEvent(new CustomEvent(PDF_EXCERPT_FIT_HEIGHT_EVENT, { bubbles: false }))
 }
 const resourcePickerMode = ref<'insert' | 'markExcerpt' | 'bindSource' | 'setBasis'>('insert')
 const pendingResourceExcerptText = ref('')
@@ -630,6 +644,7 @@ const pendingNoteSpannedBlockIds = ref<string[]>([])
 const pendingNoteSpannedBlockMetadata = ref<SpannedBlockInfo[]>([])
 const pendingNoteTags = ref<BlockTag[]>([])
 const pendingTextTagSpanId = ref('')
+const pendingNotePdfRegion = ref<PdfRegionAnchor | null>(null)
 let annotationPersistTimer: ReturnType<typeof setTimeout> | null = null
 
 const urlHoverToolbarSuppressed = computed(() => (
@@ -720,9 +735,20 @@ const documentMarkingPendingScope = ref<{
 let documentMarkingAbort: AbortController | null = null
 
 const outlineMindmapDialogVisible = ref(false)
+const pageRelationGraphDialogVisible = ref(false)
 
 function openOutlineMindmapDialog() {
   outlineMindmapDialogVisible.value = true
+}
+
+function openPageRelationGraphDialog() {
+  const pageId = workspaceStore.currentPageId
+  const kbId = workspaceStore.currentKbId
+  if (!pageId || !kbId) {
+    ElMessage.warning('请先选择知识库与页面')
+    return
+  }
+  pageRelationGraphDialogVisible.value = true
 }
 
 function stopDocumentMarkingAnalysis() {
@@ -3619,6 +3645,7 @@ const handleAddNoteFromSelection = () => {
   pendingNoteSpannedBlockMetadata.value = selectionSpannedBlockMetadata.value
   pendingNoteTags.value = existingSpan ? [...existingSpan.tags] : []
   pendingTextTagSpanId.value = existingSpan?.id ?? ''
+  pendingNotePdfRegion.value = null
 
   editingAnnotation.value = undefined
   noteEditorVisible.value = true
@@ -3687,6 +3714,52 @@ const resetTextMarkingPending = () => {
   pendingNoteSpannedBlockMetadata.value = []
   pendingNoteTags.value = []
   pendingTextTagSpanId.value = ''
+  pendingNotePdfRegion.value = null
+}
+
+const handlePublishPdfRegionNote = (payload: PdfRegionAnchor) => {
+  pendingNotePdfRegion.value = { ...payload }
+  pendingNoteBlockId.value = payload.blockId
+  pendingNoteSelectedText.value = formatPdfExcerptRangeLabel(
+    payload.startPage,
+    payload.endPage,
+    payload.clipTop,
+    payload.clipBottom,
+  )
+  pendingNoteContextBefore.value = ''
+  pendingNoteContextAfter.value = ''
+  pendingNoteFrom.value = 0
+  pendingNoteTo.value = 0
+  pendingNoteSpannedBlockIds.value = []
+  pendingNoteSpannedBlockMetadata.value = []
+  pendingNoteTags.value = []
+  pendingTextTagSpanId.value = ''
+  editingAnnotation.value = undefined
+  noteEditorVisible.value = true
+}
+
+const handleRemountPdfRegionNotes = (payload: {
+  fileId: string
+  newBlockId: string
+  previousBlockId?: string
+}) => {
+  const { annotations, changed } = remountPdfRegionNotes(localAnnotations.value, payload)
+  if (!changed) return
+  localAnnotations.value = annotations
+  emitLocalContentChange()
+}
+
+const handlePdfRegionAnnotationClick = (payload: { annotationId: string; event: MouseEvent }) => {
+  const annotation = localAnnotations.value.find((item) => item.id === payload.annotationId)
+  if (!annotation) return
+  notePopoverAnnotation.value = annotation
+  notePopoverAnnotations.value = [annotation]
+  notePopoverSourceBinding.value = null
+  notePopoverHeadingTitle.value = ''
+  notePopoverRelationAnchor.value = null
+  notePopoverAnchor.value = rectFromPoint(payload.event.clientX, payload.event.clientY)
+  notePopoverVisible.value = true
+  updateNotePopoverPosition()
 }
 
 const handleSaveAnnotation = (payload: { note: string; tags: BlockTag[] }) => {
@@ -3705,6 +3778,28 @@ const handleSaveAnnotation = (payload: { note: string; tags: BlockTag[] }) => {
       }
     }
   } else if (note) {
+    const pdfRegion = pendingNotePdfRegion.value
+    if (pdfRegion) {
+      annotations.push({
+        id: `annot-${now}-${Math.random().toString(36).substr(2, 6)}`,
+        selectedText: formatPdfExcerptRangeLabel(
+          pdfRegion.startPage,
+          pdfRegion.endPage,
+          pdfRegion.clipTop,
+          pdfRegion.clipBottom,
+        ),
+        contextBefore: '',
+        contextAfter: '',
+        note,
+        color: '#FFE082',
+        createdAt: now,
+        updatedAt: now,
+        blockId: pdfRegion.blockId,
+        scope: 'pdfRegion',
+        pdfRegion: { ...pdfRegion },
+        kind: 'note',
+      })
+    } else {
     const hasText = !!pendingNoteSelectedText.value
     const hasSpannedBlocks = pendingNoteSpannedBlockIds.value.length > 0
     const isBlockOnly = !hasText && hasSpannedBlocks
@@ -3731,6 +3826,7 @@ const handleSaveAnnotation = (payload: { note: string; tags: BlockTag[] }) => {
       spannedBlockIds: hasSpannedBlocks ? pendingNoteSpannedBlockIds.value : undefined,
       spannedBlockMetadata,
     })
+    }
   }
 
   localAnnotations.value = annotations
@@ -3776,6 +3872,9 @@ const resolveAnnotationAnchorRect = (
   annotation: TextAnnotation,
   fallback: FloatingAnchorRect,
 ): FloatingAnchorRect => {
+  if (annotation.scope === 'pdfRegion') {
+    return fallback
+  }
   if ((annotation.scope === 'block' || annotation.scope === 'compound') && annotation.spannedBlockIds?.length) {
     return resolveBlockIdsAnchorRect(annotation.spannedBlockIds) ?? fallback
   }
@@ -3887,6 +3986,24 @@ const handleEditAnnotation = (annotation?: TextAnnotation) => {
   const target = annotation ?? notePopoverAnnotation.value
   if (!target || target.kind === 'basis') return
 
+  if (target.scope === 'pdfRegion' && target.pdfRegion) {
+    pendingNotePdfRegion.value = { ...target.pdfRegion }
+    pendingNoteBlockId.value = target.pdfRegion.blockId
+    pendingNoteSelectedText.value = target.selectedText
+    pendingNoteContextBefore.value = ''
+    pendingNoteContextAfter.value = ''
+    pendingNoteFrom.value = 0
+    pendingNoteTo.value = 0
+    pendingNoteSpannedBlockIds.value = []
+    pendingNoteSpannedBlockMetadata.value = []
+    pendingNoteTags.value = []
+    pendingTextTagSpanId.value = ''
+    editingAnnotation.value = { ...target }
+    noteEditorVisible.value = true
+    notePopoverVisible.value = false
+    return
+  }
+
   const rangeFrom = typeof target.from === 'number' ? target.from : 0
   const rangeTo = typeof target.to === 'number' ? target.to : 0
   const existingSpan = (typeof target.from === 'number' && typeof target.to === 'number')
@@ -3901,6 +4018,7 @@ const handleEditAnnotation = (annotation?: TextAnnotation) => {
   pendingNoteTo.value = rangeTo
   pendingNoteTags.value = existingSpan ? [...existingSpan.tags] : []
   pendingTextTagSpanId.value = existingSpan?.id ?? ''
+  pendingNotePdfRegion.value = null
   editingAnnotation.value = { ...target }
   noteEditorVisible.value = true
   notePopoverVisible.value = false
@@ -4062,6 +4180,13 @@ onBeforeUnmount(() => {
         >
           思维导图
         </button>
+        <button
+          class="toolbar-button"
+          @click="openPageRelationGraphDialog"
+          title="分析当前文档绑定的知识点及其语义关联，生成只读联系图"
+        >
+          联系图
+        </button>
       </div>
       <div
         v-if="learningInProgressTarget"
@@ -4183,6 +4308,9 @@ onBeforeUnmount(() => {
           @annotation-click="handleAnnotationClick"
           @annotations-mapped="handleAnnotationsMapped"
           @compound-badge-click="handleCompoundBadgeClick"
+          @publish-pdf-region-note="handlePublishPdfRegionNote"
+          @pdf-region-annotation-click="handlePdfRegionAnnotationClick"
+          @remount-pdf-region-notes="handleRemountPdfRegionNotes"
           @open-block-picker="handleOpenBlockPicker"
           @open-resource-picker="handleOpenResourcePicker"
           @open-pdf-excerpt-picker="handleOpenPdfExcerptPicker"
@@ -4301,6 +4429,12 @@ onBeforeUnmount(() => {
           title="在 PDF 上拖拽划选纵向裁剪范围"
           @click="handlePdfClipSelectFromToolbar"
         >划选裁剪</button>
+        <button
+          v-if="nodeViewToolbar.sourceType === 'pdfExcerptBlock'"
+          class="nodeview-toolbar__btn"
+          title="按当前缩放将块高度调为完整显示全部内容（无滚动条、无空白）"
+          @click="handlePdfFitHeightFromToolbar"
+        >高度 100%</button>
         <div
           v-if="nodeViewToolbar.sourceType === 'pdfExcerptBlock'"
           class="nodeview-toolbar__pdf-pages"
@@ -4568,6 +4702,14 @@ onBeforeUnmount(() => {
       :toc-items="tocItems"
     />
 
+    <DocumentPageRelationGraphDialog
+      v-if="workspaceStore.currentKbId && workspaceStore.currentPageId"
+      v-model="pageRelationGraphDialogVisible"
+      :kb-id="workspaceStore.currentKbId"
+      :page-id="workspaceStore.currentPageId"
+      :page-title="pageTitleDraft || props.pageTitle || '未命名页面'"
+    />
+
     <!-- Toast 消息 -->
     <div class="toast-container">
       <Toast
@@ -4795,7 +4937,7 @@ onBeforeUnmount(() => {
   align-items: stretch;
   align-self: flex-start;
   z-index: 24;
-  transition: flex-basis 0.2s ease, width 0.2s ease;
+  /* Instant open/close — animated width floods PDF ResizeObserver and causes flicker. */
 }
 
 .page-toc--collapsed {

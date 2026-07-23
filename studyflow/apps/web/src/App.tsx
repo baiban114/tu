@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Link, Route, Routes } from 'react-router-dom'
 import { fetchLearningHealth } from '@studyflow/api'
 import { formatStudyMinutes } from '@studyflow/core'
+import NotesPage from './NotesPage'
 
 export default function App() {
   const [health, setHealth] = useState<string>('检查中…')
@@ -21,6 +22,7 @@ export default function App() {
 
       <nav className="app__nav">
         <Link to="/">今日</Link>
+        <Link to="/notes">记录</Link>
         <Link to="/mastery">掌握度</Link>
         <Link to="/insights">洞察</Link>
       </nav>
@@ -34,9 +36,17 @@ export default function App() {
                 <h2>今日</h2>
                 <p>后端状态：{health}</p>
                 <p>示例：{formatStudyMinutes(95)} 学习时长</p>
+                <p>
+                  个人状态先从
+                  {' '}
+                  <Link to="/notes">纯文本记录</Link>
+                  {' '}
+                  开始。
+                </p>
               </section>
             )}
           />
+          <Route path="/notes" element={<NotesPage />} />
           <Route path="/mastery" element={<section><h2>掌握度</h2><p>待实现</p></section>} />
           <Route path="/insights" element={<section><h2>洞察</h2><p>待实现</p></section>} />
         </Routes>

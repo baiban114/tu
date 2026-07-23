@@ -6,7 +6,7 @@ import type {
 } from '@/api/types';
 import { request } from './http';
 import { isMockDataSource } from '@/dev/dataSource';
-import { getKnowledgeGraphMock } from '@/mock/knowledgeGraph';
+import { getKnowledgeGraphMock, getPageRelationGraphMock } from '@/mock/knowledgeGraph';
 
 export interface GetKnowledgeGraphParams {
   mode?: KnowledgeGraphMode;
@@ -32,6 +32,21 @@ export async function getKnowledgeGraph(
   if (params.relationTypeKeys?.length) query.set('relationTypeKeys', params.relationTypeKeys.join(','));
   if (params.maxNodes != null) query.set('maxNodes', String(params.maxNodes));
   return request<KnowledgeGraphResponse>(`/api/kbs/${kbId}/knowledge-graph?${query.toString()}`);
+}
+
+export async function getPageRelationGraph(
+  kbId: string,
+  pageId: string,
+  maxNodes = 500,
+): Promise<KnowledgeGraphResponse> {
+  if (isMockDataSource()) {
+    return getPageRelationGraphMock(kbId, pageId, maxNodes);
+  }
+  const query = new URLSearchParams();
+  if (maxNodes != null) query.set('maxNodes', String(maxNodes));
+  return request<KnowledgeGraphResponse>(
+    `/api/kbs/${kbId}/pages/${encodeURIComponent(pageId)}/relation-graph?${query.toString()}`,
+  );
 }
 
 export function flattenKnowledgePoints(tree: KnowledgePoint[]): KnowledgePoint[] {
