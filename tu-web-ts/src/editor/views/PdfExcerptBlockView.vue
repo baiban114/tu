@@ -19,6 +19,8 @@ import {
   parsePdfExcerptViewMode,
   resolvePageRange,
 } from '@/utils/pdfExcerpt'
+import { syncResourceHrefWithPdfPages } from '@/editor/linkLabelSuggestQuery'
+import { isResourceLocatorHref } from '@/editor/resourceLinkToPdf'
 import { acquirePdfDocument, releasePdfDocument } from '@/utils/pdfDocumentCache'
 import type { PdfDocumentProxy } from '@/utils/pdfjsSetup'
 import {
@@ -369,17 +371,32 @@ async function loadDocument() {
       viewMode.value === 'full'
       && (startPage.value !== normalized.startPage || endPage.value !== normalized.endPage)
     ) {
+      const prevHref = String(props.node.attrs.sourceHref || '')
       props.updateAttributes({
         startPage: normalized.startPage,
         endPage: normalized.endPage,
+        ...(isResourceLocatorHref(prevHref)
+          ? { sourceHref: syncResourceHrefWithPdfPages(prevHref, 'full', normalized.startPage, normalized.endPage) }
+          : {}),
       })
     } else if (viewMode.value === 'excerpt' && (
       normalized.startPage !== startPage.value
       || normalized.endPage !== endPage.value
     )) {
+      const prevHref = String(props.node.attrs.sourceHref || '')
       props.updateAttributes({
         startPage: normalized.startPage,
         endPage: normalized.endPage,
+        ...(isResourceLocatorHref(prevHref)
+          ? {
+            sourceHref: syncResourceHrefWithPdfPages(
+              prevHref,
+              'excerpt',
+              normalized.startPage,
+              normalized.endPage,
+            ),
+          }
+          : {}),
       })
     }
 
@@ -478,7 +495,6 @@ onBeforeUnmount(() => {
     <ResizableBlockWrapper
       :selected="selected"
       :content-hover-chrome="false"
-      :resize-on-hover="false"
       :resizable-axes="{ width: false, height: true }"
       :height="height"
       :min-height="PDF_EXCERPT_MIN_HEIGHT"
@@ -637,6 +653,11 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+.pdf-excerpt-block-nv {
+  /* 底部高度手柄 bottom:-6px，避免被父级裁切 */
+  overflow: visible;
+}
+
 .pdf-excerpt-block__meta {
   min-width: 0;
   overflow: hidden;

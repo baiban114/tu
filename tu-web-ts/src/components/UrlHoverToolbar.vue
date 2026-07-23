@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import type { Editor } from '@tiptap/core'
 import { computed, nextTick, ref, watch } from 'vue'
-import { ElButton, ElDivider, ElInputNumber } from 'element-plus'
+import { ElInputNumber } from 'element-plus'
 import { useAnchoredFloating } from '@/composables/useAnchoredFloating'
+import LinkPresentationModeBar from './LinkPresentationModeBar.vue'
 import type { UrlHoverTarget } from '@/editor/urlHoverTarget'
 import { resolveUrlHoverTargetAnchorRect } from '@/editor/urlHoverTarget'
 import {
@@ -17,11 +18,13 @@ interface Props {
   editor?: Editor | null
   suppressed?: boolean
   pinning?: boolean
+  loadingMode?: UrlDisplayMode | null
 }
 
 const props = withDefaults(defineProps<Props>(), {
   suppressed: false,
   pinning: false,
+  loadingMode: null,
 })
 
 const emit = defineEmits<{
@@ -91,10 +94,7 @@ watch(measuredSize, () => {
 
 const displayUrl = computed(() => props.target?.url || '')
 const currentMode = computed(() => props.target?.displayMode || 'link')
-const canUseIframe = computed(() => {
-  const url = props.target?.url || ''
-  return !/\.(png|jpe?g|gif|webp|svg|avif|bmp)(\?.*)?$/i.test(url)
-})
+const href = computed(() => props.target?.url || '')
 const showIframeHeight = computed(() => props.target?.kind === 'iframe' && props.target.displayMode === 'iframe')
 const iframeHeight = computed(() => props.target?.iframeHeight ?? URL_EMBED_MIN_HEIGHT)
 
@@ -119,41 +119,12 @@ function emitHeightChange(value: number | undefined) {
       <div class="url-hover-toolbar__url" :title="displayUrl">
         {{ displayUrl }}
       </div>
-      <div class="url-hover-toolbar__group">
-        <ElButton
-          size="small"
-          text
-          :type="currentMode === 'link' ? 'primary' : 'default'"
-          class="url-hover-toolbar__btn"
-          @mousedown.prevent.stop
-          @click="emit('select-mode', 'link')"
-        >
-          链接
-        </ElButton>
-        <ElDivider direction="vertical" class="url-hover-toolbar__divider" />
-        <ElButton
-          size="small"
-          text
-          :disabled="!canUseIframe"
-          :type="currentMode === 'iframe' ? 'primary' : 'default'"
-          class="url-hover-toolbar__btn"
-          @mousedown.prevent.stop
-          @click="emit('select-mode', 'iframe')"
-        >
-          iframe
-        </ElButton>
-        <ElDivider direction="vertical" class="url-hover-toolbar__divider" />
-        <ElButton
-          size="small"
-          text
-          :type="currentMode === 'title' ? 'primary' : 'default'"
-          class="url-hover-toolbar__btn"
-          @mousedown.prevent.stop
-          @click="emit('select-mode', 'title')"
-        >
-          标题
-        </ElButton>
-      </div>
+      <LinkPresentationModeBar
+        :href="href"
+        :current-mode="currentMode"
+        :loading-mode="loadingMode"
+        @select-mode="emit('select-mode', $event)"
+      />
       <div v-if="showIframeHeight" class="url-hover-toolbar__height">
         <span class="url-hover-toolbar__height-label">高度</span>
         <ElInputNumber
@@ -194,26 +165,6 @@ function emitHeightChange(value: number | undefined) {
   overflow: hidden;
   text-overflow: ellipsis;
   line-height: 1.3;
-}
-
-.url-hover-toolbar__group {
-  display: flex;
-  align-items: center;
-  gap: 0;
-}
-
-.url-hover-toolbar__btn {
-  margin: 0;
-  height: 24px;
-  padding: 0 6px;
-  font-size: 12px;
-  font-weight: 500;
-  border-radius: 2px;
-}
-
-.url-hover-toolbar__divider {
-  height: 14px;
-  margin: 0 1px;
 }
 
 .url-hover-toolbar__height {

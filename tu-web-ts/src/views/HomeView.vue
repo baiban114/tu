@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { ElEmpty } from 'element-plus';
 import { useRoute, useRouter } from 'vue-router';
 import AppHelpButton from '@/components/AppHelpButton.vue';
@@ -9,10 +9,21 @@ import CanvasPage from '@/components/CanvasPage.vue';
 import TuEditorPage from '@/components/TuEditorPage.vue';
 import type { PageContent, PageType } from '@/api/types';
 import { useWorkspaceStore } from '@/stores/workspace';
+import {
+  loadWorkspaceScrollTop,
+  saveWorkspaceScrollTop,
+} from '@/utils/workspaceScroll';
 
 const store = useWorkspaceStore();
 const route = useRoute();
 const router = useRouter();
+
+/** Document / resource-document scroll container (`.content-scroll`). */
+const contentScrollEl = ref<HTMLElement | null>(null);
+let scrollSaveTimer: ReturnType<typeof setTimeout> | null = null;
+let scrollRestoreToken = 0;
+/** Ignore scroll events while programmatically restoring after refresh. */
+let skipScrollPersistUntil = 0;
 
 onMounted(() => {
   void initializeWorkspace();
@@ -21,12 +32,54 @@ onMounted(() => {
 async function initializeWorkspace() {
   await store.reloadWorkspace();
   await applyRouteSelection();
+  await nextTick();
+  void restoreContentScroll();
 }
 
 async function applyRouteSelection() {
   const pageId = typeof route.query.pageId === 'string' ? route.query.pageId : '';
   if (!pageId) return;
   await store.selectPage(pageId);
+}
+
+function onContentScroll() {
+  if (Date.now() < skipScrollPersistUntil) return;
+  const el = contentScrollEl.value;
+  const viewKey = store.currentViewKey;
+  if (!el || !viewKey) return;
+  if (scrollSaveTimer) clearTimeout(scrollSaveTimer);
+  scrollSaveTimer = setTimeout(() => {
+    scrollSaveTimer = null;
+    if (contentScrollEl.value !== el) return;
+    saveWorkspaceScrollTop(viewKey, el.scrollTop);
+  }, 200);
+}
+
+async function restoreContentScroll() {
+  const viewKey = store.currentViewKey;
+  if (!viewKey) return;
+  // Excerpt deep-focus owns scroll; do not fight it.
+  if (store.pendingResourceExcerptFocusId) return;
+  // Canvas pages use `.content-canvas`, not `.content-scroll`.
+  if (showCanvasPage.value) return;
+  if (!(showDocumentPage.value || showResourceDocument.value)) return;
+
+  const target = loadWorkspaceScrollTop(viewKey);
+  if (target <= 0) return;
+
+  const token = ++scrollRestoreToken;
+  skipScrollPersistUntil = Date.now() + 1000;
+
+  for (const delay of [0, 50, 150, 400]) {
+    if (delay > 0) await new Promise((r) => setTimeout(r, delay));
+    if (token !== scrollRestoreToken) return;
+    await nextTick();
+    const el = contentScrollEl.value;
+    if (!el) continue;
+    el.scrollTop = target;
+    // Stop early once layout is tall enough to hold the target.
+    if (el.scrollHeight >= target + el.clientHeight - 8) break;
+  }
 }
 
 const leftWidth = ref(240);
@@ -116,6 +169,10 @@ function toggleLeftSidebar() {
 onBeforeUnmount(() => {
   document.removeEventListener('mousemove', onMousemove);
   document.removeEventListener('mouseup', onMouseup);
+  if (scrollSaveTimer) {
+    clearTimeout(scrollSaveTimer);
+    scrollSaveTimer = null;
+  }
 });
 
 function onContentChange(content: PageContent) {
@@ -133,6 +190,14 @@ watch(
     if (typeof nextPageId !== 'string' || !nextPageId) return;
     if (store.currentPageId === nextPageId) return;
     await store.selectPage(nextPageId);
+  },
+);
+
+watch(
+  () => [store.currentViewKey, store.pageContent, showDocumentPage.value, showResourceDocument.value] as const,
+  () => {
+    if (!(showDocumentPage.value || showResourceDocument.value)) return;
+    void nextTick(() => restoreContentScroll());
   },
 );
 </script>
@@ -208,7 +273,9 @@ watch(
 
       <div
         v-else-if="showResourceDocument"
+        ref="contentScrollEl"
         class="content-scroll"
+        @scroll.passive="onContentScroll"
       >
         <div class="resource-document-banner">
           <span class="resource-document-banner__title">{{ store.currentPageTitle }}</span>
@@ -224,7 +291,9 @@ watch(
 
       <div
         v-else-if="showDocumentPage"
+        ref="contentScrollEl"
         class="content-scroll"
+        @scroll.passive="onContentScroll"
       >
         <div
           v-if="store.currentLocalFileBinding"

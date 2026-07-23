@@ -1,14 +1,28 @@
 import type { PageItem } from '@/api/types'
-import type { ResourceItem } from '@/api/externalResource'
+import type { ResourceChapter, ResourceExcerpt, ResourceItem } from '@/api/externalResource'
 import { searchHeadings, searchPages } from '@/api/search'
 import type { ContentTreeNode } from '@/api/outline'
 import { MAX_PAGE_SIZE } from '@/constants/pagination'
 import {
+  browseChildren,
+  collectSubtreeIds,
+  deepSearchInSubtree,
+  indexNodesByParent,
+  matchNodeAtLevel,
+  resolveScopeParent,
+  type ScopeTreeNode,
+} from '@/editor/hierarchicalScopeSearch'
+import {
   formatHeadingSuggestLabel,
+  formatResourceChildSuggestLabel,
   headingLocator,
+  isHttpHref,
   pageLocator,
   parseLinkLabelQuery,
+  parseResourceLocator,
   resolveResourceItemHref,
+  resourceChapterLocator,
+  resourceExcerptLocator,
   resourceItemSearchText,
   type LinkSuggestItem,
 } from '@/editor/linkLabelSuggestQuery'
@@ -21,14 +35,57 @@ export type {
 
 export {
   parseLinkLabelQuery,
+  parseResourceLocator,
+  splitResourceHref,
+  formatResourceHrefPage,
+  syncResourceHrefWithPdfPages,
+  resourceHrefPageLimitText,
+  stripHrefFragment,
   isInternalLocatorHref,
   isHttpHref,
   resolveResourceItemHref,
   resourceItemSearchText,
+  resourceChapterLocator,
+  resourceExcerptLocator,
 } from '@/editor/linkLabelSuggestQuery'
 
 export { applyLinkSuggest } from '@/editor/linkLabelSuggestApply'
 export type { LinkLabelEditContext } from '@/editor/linkLabelSuggestRanges'
+
+export {
+  browseChildren,
+  deepSearchInSubtree,
+  matchRank,
+  resolveScopeParent,
+} from '@/editor/hierarchicalScopeSearch'
+
+type ChapterScopeNode = ResourceChapter & ScopeTreeNode
+
+function toChapterScopeNodes(chapters: ResourceChapter[]): ChapterScopeNode[] {
+  return chapters.map((chapter) => ({
+    ...chapter,
+    parentId: chapter.parentId ?? null,
+  }))
+}
+
+/** Direct children grouped by parentId (null = root). */
+export function indexChaptersByParent(chapters: ResourceChapter[]): Map<string | null, ResourceChapter[]> {
+  return indexNodesByParent(toChapterScopeNodes(chapters))
+}
+
+export function matchChapterAtLevel(
+  siblings: ResourceChapter[],
+  segment: string,
+): ResourceChapter | null {
+  return matchNodeAtLevel(toChapterScopeNodes(siblings), segment)
+}
+
+export function resolveChapterDrillParent(
+  chapters: ResourceChapter[],
+  pathSegments: string[],
+): { parentId: string | null; resolvedPath: string[] } | null {
+  return resolveScopeParent(toChapterScopeNodes(chapters), pathSegments)
+}
 
 function flattenPages(nodes: PageItem[]): PageItem[] {
   const out: PageItem[] = []
@@ -70,9 +127,10 @@ function toHeadingSuggest(
   return {
     id: href,
     kind: 'heading',
-    label: formatHeadingSuggestLabel(pageTitle, headingText),
+    label: headingText,
+    applyLabel: formatHeadingSuggestLabel(pageTitle, headingText),
     href,
-    description: href,
+    description: pageTitle,
   }
 }
 
@@ -100,11 +158,217 @@ function flattenOutlineHeadings(nodes: ContentTreeNode[]): ContentTreeNode[] {
   return out
 }
 
+function relativeBreadcrumb(pathFromScope: string[]): string {
+  return pathFromScope.join(' > ')
+}
+
+function toResourceChapterHitSuggest(
+  item: ResourceItem,
+  hit: { node: ChapterScopeNode; pathFromRoot: string[]; pathFromScope: string[] },
+): LinkSuggestItem {
+  const href = resourceChapterLocator(item.id, hit.node.id)
+  return {
+    id: href,
+    kind: 'resourceChapter',
+    label: hit.node.title,
+    applyLabel: formatResourceChildSuggestLabel(item.title, ...hit.pathFromRoot),
+    href,
+    description: relativeBreadcrumb(hit.pathFromScope),
+  }
+}
+
+function toResourceExcerptHitSuggest(
+  item: ResourceItem,
+  excerpt: ResourceExcerpt,
+  pathFromRoot: string[],
+  pathFromScope: string[],
+): LinkSuggestItem {
+  const href = resourceExcerptLocator(item.id, excerpt.id)
+  const title = (excerpt.title || '').trim()
+  return {
+    id: href,
+    kind: 'resourceExcerpt',
+    label: title,
+    applyLabel: formatResourceChildSuggestLabel(item.title, ...pathFromRoot),
+    href,
+    description: relativeBreadcrumb(pathFromScope),
+  }
+}
+
+function matchesExcerptQuery(excerpt: ResourceExcerpt, query: string): boolean {
+  const title = (excerpt.title || '').trim()
+  if (!title) return false
+  const needle = query.trim().toLowerCase()
+  if (!needle) return true
+  const haystack = [excerpt.chapterTitle, title].filter(Boolean).join(' ').toLowerCase()
+  return title.toLowerCase().includes(needle) || haystack.includes(needle)
+}
+
 export interface FetchLinkSuggestOptions {
   kbId: string | null
   pageTree: PageItem[]
   ensurePageOutline: (pageId: string) => Promise<ContentTreeNode[]>
+  /** Current markdown link href when editing a complete `[label](href)`. */
+  currentHref?: string | null
   limit?: number
+}
+
+async function resolveResourcesForDrill(
+  pageQuery: string,
+  currentHref: string | null | undefined,
+  limit: number,
+): Promise<ResourceItem[]> {
+  const { getResourceItem, listResourceItems } = await import('@/api/externalResource')
+  const pinned = parseResourceLocator(currentHref)
+  if (pinned?.itemId) {
+    try {
+      return [await getResourceItem(pinned.itemId)]
+    } catch {
+      // fall through to title / url search
+    }
+  }
+
+  try {
+    const result = await listResourceItems({ page: 0, pageSize: MAX_PAGE_SIZE })
+    if (isHttpHref(currentHref)) {
+      const href = currentHref!.trim()
+      const byUrl = result.items.filter((item) => (
+        item.sourceUrl?.trim() === href || item.identityValue?.trim() === href
+      ))
+      if (byUrl.length > 0) return byUrl.slice(0, limit)
+    }
+
+    const needle = pageQuery.trim().toLowerCase()
+    if (!needle) return []
+    return result.items
+      .filter((item) => resourceItemSearchText(item).toLowerCase().includes(needle))
+      .slice(0, limit)
+  } catch {
+    return []
+  }
+}
+
+/**
+ * Collect resource chapter/excerpt suggests under a drill scope.
+ * Empty childQuery → Browse (direct children); non-empty → DeepSearch in subtree.
+ */
+export function collectResourceScopeSuggests(
+  item: ResourceItem,
+  chapters: ResourceChapter[],
+  excerpts: ResourceExcerpt[],
+  pathSegments: string[],
+  childQuery: string,
+  limit: number,
+): LinkSuggestItem[] {
+  const scopeNodes = toChapterScopeNodes(chapters)
+  const resolved = resolveScopeParent(scopeNodes, pathSegments)
+  if (!resolved) return []
+
+  const { parentId, resolvedPath } = resolved
+  const browsing = !childQuery.trim()
+  const items: LinkSuggestItem[] = []
+
+  const chapterHits = browsing
+    ? browseChildren(scopeNodes, parentId, resolvedPath)
+    : deepSearchInSubtree(scopeNodes, parentId, childQuery, resolvedPath)
+
+  for (const hit of chapterHits) {
+    items.push(toResourceChapterHitSuggest(item, hit))
+    if (items.length >= limit) return items
+  }
+
+  const subtreeChapterIds = browsing
+    ? new Set<string | null>([parentId])
+    : collectSubtreeIds(scopeNodes, parentId)
+
+  for (const excerpt of excerpts) {
+    const title = (excerpt.title || '').trim()
+    if (!title) continue
+    const excerptChapterId = excerpt.chapterId ?? null
+    if (!subtreeChapterIds.has(excerptChapterId)) continue
+    if (browsing && excerpt.parentId) continue
+    if (!matchesExcerptQuery(excerpt, browsing ? '' : childQuery)) continue
+
+    const pathFromRoot = [...resolvedPath, title]
+    const pathFromScope = [title]
+    items.push(toResourceExcerptHitSuggest(item, excerpt, pathFromRoot, pathFromScope))
+    if (items.length >= limit) return items
+  }
+
+  return items
+}
+
+async function collectResourceChildSuggests(
+  item: ResourceItem,
+  pathSegments: string[],
+  childQuery: string,
+  limit: number,
+): Promise<LinkSuggestItem[]> {
+  const { listResourceChapters, listResourceExcerpts } = await import('@/api/externalResource')
+  let chapters: ResourceChapter[] = []
+  try {
+    chapters = await listResourceChapters(item.id)
+  } catch {
+    if (pathSegments.length > 0) return []
+  }
+
+  let excerpts: ResourceExcerpt[] = []
+  try {
+    const page = await listResourceExcerpts(item.id, { page: 0, pageSize: MAX_PAGE_SIZE })
+    excerpts = page.items
+  } catch {
+    // ignore excerpt load failures
+  }
+
+  return collectResourceScopeSuggests(item, chapters, excerpts, pathSegments, childQuery, limit)
+}
+
+async function collectPageHeadingSuggests(
+  matchedPages: PageItem[],
+  headingQuery: string,
+  options: FetchLinkSuggestOptions,
+  limit: number,
+): Promise<LinkSuggestItem[]> {
+  if (matchedPages.length === 0) return []
+
+  const pageIds = new Set(matchedPages.map((page) => page.id))
+  const pageTitleById = new Map(matchedPages.map((page) => [page.id, page.title]))
+
+  if (headingQuery) {
+    try {
+      const response = await searchHeadings(headingQuery, {
+        kbId: options.kbId ?? undefined,
+        limit: Math.max(limit, 40),
+      })
+      const items = response.items
+        .filter((hit) => pageIds.has(hit.pageId) && hit.sourceBlockId && hit.text)
+        .slice(0, limit)
+        .map((hit) => toHeadingSuggest(
+          hit.pageId,
+          hit.pageTitle || pageTitleById.get(hit.pageId) || hit.pageId,
+          hit.text,
+          hit.sourceBlockId!,
+        ))
+      if (items.length > 0) return items
+    } catch {
+      // fall through to outline filter
+    }
+  }
+
+  const outlineItems: LinkSuggestItem[] = []
+  for (const page of matchedPages.slice(0, 5)) {
+    const nodes = await options.ensurePageOutline(page.id)
+    const headings = flattenOutlineHeadings(nodes)
+    for (const node of headings) {
+      const text = (node.title || '').trim()
+      const blockId = node.sourceBlockId
+      if (!text || !blockId) continue
+      if (headingQuery && !text.toLowerCase().includes(headingQuery.toLowerCase())) continue
+      outlineItems.push(toHeadingSuggest(page.id, page.title, text, blockId))
+      if (outlineItems.length >= limit) return outlineItems
+    }
+  }
+  return outlineItems
 }
 
 export async function fetchLinkSuggestItems(
@@ -114,57 +378,35 @@ export async function fetchLinkSuggestItems(
   const { listResourceItems } = await import('@/api/externalResource')
   const parsed = parseLinkLabelQuery(rawQuery)
   if (!parsed.pageQuery && !parsed.drilled) return []
-  if (parsed.drilled && !parsed.pageQuery) return []
+  // Allow `>` drill when current href already pins a resource, even if label before `>` is empty.
+  if (parsed.drilled && !parsed.pageQuery && !parseResourceLocator(options.currentHref)) return []
 
   const limit = options.limit ?? 20
   const pages = flattenPages(options.pageTree)
-  const matchedPages = filterPagesByTitle(pages, parsed.pageQuery, limit)
+  const matchedPages = parsed.pageQuery
+    ? filterPagesByTitle(pages, parsed.pageQuery, limit)
+    : []
 
   if (parsed.drilled) {
-    const pageHits = matchedPages.length > 0
-      ? matchedPages
-      : filterPagesByTitle(pages, parsed.pageQuery, limit)
-    if (pageHits.length === 0) return []
-
-    const pageIds = new Set(pageHits.map((page) => page.id))
-    const pageTitleById = new Map(pageHits.map((page) => [page.id, page.title]))
     const headingQuery = parsed.headingQuery ?? ''
+    const childQuery = parsed.childQuery ?? ''
+    const pageItems = await collectPageHeadingSuggests(matchedPages, headingQuery, options, limit)
+    const remaining = Math.max(0, limit - pageItems.length)
+    if (remaining === 0) return pageItems
 
-    if (headingQuery) {
-      try {
-        const response = await searchHeadings(headingQuery, {
-          kbId: options.kbId ?? undefined,
-          limit: Math.max(limit, 40),
-        })
-        const items = response.items
-          .filter((hit) => pageIds.has(hit.pageId) && hit.sourceBlockId && hit.text)
-          .slice(0, limit)
-          .map((hit) => toHeadingSuggest(
-            hit.pageId,
-            hit.pageTitle || pageTitleById.get(hit.pageId) || hit.pageId,
-            hit.text,
-            hit.sourceBlockId!,
-          ))
-        if (items.length > 0) return items
-      } catch {
-        // fall through to outline filter
-      }
+    const resources = await resolveResourcesForDrill(parsed.pageQuery, options.currentHref, 5)
+    const resourceItems: LinkSuggestItem[] = []
+    for (const item of resources) {
+      const children = await collectResourceChildSuggests(
+        item,
+        parsed.pathSegments,
+        childQuery,
+        remaining - resourceItems.length,
+      )
+      resourceItems.push(...children)
+      if (resourceItems.length >= remaining) break
     }
-
-    const outlineItems: LinkSuggestItem[] = []
-    for (const page of pageHits.slice(0, 5)) {
-      const nodes = await options.ensurePageOutline(page.id)
-      const headings = flattenOutlineHeadings(nodes)
-      for (const node of headings) {
-        const text = (node.title || '').trim()
-        const blockId = node.sourceBlockId
-        if (!text || !blockId) continue
-        if (headingQuery && !text.toLowerCase().includes(headingQuery.toLowerCase())) continue
-        outlineItems.push(toHeadingSuggest(page.id, page.title, text, blockId))
-        if (outlineItems.length >= limit) return outlineItems
-      }
-    }
-    return outlineItems
+    return [...pageItems, ...resourceItems].slice(0, limit)
   }
 
   const pageItems = matchedPages.map(toPageSuggest)

@@ -44,7 +44,7 @@ test.beforeEach(async ({ page }) => {
 test('opens knowledge graph tab with empty centered state by default', async ({ page }) => {
   test.setTimeout(60_000)
   await page.goto('/resources?tab=knowledgeGraph')
-  await expect(page.getByRole('tab', { name: '知识图谱' })).toBeVisible()
+  await expect(page.getByRole('tab', { name: '知识点关联图' })).toBeVisible()
   await expect(page.locator('.kg-panel__toolbar')).toBeVisible()
   await expect(page.getByText('请选择中心知识点，查看其关联子图。')).toBeVisible()
   await expect(page.getByRole('button', { name: '选择知识点' })).toBeVisible()
@@ -56,11 +56,11 @@ test('navigates from knowledge point manager to centered graph', async ({ page }
   await page.goto('/resources?tab=knowledgePoints')
   await expect(page.getByRole('tab', { name: '知识点' })).toBeVisible()
   await page.getByText('基础概念', { exact: true }).first().click()
-  await page.getByRole('button', { name: '在图谱中查看' }).click()
+  await page.getByRole('button', { name: '在关联图中查看' }).click()
 
   await expect(page).toHaveURL(/tab=knowledgeGraph/)
   await expect(page).toHaveURL(/centerPointId=kp-demo-1/)
-  await expect(page.getByRole('tab', { name: '知识图谱' })).toBeVisible()
+  await expect(page.getByRole('tab', { name: '知识点关联图' })).toBeVisible()
   await expect(page.locator('.knowledge-graph-viewer .x6-node')).toHaveCount(2, { timeout: 15000 })
 
   const nestedInsideParent = await page.evaluate(() => {

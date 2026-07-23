@@ -276,7 +276,7 @@ async function onTreeUpdated() {
           <div class="kpm-detail__header">
             <span>{{ selectedPoint.title }}</span>
             <div class="kpm-detail__header-actions">
-              <ElButton size="small" @click="openInKnowledgeGraph('centered')">在图谱中查看</ElButton>
+              <ElButton size="small" @click="openInKnowledgeGraph('centered')">在关联图中查看</ElButton>
               <ElButton size="small" @click="openInKnowledgeGraph('prerequisite')">前置子图</ElButton>
             </div>
           </div>

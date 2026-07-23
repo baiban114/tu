@@ -1,4 +1,4 @@
-export type UrlDisplayMode = 'link' | 'iframe' | 'title'
+export type UrlDisplayMode = 'link' | 'iframe' | 'title' | 'pdf'
 
 export const URL_EMBED_DEFAULT_HEIGHT = 360
 export const URL_EMBED_MIN_HEIGHT = 120

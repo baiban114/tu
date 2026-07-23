@@ -9,6 +9,8 @@ import {
   formatMarkdownLinkSource,
   isMarkdownLinkSourceText,
   collapseActiveLinkIrSource,
+  getDocumentJsonWithCollapsedLinkIr,
+  LINK_IR_SKIP_EXPAND_META,
   linkIrSourceKey,
 } from '@/editor/extensions/linkIrSource'
 
@@ -95,6 +97,28 @@ describe('link IR source expand/collapse', () => {
     expect(linkIrSourceKey.getState(editor.state)).toBeNull()
   })
 
+  it('getDocumentJsonWithCollapsedLinkIr snapshots without mutating live IR', () => {
+    editor = createEditor()
+    editor.commands.setTextSelection(2)
+    expect(linkIrSourceKey.getState(editor.state)).not.toBeNull()
+    const liveText = editor.getText()
+    expect(liveText).toContain('[百度]')
+
+    const json = getDocumentJsonWithCollapsedLinkIr(
+      editor.state,
+      editor.schema.marks.link,
+      () => true,
+    )
+    const para = (json as { content?: Array<{ content?: Array<{ text?: string; marks?: unknown[] }> }> }).content?.[0]
+    const textNode = para?.content?.[0]
+    expect(textNode?.text).toBe('百度')
+    expect(textNode?.marks?.length).toBeGreaterThan(0)
+
+    // Live editor still in source mode — no flicker/collapse side effects.
+    expect(editor.getText()).toBe(liveText)
+    expect(linkIrSourceKey.getState(editor.state)).not.toBeNull()
+  })
+
   it('collapses back to link when caret leaves the source', () => {
     editor = createEditor()
     // Ensure there is content after the link so the caret can leave the source range.
@@ -115,6 +139,20 @@ describe('link IR source expand/collapse', () => {
     // pos after 「百度」 inside paragraph: 1(start) + 2(chars) = 3
     editor.commands.setTextSelection(3)
     expect(editor.getText()).toBe('百度')
+    expect(linkIrSourceKey.getState(editor.state)).toBeNull()
+  })
+
+  it('LINK_IR_SKIP_EXPAND_META prevents expand (page load / setContent restore)', () => {
+    editor = createEditor()
+    editor.chain()
+      .command(({ tr }) => {
+        tr.setMeta(LINK_IR_SKIP_EXPAND_META, true)
+        return true
+      })
+      .setTextSelection(2)
+      .run()
+    expect(editor.getText()).toBe('百度')
+    expect(editor.getHTML()).toContain('href="https://baidu.com"')
     expect(linkIrSourceKey.getState(editor.state)).toBeNull()
   })
 })

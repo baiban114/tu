@@ -9,6 +9,13 @@ export const linkIrSourceKey = new PluginKey<LinkIrSourceState | null>('tuLinkIr
 /** Meta key: plugin state replacement for expand/collapse transactions. */
 export const LINK_IR_META = 'tuLinkIr'
 
+/**
+ * Meta key: skip expand / plain-activate for this transaction.
+ * Used when TuEditor restores selection after setContent (page load / blocks sync)
+ * so links stay rendered as `<a>` instead of flashing into `[label](url)` source.
+ */
+export const LINK_IR_SKIP_EXPAND_META = 'tuLinkIrSkipExpand'
+
 const COLLAPSE_RE =
   /^\[([^\]]+)\]\(([^)\s]+)(?:\s+(?:"([^"]*)"|'([^']*)'))?\)$/
 
@@ -38,7 +45,7 @@ export function isMarkdownLinkSourceText(text: string): boolean {
   return COLLAPSE_RE.test(text)
 }
 
-function parseCollapseSource(text: string): {
+export function parseMarkdownLinkSource(text: string): {
   label: string
   href: string
   title: string | null
@@ -50,6 +57,14 @@ function parseCollapseSource(text: string): {
   const title = (match[3] || match[4] || '').trim() || null
   if (!label || !href) return null
   return { label, href, title }
+}
+
+function parseCollapseSource(text: string): {
+  label: string
+  href: string
+  title: string | null
+} | null {
+  return parseMarkdownLinkSource(text)
 }
 
 interface LinkAtSelection {
@@ -213,6 +228,8 @@ export function createLinkIrSourcePlugin(options: LinkIrSourcePluginOptions): Pl
       const selectionChanged = transactions.some((tr) => tr.selectionSet)
       const docChanged = transactions.some((tr) => tr.docChanged)
       const afterClear = !!irMetaTr && irMetaTr.getMeta(LINK_IR_META) === null
+      // TuEditor sets this when restoring selection after setContent (page load / blocks sync).
+      const skipExpand = transactions.some((tr) => tr.getMeta(LINK_IR_SKIP_EXPAND_META))
 
       if (prevActive) {
         const text = newState.doc.textBetween(prevActive.from, prevActive.to, '')
@@ -263,6 +280,8 @@ export function createLinkIrSourcePlugin(options: LinkIrSourcePluginOptions): Pl
           }
         }
       }
+
+      if (skipExpand) return null
 
       if (!selectionChanged && !afterClear && !docChanged) return null
 
@@ -377,4 +396,19 @@ export function collapseActiveLinkIrSource(
     linkType,
     isAllowedHref,
   )
+}
+
+/**
+ * Persistable doc JSON with active IR collapsed, without mutating the live editor.
+ * Keeps source-mode editing stable (no collapse→expand flicker / label trim while typing).
+ */
+export function getDocumentJsonWithCollapsedLinkIr(
+  state: EditorState,
+  linkType: MarkType | undefined,
+  isAllowedHref: (href: string) => boolean,
+): Record<string, unknown> {
+  if (!linkType) return state.doc.toJSON() as Record<string, unknown>
+  const tr = collapseActiveLinkIrSource(state, linkType, isAllowedHref)
+  const doc = tr ? state.apply(tr).doc : state.doc
+  return doc.toJSON() as Record<string, unknown>
 }

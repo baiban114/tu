@@ -15,6 +15,8 @@ const emit = defineEmits<{
 function kindLabel(kind: LinkSuggestKind): string {
   if (kind === 'page') return '文档'
   if (kind === 'heading') return '标题'
+  if (kind === 'resourceChapter') return '章节'
+  if (kind === 'resourceExcerpt') return '节选'
   return '资源'
 }
 </script>

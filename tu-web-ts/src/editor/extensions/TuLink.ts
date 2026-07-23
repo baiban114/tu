@@ -1,5 +1,6 @@
-import { InputRule, PasteRule } from '@tiptap/core'
+import { InputRule, PasteRule, mergeAttributes } from '@tiptap/core'
 import Link, { isAllowedUri } from '@tiptap/extension-link'
+import { resourceHrefPageLimitText } from '@/editor/linkLabelSuggestQuery'
 import { createLinkIrSourcePlugin } from './linkIrSource'
 
 /** `[label](href)` or `[label](href "title")` / `[label](href 'title')` */
@@ -40,6 +41,18 @@ export const TuLink = Link.extend({
         },
       },
     }
+  },
+
+  renderHTML({ HTMLAttributes }) {
+    const href = String(HTMLAttributes.href || '')
+    const pageLimit = resourceHrefPageLimitText(href)
+    return [
+      'a',
+      mergeAttributes(this.options.HTMLAttributes, HTMLAttributes, pageLimit
+        ? { 'data-page-limit': pageLimit }
+        : {}),
+      0,
+    ]
   },
 
   addInputRules() {

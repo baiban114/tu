@@ -11,6 +11,7 @@ import TocTreeList from './TocTreeList.vue'
 import SelectionToolbar from './SelectionToolbar.vue'
 import type { ReuseMarkOffer } from './SelectionToolbar.vue'
 import UrlHoverToolbar from './UrlHoverToolbar.vue'
+import LinkPresentationModeBar from './LinkPresentationModeBar.vue'
 import BlockPicker from './BlockPicker.vue'
 import ExternalResourcePicker, { type ExternalResourcePickerSelection } from './ExternalResourcePicker.vue'
 import PdfExcerptPicker, { type PdfExcerptPickerMode, type PdfExcerptSelection } from './PdfExcerptPicker.vue'
@@ -134,7 +135,9 @@ import {
 import type { GraphData } from '@/api/types'
 import { buildDocumentMarkingSectionScope } from '@/utils/documentMarkingSectionScope'
 import type { UrlHoverTarget } from '@/editor/urlHoverTarget'
+import { buildUrlHoverTargetFromPdfBlock } from '@/editor/urlHoverTarget'
 import type { UrlDisplayMode } from '@/utils/urlDisplay'
+import { isHttpHref, isInternalLocatorHref } from '@/editor/linkLabelSuggestQuery'
 import { PDF_EXCERPT_SCROLL_EVENT, PDF_EXCERPT_DEFAULT_HEIGHT, parsePdfExcerptViewMode } from '@/utils/pdfExcerpt'
 import {
   REF_GUTTER_DELEGATE_KEY,
@@ -448,6 +451,44 @@ function findPdfExcerptAttrsByBlockId(editor: import('@tiptap/core').Editor, blo
     return true
   })
   return attrs
+}
+
+const pdfToolbarPageDraft = reactive({ startPage: 1, endPage: 1 })
+
+watch(
+  () => [nodeViewToolbar.visible, nodeViewToolbar.blockId, nodeViewToolbar.sourceType] as const,
+  () => {
+    if (!nodeViewToolbar.visible || nodeViewToolbar.sourceType !== 'pdfExcerptBlock') return
+    const editor = tuEditorRef.value?.editor
+    if (!editor || !nodeViewToolbar.blockId) return
+    const attrs = findPdfExcerptAttrsByBlockId(editor, nodeViewToolbar.blockId)
+    if (!attrs) return
+    pdfToolbarPageDraft.startPage = Number(attrs.startPage) || 1
+    pdfToolbarPageDraft.endPage = Math.max(
+      pdfToolbarPageDraft.startPage,
+      Number(attrs.endPage) || pdfToolbarPageDraft.startPage,
+    )
+  },
+)
+
+function applyPdfToolbarPageRange() {
+  const editor = tuEditorRef.value?.editor
+  const blockId = nodeViewToolbar.blockId
+  if (!editor || !blockId || nodeViewToolbar.sourceType !== 'pdfExcerptBlock') return
+  const attrs = findPdfExcerptAttrsByBlockId(editor, blockId)
+  if (!attrs) return
+  const startPage = Math.max(1, Math.floor(Number(pdfToolbarPageDraft.startPage) || 1))
+  const endPage = Math.max(startPage, Math.floor(Number(pdfToolbarPageDraft.endPage) || startPage))
+  pdfToolbarPageDraft.startPage = startPage
+  pdfToolbarPageDraft.endPage = endPage
+  tuEditorRef.value?.updatePdfExcerptBlock?.(blockId, {
+    fileId: String(attrs.fileId || ''),
+    fileName: String(attrs.fileName || 'PDF'),
+    viewMode: 'excerpt',
+    startPage,
+    endPage,
+    height: Number(attrs.height) || PDF_EXCERPT_DEFAULT_HEIGHT,
+  })
 }
 const resourcePickerMode = ref<'insert' | 'markExcerpt' | 'bindSource' | 'setBasis'>('insert')
 const pendingResourceExcerptText = ref('')
@@ -2743,15 +2784,47 @@ const handleUrlHoverToolbarLeave = () => {
   }
 }
 
+const linkPresentationLoadingMode = ref<UrlDisplayMode | null>(null)
+
 const handleUrlDisplayModeSelect = async (mode: UrlDisplayMode) => {
   const target = urlHoverTarget.value
   if (!target || !tuEditorRef.value) return
-  const updated = await tuEditorRef.value.applyUrlDisplayMode(target, mode)
-  if (!updated) return
-  urlHoverTarget.value = updated
-  registerExternalLinkResource(updated.url, updated.label || updated.url)
-  pinUrlHoverToolbar()
+  if (mode === 'pdf') {
+    linkPresentationLoadingMode.value = 'pdf'
+  }
+  try {
+    const updated = await tuEditorRef.value.applyUrlDisplayMode(target, mode)
+    if (!updated) {
+      if (mode === 'pdf') showToast('该资源没有可用的站内 PDF 访问地址')
+      return
+    }
+    urlHoverTarget.value = updated
+    registerExternalLinkResource(updated.url, updated.label || updated.url)
+    pinUrlHoverToolbar()
+    if (mode === 'link' || mode === 'title') {
+      hideNodeViewToolbar()
+    }
+  } finally {
+    linkPresentationLoadingMode.value = null
+  }
 }
+
+const handleNodeViewLinkPresentation = async (mode: UrlDisplayMode) => {
+  const editor = tuEditorRef.value?.editor
+  const blockId = nodeViewToolbar.blockId
+  if (!editor || !blockId || nodeViewToolbar.sourceType !== 'pdfExcerptBlock') return
+  const target = buildUrlHoverTargetFromPdfBlock(editor, blockId)
+  if (!target) return
+  urlHoverTarget.value = target
+  await handleUrlDisplayModeSelect(mode)
+}
+
+const pdfNodeViewPresentationHref = computed(() => {
+  if (nodeViewToolbar.sourceType !== 'pdfExcerptBlock' || !nodeViewToolbar.blockId) return ''
+  const editor = tuEditorRef.value?.editor
+  if (!editor) return ''
+  return buildUrlHoverTargetFromPdfBlock(editor, nodeViewToolbar.blockId)?.url || ''
+})
 
 const handleUrlEmbedHeightChange = (height: number) => {
   const target = urlHoverTarget.value
@@ -2812,6 +2885,8 @@ const submitLinkPopover = () => {
 }
 
 const registerExternalLinkResource = (url: string, label: string, excerptText?: string) => {
+  // 站内 locator（resource: / page:）只做查找引用，不走外链登记
+  if (isInternalLocatorHref(url) || !isHttpHref(url)) return
   void registerExternalUrlFromPaste(url, { label, excerptText })
     .then((result) => {
       if (result.mode === 'excerpt') {
@@ -4026,6 +4101,7 @@ onBeforeUnmount(() => {
       :editor="tiptapEditor"
       :suppressed="urlHoverToolbarSuppressed"
       :pinning="urlHoverToolbarPinned"
+      :loading-mode="linkPresentationLoadingMode"
       @select-mode="handleUrlDisplayModeSelect"
       @height-change="handleUrlEmbedHeightChange"
       @mouseenter="handleUrlHoverToolbarEnter"
@@ -4115,16 +4191,37 @@ onBeforeUnmount(() => {
         class="page-toc"
         :class="{ 'page-toc--collapsed': !tocExpanded }"
       >
-        <div class="page-toc__card">
+        <div class="page-toc__edge">
           <button
             type="button"
-            class="page-toc__header"
-            @click="setTocPanelOpen(false)"
+            class="page-toc__edge-toggle"
+            :title="tocExpanded ? '收起目录' : '展开目录'"
+            :aria-label="tocExpanded ? '收起目录' : '展开目录'"
+            :aria-expanded="tocExpanded"
+            @click="setTocPanelOpen(!tocExpanded)"
           >
-            <span class="page-toc__title">目录</span>
-            <span class="page-toc__toggle">收起</span>
+            <svg
+              class="page-toc__edge-toggle-icon"
+              :class="{ 'page-toc__edge-toggle-icon--collapsed': !tocExpanded }"
+              viewBox="0 0 12 12"
+              aria-hidden="true"
+            >
+              <path
+                d="M7.5 2 4 6l3.5 4"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.6"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+            </svg>
           </button>
-          <div v-if="tocExpanded" class="page-toc__actions">
+        </div>
+        <div v-show="tocExpanded" class="page-toc__card">
+          <div class="page-toc__header">
+            <span class="page-toc__title">目录</span>
+          </div>
+          <div class="page-toc__actions">
             <button
               type="button"
               class="page-toc__action-btn"
@@ -4142,16 +4239,8 @@ onBeforeUnmount(() => {
             >
               {{ allTocItemsExpanded ? '全部收起' : '全部展开' }}
             </button>
-            <button
-              type="button"
-              class="page-toc__action-btn"
-              title="由当前文档目录结构生成思维导图预览"
-              @click="openOutlineMindmapDialog"
-            >
-              思维导图
-            </button>
           </div>
-          <div v-show="tocExpanded" ref="tocListRef" class="page-toc__list">
+          <div ref="tocListRef" class="page-toc__list">
             <TocTreeList
               :items="tocItems"
               :highlighted-block-id="highlightedBlockId"
@@ -4167,17 +4256,6 @@ onBeforeUnmount(() => {
         </div>
       </aside>
 
-      <!-- Floating TOC expand button (visible only when collapsed) -->
-      <button
-        v-if="!tocExpanded && tocItems.length > 0"
-        type="button"
-        class="page-toc__floating-toggle"
-        @click="setTocPanelOpen(true)"
-        title="展开目录"
-      >
-        目录
-      </button>
-
       <!-- NodeView floating toolbar -->
       <div
         v-if="nodeViewToolbar.visible"
@@ -4191,6 +4269,40 @@ onBeforeUnmount(() => {
           class="nodeview-toolbar__btn"
           @click="handleEditPdfExcerptSource(nodeViewToolbar.blockId)"
         >更改来源</button>
+        <div
+          v-if="nodeViewToolbar.sourceType === 'pdfExcerptBlock'"
+          class="nodeview-toolbar__pdf-pages"
+          title="调整摘页起止页"
+          @mousedown.stop
+          @click.stop
+        >
+          <span class="nodeview-toolbar__pdf-pages-label">页</span>
+          <input
+            v-model.number="pdfToolbarPageDraft.startPage"
+            class="nodeview-toolbar__pdf-page-input"
+            type="number"
+            min="1"
+            @change="applyPdfToolbarPageRange"
+            @keydown.enter.prevent="applyPdfToolbarPageRange"
+          >
+          <span class="nodeview-toolbar__pdf-pages-sep">–</span>
+          <input
+            v-model.number="pdfToolbarPageDraft.endPage"
+            class="nodeview-toolbar__pdf-page-input"
+            type="number"
+            min="1"
+            @change="applyPdfToolbarPageRange"
+            @keydown.enter.prevent="applyPdfToolbarPageRange"
+          >
+        </div>
+        <LinkPresentationModeBar
+          v-if="nodeViewToolbar.sourceType === 'pdfExcerptBlock' && pdfNodeViewPresentationHref"
+          class="nodeview-toolbar__presentation"
+          :href="pdfNodeViewPresentationHref"
+          current-mode="pdf"
+          :loading-mode="linkPresentationLoadingMode"
+          @select-mode="handleNodeViewLinkPresentation"
+        />
         <button
           v-if="nodeViewToolbar.canPromoteToPage"
           class="nodeview-toolbar__btn"
@@ -4647,6 +4759,8 @@ onBeforeUnmount(() => {
   top: 72px;
   flex: 0 0 248px;
   width: 248px;
+  display: flex;
+  align-items: stretch;
   align-self: flex-start;
   z-index: 24;
   transition: flex-basis 0.2s ease, width 0.2s ease;
@@ -4656,18 +4770,69 @@ onBeforeUnmount(() => {
   flex-basis: 0;
   width: 0;
   min-width: 0;
-  overflow: hidden;
+  min-height: calc(100vh - 96px);
+  overflow: visible;
   padding: 0;
   border: 0;
   margin: 0;
-  opacity: 0;
+}
+
+.page-toc__edge {
+  position: relative;
+  flex: 0 0 0;
+  width: 0;
+  align-self: stretch;
+  overflow: visible;
   pointer-events: none;
+}
+
+.page-toc__edge-toggle {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  z-index: 21;
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 12px;
+  height: 48px;
+  padding: 0;
+  border: 1px solid #d0d7de;
+  border-radius: 8px;
+  background: #fff;
+  color: #595959;
+  cursor: pointer;
+  box-shadow: 0 1px 4px rgba(15, 23, 42, 0.08);
+  transform: translate(-50%, -50%);
+  transition: border-color 0.15s, color 0.15s, box-shadow 0.15s;
+}
+
+.page-toc__edge-toggle:hover {
+  border-color: #1677ff;
+  color: #1677ff;
+  box-shadow: 0 2px 8px rgba(22, 119, 255, 0.16);
+}
+
+.page-toc__edge-toggle-icon {
+  width: 8px;
+  height: 8px;
+  flex-shrink: 0;
+  /* Right-side panel: chevron points right when open (collapse toward right). */
+  transform: rotate(180deg);
+  transition: transform 0.2s ease;
+}
+
+.page-toc__edge-toggle-icon--collapsed {
+  transform: rotate(0deg);
 }
 
 .page-toc__card {
   display: flex;
   flex-direction: column;
-  max-height: calc(100vh - 40px);
+  flex: 1;
+  min-width: 0;
+  max-height: min(62vh, calc(100vh - 200px));
   overflow: hidden;
   padding: 10px;
   border: 1px solid #e5e7eb;
@@ -4683,16 +4848,8 @@ onBeforeUnmount(() => {
   gap: 8px;
   width: 100%;
   padding: 6px 8px;
-  border: 0;
-  border-radius: 8px;
-  background: transparent;
   color: #1f2937;
-  cursor: pointer;
   text-align: left;
-}
-
-.page-toc__header:hover {
-  background: rgba(22, 119, 255, 0.08);
 }
 
 .page-toc__title {
@@ -4700,39 +4857,6 @@ onBeforeUnmount(() => {
   min-width: 0;
   font-size: 13px;
   font-weight: 700;
-}
-
-.page-toc__toggle {
-  flex: 0 0 auto;
-  color: #6b7280;
-  font-size: 12px;
-}
-
-.page-toc__floating-toggle {
-  position: fixed;
-  right: 0;
-  top: 50%;
-  transform: translateY(-50%);
-  z-index: 999;
-  padding: 12px 6px;
-  border: 1px solid #e5e7eb;
-  border-right: 0;
-  border-radius: 8px 0 0 8px;
-  background: rgba(252, 253, 255, 0.94);
-  backdrop-filter: blur(10px);
-  box-shadow: -4px 0 16px rgba(15, 23, 42, 0.08);
-  color: #6b7280;
-  font-size: 12px;
-  cursor: pointer;
-  writing-mode: vertical-rl;
-  letter-spacing: 0.06em;
-  line-height: 1.4;
-  transition: color 0.15s, background 0.15s;
-}
-
-.page-toc__floating-toggle:hover {
-  color: #1677ff;
-  background: #fff;
 }
 
 .page-toc__actions {
@@ -4768,6 +4892,8 @@ onBeforeUnmount(() => {
 .page-toc__list {
   display: flex;
   flex-direction: column;
+  flex: 1;
+  min-height: 0;
   gap: 6px;
   margin-top: 6px;
   overflow: auto;
@@ -4971,12 +5097,55 @@ onBeforeUnmount(() => {
 .nodeview-toolbar {
   position: fixed;
   display: flex;
+  flex-wrap: wrap;
+  align-items: center;
   gap: 2px;
   padding: 2px 3px;
   background: #fff;
   border: 1px solid #e5e7eb;
   border-radius: 3px;
   box-shadow: 0 4px 12px rgba(15, 23, 42, 0.1);
+}
+.nodeview-toolbar__presentation {
+  display: inline-flex;
+  align-items: center;
+  margin-right: 2px;
+  padding-right: 4px;
+  border-right: 1px solid #e5e7eb;
+}
+.nodeview-toolbar__pdf-pages {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin-right: 2px;
+  padding: 0 4px 0 2px;
+  border-right: 1px solid #e5e7eb;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 20px;
+}
+.nodeview-toolbar__pdf-pages-label {
+  margin-right: 2px;
+  white-space: nowrap;
+}
+.nodeview-toolbar__pdf-pages-sep {
+  color: #94a3b8;
+}
+.nodeview-toolbar__pdf-page-input {
+  width: 44px;
+  height: 22px;
+  padding: 0 4px;
+  border: 1px solid #e5e7eb;
+  border-radius: 2px;
+  background: #fff;
+  color: #374151;
+  font-size: 12px;
+  line-height: 20px;
+  text-align: center;
+}
+.nodeview-toolbar__pdf-page-input:focus {
+  outline: none;
+  border-color: #94a3b8;
 }
 .nodeview-toolbar__btn {
   padding: 2px 7px;

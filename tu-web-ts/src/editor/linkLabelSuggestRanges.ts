@@ -1,11 +1,11 @@
 import type { EditorState } from '@tiptap/pm/state'
-import { linkIrSourceKey } from '@/editor/extensions/linkIrSource'
+import { findLinkAtSelection, linkIrSourceKey } from '@/editor/extensions/linkIrSource'
 
 export interface LinkLabelEditContext {
   /** Inclusive markdown span to replace (starts at `[`). */
   replaceFrom: number
   replaceTo: number
-  /** Label content range (exclusive of `[` / `]`). */
+  /** Label content range (exclusive of `[` / `]` for markdown; full mark span when collapsed). */
   labelFrom: number
   labelTo: number
   labelText: string
@@ -111,7 +111,7 @@ export function isCaretInLinkLabel(
 }
 
 /**
- * Resolve the markdown-link label edit context under caret (IR active, complete, or `[query`).
+ * Resolve the markdown-link label edit context under caret (IR active, incomplete `[query`, or collapsed link mark).
  */
 export function findLinkLabelEditContext(
   state: EditorState,
@@ -146,22 +146,39 @@ export function findLinkLabelEditContext(
 
   const before = blockText.slice(0, offset)
   const openIdx = before.lastIndexOf('[')
-  if (openIdx < 0) return null
-  if (before.slice(openIdx + 1).includes(']')) return null
+  if (openIdx >= 0 && !before.slice(openIdx + 1).includes(']')) {
+    const fromOpen = blockText.slice(openIdx)
+    const parts = splitMarkdownLinkSourceRanges(fromOpen, blockStart + openIdx)
+    if (parts && isCaretInLinkLabel(caret, parts.labelFrom, parts.labelTo)) {
+      return {
+        replaceFrom: blockStart + openIdx,
+        replaceTo: parts.replaceTo,
+        labelFrom: parts.labelFrom,
+        labelTo: parts.labelTo,
+        labelText: parts.labelText,
+        href: parts.href,
+        title: parts.title,
+        complete: parts.complete,
+      }
+    }
+  }
 
-  const fromOpen = blockText.slice(openIdx)
-  const parts = splitMarkdownLinkSourceRanges(fromOpen, blockStart + openIdx)
-  if (!parts) return null
-  if (!isCaretInLinkLabel(caret, parts.labelFrom, parts.labelTo)) return null
-
+  const linkType = state.schema.marks.link
+  if (!linkType) return null
+  const linkAt = findLinkAtSelection(state, linkType)
+  if (!linkAt) return null
+  if (!isCaretInLinkLabel(caret, linkAt.from, linkAt.to)) return null
+  const href = typeof linkAt.mark.attrs.href === 'string' ? linkAt.mark.attrs.href : null
+  const titleRaw = linkAt.mark.attrs.title
+  const title = typeof titleRaw === 'string' && titleRaw.trim() ? titleRaw : null
   return {
-    replaceFrom: blockStart + openIdx,
-    replaceTo: parts.replaceTo,
-    labelFrom: parts.labelFrom,
-    labelTo: parts.labelTo,
-    labelText: parts.labelText,
-    href: parts.href,
-    title: parts.title,
-    complete: parts.complete,
+    replaceFrom: linkAt.from,
+    replaceTo: linkAt.to,
+    labelFrom: linkAt.from,
+    labelTo: linkAt.to,
+    labelText: linkAt.label,
+    href,
+    title,
+    complete: Boolean(linkAt.label.trim() && href),
   }
 }

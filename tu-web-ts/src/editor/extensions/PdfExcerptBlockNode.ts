@@ -24,6 +24,22 @@ export const PdfExcerptBlockNode = Node.create({
       startPage: { default: 1 },
       endPage: { default: 1 },
       height: { default: PDF_EXCERPT_DEFAULT_HEIGHT },
+      sourceHref: {
+        default: '',
+        parseHTML: (element) => element.getAttribute('data-source-href') || '',
+        renderHTML: (attributes) => {
+          const value = String(attributes.sourceHref || '').trim()
+          return value ? { 'data-source-href': value } : {}
+        },
+      },
+      sourceLabel: {
+        default: '',
+        parseHTML: (element) => element.getAttribute('data-source-label') || '',
+        renderHTML: (attributes) => {
+          const value = String(attributes.sourceLabel || '').trim()
+          return value ? { 'data-source-label': value } : {}
+        },
+      },
     }
   },
 
@@ -50,6 +66,8 @@ export function createPdfExcerptNodeAttrs(input: {
   endPage: number
   height?: number
   blockId?: string
+  sourceHref?: string
+  sourceLabel?: string
 }) {
   return {
     blockId: input.blockId || createPdfExcerptBlockId(),
@@ -59,5 +77,7 @@ export function createPdfExcerptNodeAttrs(input: {
     startPage: input.startPage,
     endPage: input.endPage,
     height: input.height ?? PDF_EXCERPT_DEFAULT_HEIGHT,
+    sourceHref: input.sourceHref || '',
+    sourceLabel: input.sourceLabel || '',
   }
 }

@@ -14,13 +14,14 @@ export function applyLinkSuggest(
   context: LinkLabelEditContext,
   item: LinkSuggestItem,
 ): void {
-  const source = formatMarkdownLinkSource(item.label, item.href)
+  const writtenLabel = item.applyLabel ?? item.label
+  const source = formatMarkdownLinkSource(writtenLabel, item.href)
   const { state, view } = editor
   const tr = state.tr
   tr.replaceWith(context.replaceFrom, context.replaceTo, state.schema.text(source))
   const from = context.replaceFrom
   const to = from + source.length
-  const labelEnd = from + 1 + item.label.length
+  const labelEnd = from + 1 + writtenLabel.length
   tr.setSelection(TextSelection.create(tr.doc, Math.min(labelEnd, to)))
   tr.setMeta(LINK_IR_META, {
     from,

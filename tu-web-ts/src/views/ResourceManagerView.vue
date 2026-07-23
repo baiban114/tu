@@ -152,7 +152,7 @@ const TAB_LABELS: Record<ResourceTab, string> = {
   orphaned: '孤立标注',
   knowledgePoints: '知识点',
   knowledgeRelations: '知识关联',
-  knowledgeGraph: '知识图谱',
+  knowledgeGraph: '知识点关联图',
 };
 
 function getRouteTab(): ResourceTab {
@@ -1085,6 +1085,7 @@ async function openExcerptPanel(item: ResourceItem) {
 async function applyResourceDeepLink() {
   const itemId = typeof route.query.itemId === 'string' ? route.query.itemId : '';
   const excerptId = typeof route.query.excerptId === 'string' ? route.query.excerptId : '';
+  const chapterId = typeof route.query.chapterId === 'string' ? route.query.chapterId : '';
   if (!itemId) return;
 
   if (activeTab.value !== 'items') {
@@ -1101,6 +1102,10 @@ async function applyResourceDeepLink() {
   selectedTypeId.value = item.typeId;
   selectedWorkId.value = item.workId || '';
   await openExcerptPanel(item);
+
+  if (chapterId && supportsBookChapters(typeById.value.get(item.typeId)?.code)) {
+    await openChapterPanel(item);
+  }
 
   if (!excerptId) return;
   const excerpt = excerpts.value.find((entry) => entry.id === excerptId);
@@ -2412,7 +2417,7 @@ watch(
 );
 
 watch(
-  () => [route.query.itemId, route.query.excerptId],
+  () => [route.query.itemId, route.query.excerptId, route.query.chapterId],
   () => {
     void applyResourceDeepLink();
   },
@@ -2476,7 +2481,7 @@ watch(
       </el-tab-pane>
       <el-tab-pane label="知识点" name="knowledgePoints" />
       <el-tab-pane label="知识关联" name="knowledgeRelations" />
-      <el-tab-pane label="知识图谱" name="knowledgeGraph" />
+      <el-tab-pane label="知识点关联图" name="knowledgeGraph" />
     </el-tabs>
 
     <section v-if="activeTab === 'knowledgePoints'" class="resource-layout knowledge-points-layout">

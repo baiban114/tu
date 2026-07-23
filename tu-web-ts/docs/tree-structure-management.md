@@ -22,7 +22,7 @@
 - 跨域（页面 / 资源 / TOC）的拖拽、合并、删除规则
 - 将 `ResourceItemRelation`（图关系）并入父子树
 - AI 自动建树、多用户树共识
-- **知识关联边**（`knowledge_relation`）不进入父子树；与 `ResourceItemRelation` 同层，见 [knowledge-relations.md](./knowledge-relations.md)，Phase 2 投影到 X6 图谱
+- **知识关联边**（`knowledge_relation`）不进入父子树；与 `ResourceItemRelation` 同层，见 [knowledge-relations.md](./knowledge-relations.md)，Phase 2 投影到 X6 知识点关联图
 - **知识点软分类树**（`knowledge_point.parent_id`）与 `PageItem` 页面目录**并列**，非子集；页面/节选仅作证据 locator，见 [knowledge-relations.md](./knowledge-relations.md) §2
 
 ---
@@ -283,7 +283,7 @@ toggle: (node: TreeNode, expanded: boolean) => void
 
 **聚焦（默认开）：** 目录工具栏「聚焦」开启时，侧栏随编辑器光标所在标题自动展开祖先路径、收起其他分支，并将当前条目滚入可视区并高亮。关闭聚焦后可手动展开/收起，展开状态会持久化；开启聚焦时不持久化临时展开路径。
 
-**思维导图预览：** 页面顶栏与目录工具栏的「思维导图」打开只读预览弹窗，根节点为页面标题，分支由当前 TOC 树生成（`buildMindmapGraphFromToc` / `DocumentOutlineMindmapDialog`）。
+**思维导图预览：** 页面顶栏的「思维导图」打开只读预览弹窗，根节点为页面标题，分支由当前 TOC 树生成（`buildMindmapGraphFromToc` / `DocumentOutlineMindmapDialog`）。
 
 **纳入目录：**
 

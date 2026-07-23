@@ -44,11 +44,23 @@ describe('pdfExcerpt serialization', () => {
     expect(parsed?.endPage).toBe(120)
   })
 
-  it('defaults missing mode to excerpt', () => {
-    const parsed = parsePdfExcerptComment(
-      'id="pe-old" fileId="f1" fileName="a.pdf" start="2" end="4" height="480"',
-    )
-    expect(parsed?.viewMode).toBe('excerpt')
+  it('roundtrips sourceHref/sourceLabel for link presentation', () => {
+    const attrs = {
+      blockId: 'pe-src',
+      fileId: 'file-abc',
+      fileName: 'book.pdf',
+      viewMode: 'full' as const,
+      startPage: 1,
+      endPage: 1,
+      height: 480,
+      sourceHref: 'resource:ri-1',
+      sourceLabel: '王道网络',
+    }
+    const comment = serializePdfExcerptComment(attrs)
+    expect(comment).toContain('sourceHref="resource:ri-1"')
+    expect(comment).toContain('sourceLabel="王道网络"')
+    const match = comment.match(/<!--tu:pdf-excerpt\s+([^>]+)-->/)
+    expect(parsePdfExcerptComment(match![1]!)).toEqual(attrs)
   })
 
   it('clamps page range to total pages', () => {

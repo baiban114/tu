@@ -153,6 +153,25 @@ function clampRange() {
   endPage.value = normalized.endPage
 }
 
+/** 改页码时若仍是全文，自动切到摘页，便于「更改来源」直接改范围。 */
+function onPageRangeChange() {
+  if (viewMode.value === 'full') {
+    viewMode.value = 'excerpt'
+  }
+  clampRange()
+}
+
+function onViewModeChange(mode: string | number | boolean | undefined) {
+  const next = mode === 'full' ? 'full' : 'excerpt'
+  viewMode.value = next
+  if (next === 'full') {
+    startPage.value = 1
+    endPage.value = Math.max(1, totalPages.value)
+  } else {
+    clampRange()
+  }
+}
+
 function onConfirm() {
   if (!canConfirm.value || !fileId.value) return
   if (viewMode.value === 'excerpt') {
@@ -188,7 +207,9 @@ function onConfirm() {
 
     <div class="pdf-excerpt-picker">
       <p class="pdf-excerpt-picker__hint">
-        上传 PDF 正本后嵌入页面。摘页仅显示所选页码；全文在块内滚动浏览，按页按需加载，不会切割原文件。
+        {{ isEditMode
+          ? '可直接修改起止页（会切到摘页并回写 resource 链接的 #page=）；也可重新选择 PDF 文件。全文模式在块内滚动浏览全部页。'
+          : '上传 PDF 正本后嵌入页面。摘页仅显示所选页码；全文在块内滚动浏览，按页按需加载，不会切割原文件。' }}
       </p>
 
       <div class="pdf-excerpt-picker__file-row">
@@ -202,7 +223,7 @@ function onConfirm() {
 
       <div v-if="fileId" class="pdf-excerpt-picker__mode">
         <span class="pdf-excerpt-picker__mode-label">嵌入模式</span>
-        <el-radio-group v-model="viewMode">
+        <el-radio-group :model-value="viewMode" @change="onViewModeChange">
           <el-radio-button value="excerpt">摘页</el-radio-button>
           <el-radio-button value="full">全文</el-radio-button>
         </el-radio-group>
@@ -217,31 +238,32 @@ function onConfirm() {
           <span>总页数</span>
           <strong>{{ inspecting ? '…' : totalPages }}</strong>
         </div>
-        <template v-if="isExcerptMode">
-          <div class="pdf-excerpt-picker__field">
-            <span>起始页</span>
-            <el-input-number
-              v-model="startPage"
-              :min="1"
-              :max="totalPages"
-              :disabled="inspecting"
-              @change="clampRange"
-            />
-          </div>
-          <div class="pdf-excerpt-picker__field">
-            <span>结束页</span>
-            <el-input-number
-              v-model="endPage"
-              :min="startPage"
-              :max="totalPages"
-              :disabled="inspecting"
-              @change="clampRange"
-            />
-          </div>
-        </template>
-        <div v-else class="pdf-excerpt-picker__field pdf-excerpt-picker__field--full">
-          <span>页码范围</span>
-          <strong>第 1–{{ totalPages }} 页（全文）</strong>
+        <div class="pdf-excerpt-picker__field">
+          <span>起始页</span>
+          <el-input-number
+            v-model="startPage"
+            :min="1"
+            :max="totalPages"
+            :disabled="inspecting"
+            @change="onPageRangeChange"
+          />
+        </div>
+        <div class="pdf-excerpt-picker__field">
+          <span>结束页</span>
+          <el-input-number
+            v-model="endPage"
+            :min="1"
+            :max="totalPages"
+            :disabled="inspecting"
+            @change="onPageRangeChange"
+          />
+        </div>
+        <div
+          v-if="!isExcerptMode"
+          class="pdf-excerpt-picker__field pdf-excerpt-picker__field--full"
+        >
+          <span>当前模式</span>
+          <strong>全文（1–{{ totalPages }}）。修改起止页将自动切到摘页。</strong>
         </div>
         <div class="pdf-excerpt-picker__field">
           <span>块高度</span>

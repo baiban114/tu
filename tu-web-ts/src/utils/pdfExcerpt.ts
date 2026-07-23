@@ -42,6 +42,10 @@ export interface PdfExcerptAttrs {
   startPage: number
   endPage: number
   height: number
+  /** Original link href (`resource:…` / http) for presentation round-trip. */
+  sourceHref?: string
+  /** Original link label for restoring inline link text. */
+  sourceLabel?: string
 }
 
 export function parsePdfExcerptComment(attrsStr: string): PdfExcerptAttrs | null {
@@ -60,12 +64,20 @@ export function parsePdfExcerptComment(attrsStr: string): PdfExcerptAttrs | null
     startPage,
     endPage,
     height: Number.isFinite(height) && height > 0 ? height : PDF_EXCERPT_DEFAULT_HEIGHT,
+    sourceHref: attrs.sourceHref || undefined,
+    sourceLabel: attrs.sourceLabel || undefined,
   }
 }
 
 export function serializePdfExcerptComment(attrs: PdfExcerptAttrs): string {
   const modeAttr = attrs.viewMode === 'full' ? ` mode="full"` : ''
-  return `<!--tu:pdf-excerpt id="${escapeAttr(attrs.blockId)}" fileId="${escapeAttr(attrs.fileId)}" fileName="${escapeAttr(attrs.fileName)}" start="${attrs.startPage}" end="${attrs.endPage}" height="${attrs.height}"${modeAttr}-->`
+  const sourceHrefAttr = attrs.sourceHref
+    ? ` sourceHref="${escapeAttr(attrs.sourceHref)}"`
+    : ''
+  const sourceLabelAttr = attrs.sourceLabel
+    ? ` sourceLabel="${escapeAttr(attrs.sourceLabel)}"`
+    : ''
+  return `<!--tu:pdf-excerpt id="${escapeAttr(attrs.blockId)}" fileId="${escapeAttr(attrs.fileId)}" fileName="${escapeAttr(attrs.fileName)}" start="${attrs.startPage}" end="${attrs.endPage}" height="${attrs.height}"${modeAttr}${sourceHrefAttr}${sourceLabelAttr}-->`
 }
 
 export function normalizePdfPageRange(

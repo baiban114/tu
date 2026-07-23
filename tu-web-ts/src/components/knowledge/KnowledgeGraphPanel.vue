@@ -289,7 +289,7 @@ async function refreshGraph() {
       selectedPointId.value = null;
     }
   } catch (error) {
-    loadError.value = error instanceof Error ? error.message : '加载知识图谱失败';
+    loadError.value = error instanceof Error ? error.message : '加载知识点关联图失败';
     graphData.value = null;
     graphNodes.value = [];
     lastGraphResponse.value = null;
@@ -378,9 +378,9 @@ function fitCanvas() {
 async function openCenterPicker() {
   const point = await openKnowledgePointPicker({
     kbId: props.kbId,
-    title: '选择图谱中心知识点',
+    title: '选择关联图中心知识点',
     selectedId: centerPointId.value || null,
-    hint: '选择作为图谱中心的知识点',
+    hint: '选择作为关联图中心的知识点',
     allowManage: true,
   });
   if (!point) return;
@@ -555,7 +555,7 @@ watch([centerPointId, mode, depth, direction, selectedTypeKeys, collapsedPointId
       type="warning"
       :closable="false"
       show-icon
-      title="图谱节点已达上限，部分关联未展示。可缩小展开深度或收紧关系类型筛选。"
+      title="关联图节点已达上限，部分关联未展示。可缩小展开深度或收紧关系类型筛选。"
       class="kg-panel__alert"
     />
     <ElAlert

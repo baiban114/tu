@@ -178,10 +178,11 @@ export function anchorLabel(anchor: KnowledgeAnchor): string {
 }
 
 export function parseLocator(locator: string): {
-  kind: KnowledgeAnchorKind | 'unknown';
+  kind: KnowledgeAnchorKind | 'resourceChapter' | 'unknown';
   pageId?: string;
   resourceItemId?: string;
   excerptId?: string;
+  chapterId?: string;
   entityId?: string;
   blockId?: string;
   pdfPage?: number;
@@ -225,6 +226,9 @@ export function parseLocator(locator: string): {
     if (parts[1] === 'excerpt' && parts[2]) {
       return { kind: 'resourceExcerpt', resourceItemId: itemId, excerptId: parts[2], display: `节选 ${parts[2]}` };
     }
+    if (parts[1] === 'chapter' && parts[2]) {
+      return { kind: 'resourceChapter', resourceItemId: itemId, chapterId: parts[2], display: `章节 ${parts[2]}` };
+    }
     return { kind: 'resourceItem', resourceItemId: itemId, display: `资源 ${itemId}` };
   }
   return { kind: 'unknown', display: locator };
@@ -235,13 +239,14 @@ export async function navigateKnowledgeAnchor(
   handlers: KnowledgeAnchorNavigateHandlers,
 ): Promise<void> {
   const parsed = parseLocator(anchor.locator);
-  if (parsed.kind === 'resourceItem' || parsed.kind === 'resourceExcerpt') {
+  if (parsed.kind === 'resourceItem' || parsed.kind === 'resourceExcerpt' || parsed.kind === 'resourceChapter') {
     await handlers.router.push({
       path: '/resources',
       query: {
         tab: 'items',
         itemId: parsed.resourceItemId,
         ...(parsed.excerptId ? { excerptId: parsed.excerptId } : {}),
+        ...(parsed.chapterId ? { chapterId: parsed.chapterId } : {}),
       },
     });
     return;

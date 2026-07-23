@@ -32,7 +32,12 @@ import {
   type TuPageClipboardMeta,
 } from '@/editor/pageMetaClipboard'
 import { resolveClipboardHtmlSource } from '@/editor/extensions/HtmlInlineRender'
-import { collapseActiveLinkIrSource, linkIrSourceKey } from '@/editor/extensions/linkIrSource'
+import {
+  getDocumentJsonWithCollapsedLinkIr,
+  LINK_IR_META,
+  LINK_IR_SKIP_EXPAND_META,
+  linkIrSourceKey,
+} from '@/editor/extensions/linkIrSource'
 import { findLinkLabelEditContext, type LinkLabelEditContext } from '@/editor/linkLabelSuggestRanges'
 import {
   applyLinkSuggest,
@@ -40,6 +45,16 @@ import {
   isInternalLocatorHref,
   type LinkSuggestItem,
 } from '@/editor/linkLabelSuggest'
+import { syncResourceHrefWithPdfPages } from '@/editor/linkLabelSuggestQuery'
+import { isResourceLocatorHref, resolvePdfExcerptFromResourceHref } from '@/editor/resourceLinkToPdf'
+import {
+  buildUrlHoverTargetFromLinkIr,
+  buildUrlHoverTargetFromLinkMarkAtPos,
+  buildUrlHoverTargetFromPdfBlock,
+  resolveUrlHoverTarget,
+  urlHoverTargetsEqual,
+  type UrlHoverTarget,
+} from '@/editor/urlHoverTarget'
 import LinkLabelSuggestMenu from './LinkLabelSuggestMenu.vue'
 import { useOutlineCacheStore } from '@/stores/outlineCache'
 import { getAnnotationSelectionPayload } from '@/editor/annotationText'
@@ -68,6 +83,7 @@ import {
   URL_EMBED_MIN_HEIGHT,
   type UrlDisplayMode,
 } from '@/utils/urlDisplay'
+import { parsePdfExcerptViewMode } from '@/utils/pdfExcerpt'
 import {
   buildHandleMenuItems,
   getSectionHandleMenuContext,
@@ -84,11 +100,6 @@ import { getTocSectionBoundaryPos } from '@/utils/toc/tocSections'
 import { resolveFoldSectionEntryIdAtPos } from '@/utils/toc/resolveFoldSectionEntry'
 import type { ResolvedPos } from '@tiptap/pm/model'
 import { EDITOR_SECTION_HANDLE_KEY } from '@/editor/editorSectionHandleBridge'
-import {
-  resolveUrlHoverTarget,
-  urlHoverTargetsEqual,
-  type UrlHoverTarget,
-} from '@/editor/urlHoverTarget'
 
 interface Props {
   /** Tiptap document JSON（schema v2 主路径） */
@@ -174,6 +185,8 @@ let lastDocSignature = ''
 let urlHoverTimer: ReturnType<typeof setTimeout> | null = null
 let urlHoverClearTimer: ReturnType<typeof setTimeout> | null = null
 let lastUrlHoverTarget: UrlHoverTarget | null = null
+/** Toolbar is currently bound to active markdown IR source (keep across <a> teardown mouseleave). */
+let urlHoverBoundToLinkIr = false
 let urlHoverSuppressed = false
 
 // --- Hover Handle ---
@@ -237,6 +250,8 @@ const linkSuggestListActive = ref(false)
 const linkSuggestTop = ref(0)
 const linkSuggestLeft = ref(0)
 const linkSuggestContext = ref<LinkLabelEditContext | null>(null)
+/** True only after label content was edited; selection-only (路过) must not open the menu. */
+let linkSuggestArmed = false
 let linkSuggestTimer: ReturnType<typeof setTimeout> | null = null
 let linkSuggestSeq = 0
 
@@ -246,6 +261,30 @@ function clearLinkSuggest() {
   linkSuggestIndex.value = 0
   linkSuggestListActive.value = false
   linkSuggestContext.value = null
+}
+
+function disarmLinkSuggest() {
+  linkSuggestArmed = false
+  clearLinkSuggest()
+}
+
+/** Hide menu when caret leaves label; do not open on selection-only (路过). */
+function syncLinkSuggestOnSelection() {
+  const ed = editor.value
+  if (!ed || !props.editable) {
+    disarmLinkSuggest()
+    return
+  }
+  const context = findLinkLabelEditContext(ed.state)
+  if (!context) {
+    disarmLinkSuggest()
+    return
+  }
+  linkSuggestContext.value = context
+  if (!linkSuggestArmed) return
+  if (linkSuggestVisible.value) {
+    positionLinkSuggestMenu(context.labelFrom)
+  }
 }
 
 function positionLinkSuggestMenu(from: number) {
@@ -264,13 +303,17 @@ function positionLinkSuggestMenu(from: number) {
 async function refreshLinkSuggest() {
   const ed = editor.value
   if (!ed || !props.editable) {
+    disarmLinkSuggest()
+    return
+  }
+  if (!linkSuggestArmed) {
     clearLinkSuggest()
     return
   }
   const context = findLinkLabelEditContext(ed.state)
   linkSuggestContext.value = context
   if (!context) {
-    clearLinkSuggest()
+    disarmLinkSuggest()
     return
   }
   const query = context.labelText
@@ -287,8 +330,10 @@ async function refreshLinkSuggest() {
       kbId: workspaceStore.currentKbId,
       pageTree: workspaceStore.pageTree,
       ensurePageOutline: (pageId) => outlineCacheStore.ensurePageOutline(pageId),
+      currentHref: context.href,
     })
     if (seq !== linkSuggestSeq) return
+    if (!linkSuggestArmed) return
     linkSuggestItems.value = items
     linkSuggestIndex.value = 0
     linkSuggestListActive.value = false
@@ -308,6 +353,18 @@ function scheduleLinkSuggestRefresh() {
   }, 220)
 }
 
+function noteLinkSuggestDocChange(transaction: { docChanged: boolean; getMeta: (key: string) => unknown }) {
+  if (!transaction.docChanged) return
+  // IR expand/collapse is not user label editing — do not arm on 路过展开.
+  const irLifecycle = transaction.getMeta(LINK_IR_META) !== undefined
+  if (irLifecycle) {
+    if (linkSuggestArmed) scheduleLinkSuggestRefresh()
+    return
+  }
+  linkSuggestArmed = true
+  scheduleLinkSuggestRefresh()
+}
+
 function selectLinkSuggestItem(item: LinkSuggestItem) {
   const ed = editor.value
   const context = linkSuggestContext.value ?? (ed ? findLinkLabelEditContext(ed.state) : null)
@@ -321,7 +378,7 @@ function handleLinkSuggestKeyDown(event: KeyboardEvent): boolean {
   if (!linkSuggestVisible.value || linkSuggestItems.value.length === 0) return false
 
   if (event.key === 'Escape') {
-    clearLinkSuggest()
+    disarmLinkSuggest()
     return true
   }
 
@@ -609,32 +666,37 @@ function resolveEditorContent(): JSONContent {
   return blocksToTipTap(props.blocks ?? [])
 }
 
-function collapseLinkIrBeforePersist() {
-  const ed = editor.value
-  if (!ed) return
-  const linkType = ed.schema.marks.link
-  if (!linkType) return
-  const tr = collapseActiveLinkIrSource(
-    ed.state,
-    linkType,
-    (href) => Boolean(href?.trim()),
-  )
-  if (tr) {
-    ed.view.dispatch(tr)
-  }
-}
-
 function emitEditorContent() {
   if (!editor.value) return
-  // IR expand temporarily writes `[label](url)` into the doc; collapse before persist
-  // so autosave never stores expanded source (especially with a retained link mark).
-  collapseLinkIrBeforePersist()
-  const json = editor.value.getJSON()
+  // Snapshot-collapse IR for persist only — do not dispatch into the live view.
+  // Live collapse→re-expand caused source-mode flicker and trimmed spaces in `[]`.
+  const json = getDocumentJsonWithCollapsedLinkIr(
+    editor.value.state,
+    editor.value.schema.marks.link,
+    (href) => Boolean(href?.trim()),
+  ) as JSONContent
   skipNextContentSync = true
   emit('update:document', json)
   emit('content-change', json)
   if ((props.blocks?.length ?? 0) > 0) {
     emit('update:blocks', tipTapToBlocks(json, props.blocks))
+  }
+}
+
+/** Restore caret after setContent without triggering link IR expand. */
+function restoreSelectionAfterContentSync(from: number, to: number) {
+  const ed = editor.value
+  if (!ed) return
+  try {
+    ed.chain()
+      .command(({ tr }) => {
+        tr.setMeta(LINK_IR_SKIP_EXPAND_META, true)
+        return true
+      })
+      .setTextSelection({ from, to })
+      .run()
+  } catch {
+    // Position may land inside a non-text node after the rebuild
   }
 }
 
@@ -654,11 +716,7 @@ function applyExternalDocument(nextDoc: JSONContent) {
     const from = Math.min(prevSelection.from, docSize)
     const to = Math.min(prevSelection.to, docSize)
     if (from <= docSize && to <= docSize && from >= 0) {
-      try {
-        editor.value.commands.setTextSelection({ from, to })
-      } catch {
-        // ignore invalid selection after rebuild
-      }
+      restoreSelectionAfterContentSync(from, to)
     }
     if (wasFocused) editor.value.commands.focus(undefined, { scrollIntoView: false })
     lastDocSignature = JSON.stringify(nextDoc)
@@ -1014,9 +1072,20 @@ const updatePdfExcerptBlock = (
 
   return ed.chain().focus().command(({ tr, dispatch }) => {
     if (!dispatch) return true
+    const prev = found!.node.attrs
+    const viewMode = parsePdfExcerptViewMode(String(input.viewMode ?? prev.viewMode ?? 'excerpt'))
+    const prevHref = String(prev.sourceHref || '').trim()
+    const sourceHref = isResourceLocatorHref(prevHref)
+      ? syncResourceHrefWithPdfPages(prevHref, viewMode, input.startPage, input.endPage)
+      : prevHref
     tr.setNodeMarkup(found!.pos, undefined, {
-      ...found!.node.attrs,
-      ...createPdfExcerptNodeAttrs({ ...input, blockId }),
+      ...createPdfExcerptNodeAttrs({
+        ...input,
+        viewMode,
+        blockId,
+        sourceHref,
+        sourceLabel: String(prev.sourceLabel || ''),
+      }),
     })
     return true
   }).run()
@@ -1803,6 +1872,15 @@ const editor = useEditor({
         writePageMetaToClipboard(view, event)
         return false
       },
+      // Middle-click / modified clicks must not open href either.
+      auxclick(view, event) {
+        const linkEl = (event.target as HTMLElement | null)?.closest?.('a[href]')
+        if (linkEl && view.dom.contains(linkEl)) {
+          event.preventDefault()
+          return true
+        }
+        return false
+      },
     },
     handlePaste: (_view, event) => {
       if (!props.editable || !editor.value) return false
@@ -1855,15 +1933,27 @@ const editor = useEditor({
       return false
     },
     handleClick: (view, pos, event) => {
-      if (event.button !== 0) return false
+      // Rendered links must not navigate on plain click (edit / hover-toolbar first).
+      // Ctrl/Cmd+click still jumps internal locators.
+      const linkEl = (event.target as HTMLElement | null)?.closest?.('a[href]')
+      const clickedLink = Boolean(linkEl && view.dom.contains(linkEl))
       const $pos = view.state.doc.resolve(pos)
       const mark = $pos.marks().find((item) => item.type.name === 'link' && item.attrs.href)
         ?? $pos.nodeAfter?.marks.find((item) => item.type.name === 'link' && item.attrs.href)
-      const href = mark ? String(mark.attrs.href || '') : ''
-      if (!href || !isInternalLocatorHref(href)) return false
+      const href = mark
+        ? String(mark.attrs.href || '')
+        : (linkEl?.getAttribute('href') || '')
+      if (!href && !clickedLink) return false
       event.preventDefault()
-      emit('navigate-internal-link', href)
-      return true
+      if (
+        (event.metaKey || event.ctrlKey)
+        && href
+        && isInternalLocatorHref(href)
+      ) {
+        emit('navigate-internal-link', href)
+        return true
+      }
+      return false
     },
   },
   onCreate: () => {
@@ -1893,7 +1983,9 @@ const editor = useEditor({
   },
   onUpdate: ({ transaction }) => {
     if (isInternalUpdate || !editor.value) return
-    clearUrlHoverIfLinkIrActive()
+    reconcileUrlHoverWithLinkIr()
+    // Arm / refresh suggest on real label edits; independent of doc-signature early return.
+    noteLinkSuggestDocChange(transaction)
     if (transaction.getMeta(HEADING_SECTION_FOLD_META)) return
     const currentSignature = getDocSignature()
     if (currentSignature === lastDocSignature) return
@@ -1903,17 +1995,17 @@ const editor = useEditor({
       if (!isMounted || !editor.value) return
       emitEditorContent()
     }, 300)
-    scheduleLinkSuggestRefresh()
   },
   onSelectionUpdate: () => {
     if (!isMounted || !editor.value) return
-    clearUrlHoverIfLinkIrActive()
+    reconcileUrlHoverWithLinkIr()
     const { empty, from, to } = editor.value.state.selection
     const payload = empty ? null : getAnnotationSelectionPayload(editor.value.state.doc, from, to)
     const text = payload?.selectedText ?? ''
     const spanned = empty ? { ids: [], metadata: [] } : collectSelectionBlockInfo(from, to)
     emit('selection-change', !empty, text, from, to, payload?.blockId ?? getBlockIdAtPos(from), spanned.ids.length ? spanned.ids : undefined, spanned.metadata.length ? spanned.metadata : undefined)
-    scheduleLinkSuggestRefresh()
+    // Suggest list only opens after label content changes; selection alone must not open.
+    syncLinkSuggestOnSelection()
   },
 })
 
@@ -1970,12 +2062,8 @@ watch(
       const from = Math.min(prevSelection.from, docSize)
       const to = Math.min(prevSelection.to, docSize)
       if (from <= docSize && to <= docSize && from >= 0) {
-        try {
-          editor.value.commands.setTextSelection({ from, to })
-        } catch {
-          // Position may land inside a non-text node after the rebuild; let
-          // Tiptap fall back to its default selection in that case.
-        }
+        // Skip IR expand: page load / blocks sync must keep links as <a>, not `[label](url)`.
+        restoreSelectionAfterContentSync(from, to)
       }
       if (wasFocused) editor.value.commands.focus(undefined, { scrollIntoView: false })
       lastDocSignature = JSON.stringify(content)
@@ -2079,6 +2167,7 @@ onBeforeUnmount(() => {
     linkSuggestTimer = null
   }
   clearLinkSuggest()
+  linkSuggestArmed = false
   if (scrollContainer) {
     scrollContainer.removeEventListener('scroll', handleScrollInEditor)
     scrollContainer = null
@@ -2140,23 +2229,42 @@ function emitUrlHoverTarget(target: UrlHoverTarget | null) {
   emit('url-hover-change', target)
 }
 
-/** Drop stale UrlHover when caret enters link IR source (mouse may not move). */
-function clearUrlHoverIfLinkIrActive() {
+/**
+ * Keep UrlHover toolbar on the whole IR markdown span while source mode is active.
+ * Expand destroys `<a>`, which fires mouseleave and would otherwise dismiss the toolbar.
+ */
+function reconcileUrlHoverWithLinkIr() {
   if (!editor.value) return
-  if (!linkIrSourceKey.getState(editor.value.state)) return
+  const active = linkIrSourceKey.getState(editor.value.state)
+
+  if (!active) {
+    if (!urlHoverBoundToLinkIr) return
+    urlHoverBoundToLinkIr = false
+    clearUrlHoverTimer()
+    clearUrlHoverClearTimer()
+    const collapsed = buildUrlHoverTargetFromLinkMarkAtPos(editor.value, editor.value.state.selection.head)
+    emitUrlHoverTarget(collapsed)
+    return
+  }
+
+  const irTarget = buildUrlHoverTargetFromLinkIr(editor.value, active)
+  if (!irTarget) return
+
   clearUrlHoverTimer()
   clearUrlHoverClearTimer()
-  emitUrlHoverTarget(null)
+  urlHoverBoundToLinkIr = true
+  emitUrlHoverTarget(irTarget)
 }
 
 function handleEditorUrlMouseMove(event: MouseEvent) {
   if (!props.editable || !editor.value || urlHoverSuppressed) return
-  if (linkIrSourceKey.getState(editor.value.state)) {
-    clearUrlHoverIfLinkIrActive()
-    return
-  }
   const resolved = resolveUrlHoverTarget(editor.value, event)
   if (!resolved) {
+    // Expand teardown / transient DOM: do not dismiss while caret is in IR source.
+    if (urlHoverBoundToLinkIr || linkIrSourceKey.getState(editor.value.state)) {
+      clearUrlHoverClearTimer()
+      return
+    }
     clearUrlHoverTimer()
     if (!urlHoverClearTimer) {
       urlHoverClearTimer = setTimeout(() => {
@@ -2179,6 +2287,11 @@ function handleEditorUrlMouseMove(event: MouseEvent) {
 
 function handleEditorUrlMouseLeave() {
   clearUrlHoverTimer()
+  // Replacing `<a>` with IR plain text often synthesizes mouseleave — ignore while IR-bound.
+  if (urlHoverBoundToLinkIr || (editor.value && linkIrSourceKey.getState(editor.value.state))) {
+    clearUrlHoverClearTimer()
+    return
+  }
   if (urlHoverClearTimer !== null) return
   urlHoverClearTimer = setTimeout(() => {
     urlHoverClearTimer = null
@@ -2191,6 +2304,7 @@ function setUrlHoverSuppressed(value: boolean) {
   if (value) {
     clearUrlHoverTimer()
     clearUrlHoverClearTimer()
+    urlHoverBoundToLinkIr = false
     emitUrlHoverTarget(null)
   }
 }
@@ -2280,13 +2394,160 @@ async function applyUrlDisplayMode(
 ): Promise<UrlHoverTarget | null> {
   const ed = editor.value
   if (!ed || !props.editable) return null
-  // Never rewrite ranges while markdown IR source is open (would corrupt `[label](url)`).
-  if (linkIrSourceKey.getState(ed.state)) return null
+  if (target.displayMode === mode && target.kind !== 'inline') {
+    // Already in requested embed presentation
+    if (mode === 'iframe' && target.kind === 'iframe') return target
+    if (mode === 'pdf' && target.kind === 'pdf') return target
+  }
 
+  const clearLinkIrMetaCommand = ({
+    tr,
+    state,
+  }: {
+    tr: import('@tiptap/pm/state').Transaction
+    state: import('@tiptap/pm/state').EditorState
+  }) => {
+    if (linkIrSourceKey.getState(state)) {
+      tr.setMeta(LINK_IR_META, null)
+      tr.setMeta('preventAutolink', true)
+    }
+    return true
+  }
+
+  const deleteEmbedBlock = (blockId: string) => {
+    const pos = findBlockPos(ed.state.doc, blockId)
+    if (pos === null) return null
+    const node = ed.state.doc.nodeAt(pos)
+    if (!node) return null
+    return { pos, node, to: pos + node.nodeSize }
+  }
+
+  const insertInlineLinkAt = (
+    pos: number,
+    href: string,
+    text: string,
+    displayMode: 'link' | 'title',
+  ): UrlHoverTarget | null => {
+    ed.chain().focus()
+      .insertContentAt(pos, {
+        type: 'paragraph',
+        content: [{
+          type: 'text',
+          text,
+          marks: [{
+            type: 'link',
+            attrs: {
+              href,
+              displayMode,
+            },
+          }],
+        }],
+      })
+      .run()
+    flushContentChange()
+    const from = pos + 1
+    const to = from + text.length
+    return buildInlineHoverTarget(ed, from, to, href, displayMode, text)
+  }
+
+  // --- → PDF ---
+  if (mode === 'pdf') {
+    if (target.kind === 'pdf') return target
+    if (!isResourceLocatorHref(target.url)) return null
+    const pdf = await resolvePdfExcerptFromResourceHref(target.url)
+    if (!pdf) return null
+
+    const attrs = createPdfExcerptNodeAttrs({
+      ...pdf,
+      // Keep full authored href including `#page=` for round-trip.
+      sourceHref: target.url,
+      sourceLabel: target.label || '',
+    })
+
+    if (target.kind === 'iframe') {
+      if (!target.blockId) return null
+      const found = deleteEmbedBlock(target.blockId)
+      if (!found) return null
+      ed.chain().focus()
+        .deleteRange({ from: found.pos, to: found.to })
+        .insertContentAt(found.pos, { type: 'pdfExcerptBlock', attrs })
+        .run()
+    } else {
+      ed.chain()
+        .focus()
+        .command(clearLinkIrMetaCommand)
+        .deleteRange({ from: target.from, to: target.to })
+        .insertContentAt(target.from, { type: 'pdfExcerptBlock', attrs })
+        .run()
+    }
+    urlHoverBoundToLinkIr = false
+    flushContentChange()
+    const hover = buildUrlHoverTargetFromPdfBlock(ed, attrs.blockId)
+    // Prefer authored source even if attr read races; keeps toolbar「链接」enabled.
+    if (hover) {
+      return {
+        ...hover,
+        url: attrs.sourceHref || hover.url,
+        label: attrs.sourceLabel || hover.label,
+      }
+    }
+    return null
+  }
+
+  // --- PDF → link / title / iframe ---
+  if (target.kind === 'pdf') {
+    if (!target.blockId) return null
+    const found = deleteEmbedBlock(target.blockId)
+    if (!found) return null
+    const rawSourceHref = String(found.node.attrs.sourceHref || target.url || '').trim()
+    if (!rawSourceHref || rawSourceHref.startsWith('file:')) return null
+    const sourceLabel = String(found.node.attrs.sourceLabel || target.label || '').trim()
+      || String(found.node.attrs.fileName || rawSourceHref)
+
+    const viewMode = parsePdfExcerptViewMode(String(found.node.attrs.viewMode || 'excerpt'))
+    const startPage = Math.max(1, Number(found.node.attrs.startPage) || 1)
+    const endPage = Math.max(startPage, Number(found.node.attrs.endPage) || startPage)
+    const sourceHref = isResourceLocatorHref(rawSourceHref)
+      ? syncResourceHrefWithPdfPages(rawSourceHref, viewMode, startPage, endPage)
+      : rawSourceHref
+
+    if (mode === 'iframe') {
+      if (isInternalLocatorHref(sourceHref)) return null
+      const blockId = createUrlEmbedBlockId()
+      ed.chain().focus()
+        .deleteRange({ from: found.pos, to: found.to })
+        .insertContentAt(found.pos, {
+          type: 'urlEmbedBlock',
+          attrs: { blockId, url: sourceHref, height: URL_EMBED_DEFAULT_HEIGHT },
+        })
+        .run()
+      flushContentChange()
+      return buildIframeHoverTarget(ed, blockId, sourceHref)
+    }
+
+    const titleText = mode === 'title' && !isInternalLocatorHref(sourceHref)
+      ? await resolvePageTitle(sourceHref)
+      : (mode === 'link' ? sourceLabel : sourceHref)
+
+    ed.chain().focus()
+      .deleteRange({ from: found.pos, to: found.to })
+      .run()
+    return insertInlineLinkAt(
+      found.pos,
+      sourceHref,
+      titleText,
+      mode === 'title' ? 'title' : 'link',
+    )
+  }
+
+  // --- → iframe ---
   if (mode === 'iframe') {
     if (target.kind === 'iframe') return target
+    if (isInternalLocatorHref(target.url)) return null
     const blockId = createUrlEmbedBlockId()
-    ed.chain().focus()
+    ed.chain()
+      .focus()
+      .command(clearLinkIrMetaCommand)
       .deleteRange({ from: target.from, to: target.to })
       .insertContentAt(target.from, {
         type: 'urlEmbedBlock',
@@ -2297,43 +2558,31 @@ async function applyUrlDisplayMode(
     return buildIframeHoverTarget(ed, blockId, target.url)
   }
 
+  // --- iframe → link / title ---
   if (target.kind === 'iframe') {
     if (!target.blockId) return null
-    const pos = findBlockPos(ed.state.doc, target.blockId)
-    if (pos === null) return null
-    const node = ed.state.doc.nodeAt(pos)
-    if (!node) return null
+    const found = deleteEmbedBlock(target.blockId)
+    if (!found) return null
     const titleText = mode === 'title'
       ? await resolvePageTitle(target.url)
       : target.url
     ed.chain().focus()
-      .deleteRange({ from: pos, to: pos + node.nodeSize })
-      .insertContentAt(pos, {
-        type: 'paragraph',
-        content: [{
-          type: 'text',
-          text: titleText,
-          marks: [{
-            type: 'link',
-            attrs: {
-              href: target.url,
-              displayMode: mode === 'title' ? 'title' : 'link',
-            },
-          }],
-        }],
-      })
+      .deleteRange({ from: found.pos, to: found.to })
       .run()
-    flushContentChange()
-    const from = pos + 1
-    const to = from + titleText.length
-    return buildInlineHoverTarget(ed, from, to, target.url, mode, titleText)
+    return insertInlineLinkAt(found.pos, target.url, titleText, mode === 'title' ? 'title' : 'link')
   }
 
+  // --- inline link ↔ title / link ---
+  // Prefer restoring custom label when switching back to link for resource locators.
   const titleText = mode === 'title'
     ? await resolvePageTitle(target.url)
-    : target.url
+    : (isInternalLocatorHref(target.url) && target.label
+      ? target.label
+      : target.url)
 
-  ed.chain().focus()
+  ed.chain()
+    .focus()
+    .command(clearLinkIrMetaCommand)
     .deleteRange({ from: target.from, to: target.to })
     .insertContentAt(target.from, {
       type: 'text',
@@ -2350,7 +2599,7 @@ async function applyUrlDisplayMode(
   flushContentChange()
   const from = target.from
   const to = from + titleText.length
-  return buildInlineHoverTarget(ed, from, to, target.url, mode, titleText)
+  return buildInlineHoverTarget(ed, from, to, target.url, mode === 'title' ? 'title' : 'link', titleText)
 }
 
 function duplicateBlock(blockId: string) {
@@ -2968,6 +3217,17 @@ defineExpose({
 .tu-editor-wrapper :deep(.tu-editor-content a) {
   color: #1677ff;
   text-decoration: underline;
+}
+
+/* PDF 摘页 ↔ resource 链接：折叠态展示 #page= 文本限制（不改 [] 标题） */
+.tu-editor-wrapper :deep(.tu-editor-content a[data-page-limit])::after {
+  content: attr(data-page-limit);
+  margin-left: 0.35em;
+  color: #64748b;
+  font-size: 0.92em;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  text-decoration: none;
+  font-weight: 500;
 }
 
 /* IR: caret inside link → expand to markdown source */
