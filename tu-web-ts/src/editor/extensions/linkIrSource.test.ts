@@ -119,6 +119,24 @@ describe('link IR source expand/collapse', () => {
     expect(linkIrSourceKey.getState(editor.state)).not.toBeNull()
   })
 
+  it('collapses IR on outside click without re-expand when selection stays on the link', () => {
+    editor = createEditor()
+    editor.commands.setTextSelection(2)
+    expect(linkIrSourceKey.getState(editor.state)).not.toBeNull()
+    expect(editor.getText()).toContain('[百度]')
+
+    // Mimic NodeView click: collapse while selection still inside the former IR span,
+    // with SKIP_EXPAND so afterClear does not immediately re-open source mode.
+    const tr = collapseActiveLinkIrSource(editor.state, editor.schema.marks.link!, () => true)
+    expect(tr).not.toBeNull()
+    tr!.setMeta(LINK_IR_SKIP_EXPAND_META, true)
+    editor.view.dispatch(tr!)
+
+    expect(linkIrSourceKey.getState(editor.state)).toBeNull()
+    expect(editor.getText()).toBe('百度')
+    expect(editor.getHTML()).toContain('href="https://baidu.com"')
+  })
+
   it('collapses back to link when caret leaves the source', () => {
     editor = createEditor()
     // Ensure there is content after the link so the caret can leave the source range.

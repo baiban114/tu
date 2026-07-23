@@ -4,6 +4,7 @@ import PdfExcerptBlockView from '../views/PdfExcerptBlockView.vue'
 import { stopNonHandleNodeViewDragEvent } from './nodeViewDragHandle'
 import {
   createPdfExcerptBlockId,
+  normalizePdfClipRatio,
   PDF_EXCERPT_DEFAULT_HEIGHT,
 } from '@/utils/pdfExcerpt'
 
@@ -24,6 +25,8 @@ export const PdfExcerptBlockNode = Node.create({
       startPage: { default: 1 },
       endPage: { default: 1 },
       height: { default: PDF_EXCERPT_DEFAULT_HEIGHT },
+      clipTop: { default: 0 },
+      clipBottom: { default: 1 },
       sourceHref: {
         default: '',
         parseHTML: (element) => element.getAttribute('data-source-href') || '',
@@ -65,10 +68,13 @@ export function createPdfExcerptNodeAttrs(input: {
   startPage: number
   endPage: number
   height?: number
+  clipTop?: number
+  clipBottom?: number
   blockId?: string
   sourceHref?: string
   sourceLabel?: string
 }) {
+  const clip = normalizePdfClipRatio(input.clipTop ?? 0, input.clipBottom ?? 1)
   return {
     blockId: input.blockId || createPdfExcerptBlockId(),
     fileId: input.fileId,
@@ -77,6 +83,8 @@ export function createPdfExcerptNodeAttrs(input: {
     startPage: input.startPage,
     endPage: input.endPage,
     height: input.height ?? PDF_EXCERPT_DEFAULT_HEIGHT,
+    clipTop: clip.clipTop,
+    clipBottom: clip.clipBottom,
     sourceHref: input.sourceHref || '',
     sourceLabel: input.sourceLabel || '',
   }

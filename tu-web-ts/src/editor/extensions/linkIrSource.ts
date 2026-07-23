@@ -207,6 +207,47 @@ export function createLinkIrSourcePlugin(options: LinkIrSourcePluginOptions): Pl
         return mapIrState(tr, value)
       },
     },
+    view(editorView) {
+      /**
+       * NodeViews often stop mousedown (stopEvent / @mousedown.stop), so ProseMirror
+       * never updates selection and appendTransaction never collapses IR.
+       * Capture-phase on the editor root still sees those clicks.
+       */
+      const onPointerDownCapture = (event: Event) => {
+        if (!(event instanceof MouseEvent) && !(event instanceof PointerEvent)) return
+        if (event.button != null && event.button !== 0) return
+        const active = linkIrSourceKey.getState(editorView.state)
+        if (!active || active.to <= active.from) return
+
+        const hit = editorView.posAtCoords({ left: event.clientX, top: event.clientY })
+        if (hit) {
+          const pos = hit.pos
+          if (pos >= active.from && pos <= active.to) return
+          // Atom / NodeView: inside points at the node; still outside IR text span.
+          if (hit.inside >= active.from && hit.inside < active.to) return
+        }
+
+        const linkType = options.getLinkType()
+        const tr = collapseActiveLinkIrSource(
+          editorView.state,
+          linkType,
+          options.isAllowedHref,
+        )
+        if (tr) {
+          // Collapse clears IR meta (null) which would otherwise trigger afterClear → re-expand
+          // while selection is still on the link (NodeView click does not move selection).
+          tr.setMeta(LINK_IR_SKIP_EXPAND_META, true)
+          editorView.dispatch(tr)
+        }
+      }
+
+      editorView.dom.addEventListener('mousedown', onPointerDownCapture, true)
+      return {
+        destroy() {
+          editorView.dom.removeEventListener('mousedown', onPointerDownCapture, true)
+        },
+      }
+    },
     props: {
       decorations(state) {
         const active = linkIrSourceKey.getState(state)
@@ -214,6 +255,22 @@ export function createLinkIrSourcePlugin(options: LinkIrSourcePluginOptions): Pl
         return DecorationSet.create(state.doc, [
           Decoration.inline(active.from, active.to, { class: 'tu-link-ir-source' }),
         ])
+      },
+      handleDOMEvents: {
+        // Focus left the editor (e.g. interactive control inside a NodeView).
+        blur(view, event) {
+          const active = linkIrSourceKey.getState(view.state)
+          if (!active || active.to <= active.from) return false
+          const next = event.relatedTarget
+          if (next instanceof Node && view.dom.contains(next)) return false
+          const linkType = options.getLinkType()
+          const tr = collapseActiveLinkIrSource(view.state, linkType, options.isAllowedHref)
+          if (tr) {
+            tr.setMeta(LINK_IR_SKIP_EXPAND_META, true)
+            view.dispatch(tr)
+          }
+          return false
+        },
       },
     },
     appendTransaction(transactions, oldState, newState) {

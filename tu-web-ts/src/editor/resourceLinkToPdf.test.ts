@@ -76,11 +76,46 @@ describe('resourceLinkToPdf', () => {
       viewMode: 'excerpt',
       startPage: 12,
       endPage: 12,
+      clipTop: 0,
+      clipBottom: 1,
     })
     expect(await resolvePdfExcerptFromResourceHref('resource:ri-1#page=3-5')).toMatchObject({
       viewMode: 'excerpt',
       startPage: 3,
       endPage: 5,
+      clipTop: 0,
+      clipBottom: 1,
+    })
+  })
+
+  it('maps #page=&clip= fragment to excerpt clip ratios', async () => {
+    vi.mocked(getResourceItem).mockResolvedValue({
+      id: 'ri-1',
+      typeId: 't1',
+      typeName: 'document',
+      identityFieldKey: 'title',
+      identityFieldLabel: '标题',
+      title: '书',
+      accessUrls: ['/api/files/file-1'],
+    })
+
+    expect(
+      await resolvePdfExcerptFromResourceHref('resource:ri-1#page=12&clip=0.2-0.75'),
+    ).toMatchObject({
+      viewMode: 'excerpt',
+      startPage: 12,
+      endPage: 12,
+      clipTop: 0.2,
+      clipBottom: 0.75,
+    })
+    expect(
+      await resolvePdfExcerptFromResourceHref('resource:ri-1#page=3-5&clip=0.2-0.8'),
+    ).toMatchObject({
+      viewMode: 'excerpt',
+      startPage: 3,
+      endPage: 5,
+      clipTop: 0.2,
+      clipBottom: 0.8,
     })
   })
 

@@ -653,6 +653,8 @@ function parseMarkdownBlocks(markdown: string): JSONContent[] {
               startPage: parsedPdf.startPage,
               endPage: parsedPdf.endPage,
               height: parsedPdf.height,
+              clipTop: parsedPdf.clipTop,
+              clipBottom: parsedPdf.clipBottom,
               sourceHref: parsedPdf.sourceHref || '',
               sourceLabel: parsedPdf.sourceLabel || '',
             },
@@ -1017,6 +1019,8 @@ function nodeToMarkdown(node: JSONContent): string {
         startPage: Number(node.attrs?.startPage) || 1,
         endPage: Number(node.attrs?.endPage) || 1,
         height: Number(node.attrs?.height) || 480,
+        clipTop: Number(node.attrs?.clipTop) || 0,
+        clipBottom: node.attrs?.clipBottom == null ? 1 : Number(node.attrs.clipBottom),
         sourceHref: String(node.attrs?.sourceHref || '') || undefined,
         sourceLabel: String(node.attrs?.sourceLabel || '') || undefined,
       })

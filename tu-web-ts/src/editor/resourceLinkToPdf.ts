@@ -19,12 +19,14 @@ export interface PdfExcerptInsertInput {
   startPage: number
   endPage: number
   height: number
+  clipTop: number
+  clipBottom: number
 }
 
 /**
  * Resolve a `resource:…` locator to pdfExcerptBlock attrs when the item has a
- *站内 `/api/files/…` PDF access URL. Lookup only — never registers resources.
- * `#page=N` / `#page=N-M` → excerpt mode with that range; no fragment → full.
+ * stored `/api/files/…` PDF access URL. Lookup only — never registers resources.
+ * `#page=N` / `#page=N-M` → excerpt; optional `&clip=T-B` → vertical ratios; no fragment → full.
  */
 export async function resolvePdfExcerptFromResourceHref(
   href: string,
@@ -63,6 +65,8 @@ export async function resolvePdfExcerptFromResourceHref(
       startPage: hasPage ? split.pageStart! : 1,
       endPage: hasPage ? split.pageEnd! : 1,
       height: PDF_EXCERPT_DEFAULT_HEIGHT,
+      clipTop: hasPage ? (split?.clipTop ?? 0) : 0,
+      clipBottom: hasPage ? (split?.clipBottom ?? 1) : 1,
     }
   }
 

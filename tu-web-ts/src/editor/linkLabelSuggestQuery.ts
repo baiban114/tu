@@ -85,24 +85,33 @@ export function stripHrefFragment(href: string): string {
 }
 
 /**
- * Visible `#page=N` / `#page=N-M` suffix for a resource href (collapsed link decoration).
+ * Visible `#page=…` / `#page=…&clip=…` suffix for a resource href (collapsed link decoration).
  * Returns null when there is no valid page fragment.
  */
 export function resourceHrefPageLimitText(href: string | null | undefined): string | null {
   const split = splitResourceHref(href)
   if (split?.pageStart == null || split.pageEnd == null) return null
-  if (split.pageStart === split.pageEnd) return `#page=${split.pageStart}`
-  return `#page=${split.pageStart}-${split.pageEnd}`
+  const pagePart = split.pageStart === split.pageEnd
+    ? `#page=${split.pageStart}`
+    : `#page=${split.pageStart}-${split.pageEnd}`
+  if (split.clipTop == null || split.clipBottom == null) return pagePart
+  if (!isClipFragmentActive(split.clipTop, split.clipBottom)) return pagePart
+  return `${pagePart}&clip=${formatClipFragmentValue(split.clipTop, split.clipBottom)}`
 }
 
 export interface ResourceHrefPageRange {
-  /** Locator without `#page=` fragment. */
+  /** Locator without `#…` fragment. */
   base: string
   pageStart?: number
   pageEnd?: number
+  /** Vertical start ratio on first page (0–1). */
+  clipTop?: number
+  /** Vertical end ratio on last page (0–1). */
+  clipBottom?: number
 }
 
-const PAGE_FRAGMENT_RE = /^page=(\d+)(?:-(\d+))?$/i
+const PAGE_PARAM_RE = /^page=(\d+)(?:-(\d+))?$/i
+const CLIP_PARAM_RE = /^clip=(\d+(?:\.\d+)?)-(\d+(?:\.\d+)?)$/i
 
 function normalizePageRange(start: number, end?: number): { pageStart: number; pageEnd: number } | null {
   if (!Number.isFinite(start) || start < 1) return null
@@ -112,9 +121,38 @@ function normalizePageRange(start: number, end?: number): { pageStart: number; p
   return { pageStart, pageEnd }
 }
 
+function clampClipRatio(value: number): number {
+  if (!Number.isFinite(value)) return 0
+  return Math.min(1, Math.max(0, Math.round(value * 1000) / 1000))
+}
+
+function isClipFragmentActive(clipTop: number, clipBottom: number): boolean {
+  return clipTop > 0.001 || clipBottom < 0.999
+}
+
+function formatClipFragmentValue(clipTop: number, clipBottom: number): string {
+  const top = clampClipRatio(clipTop)
+  const bottom = clampClipRatio(clipBottom)
+  const fmt = (n: number) => (Number.isInteger(n) ? String(n) : String(n))
+  return `${fmt(top)}-${fmt(bottom)}`
+}
+
+function parseClipParam(raw: string): { clipTop: number; clipBottom: number } | null {
+  const match = raw.match(CLIP_PARAM_RE)
+  if (!match) return null
+  const clipTop = clampClipRatio(Number(match[1]))
+  const clipBottom = clampClipRatio(Number(match[2]))
+  if (!isClipFragmentActive(clipTop, clipBottom) && clipTop === 0 && clipBottom === 1) {
+    return { clipTop: 0, clipBottom: 1 }
+  }
+  // Single-page invalid band (top >= bottom) is still allowed for multi-page independent ends;
+  // only reject NaN already handled by clamp.
+  return { clipTop, clipBottom }
+}
+
 /**
- * Split `resource:…` / `resource:…#page=N` / `#page=N-M` into base locator + optional page range.
- * Invalid fragments are ignored (treated as no page).
+ * Split `resource:…` / `#page=N` / `#page=N-M&clip=T-B` into base + optional page/clip.
+ * Invalid page fragments are ignored; unknown keys are ignored.
  */
 export function splitResourceHref(href: string | null | undefined): ResourceHrefPageRange | null {
   if (!href) return null
@@ -128,50 +166,88 @@ export function splitResourceHref(href: string | null | undefined): ResourceHref
   if (hashIdx < 0) return { base }
 
   const fragment = trimmed.slice(hashIdx + 1).trim()
-  // Obsidian-style `#page=N` / `#page=N-M`; ignore other fragment keys for now.
-  const match = fragment.match(PAGE_FRAGMENT_RE)
-  if (!match) return { base }
+  if (!fragment) return { base }
 
-  const start = Number(match[1])
-  const end = match[2] != null ? Number(match[2]) : undefined
-  const range = normalizePageRange(start, end)
-  if (!range) return { base }
-  return { base, pageStart: range.pageStart, pageEnd: range.pageEnd }
+  // Support both `#page=12` and `#page=12&clip=0.2-0.8` (also legacy bare `#page=…` only).
+  const parts = fragment.split('&').map((part) => part.trim()).filter(Boolean)
+  let pageStart: number | undefined
+  let pageEnd: number | undefined
+  let clipTop: number | undefined
+  let clipBottom: number | undefined
+
+  for (const part of parts) {
+    const pageMatch = part.match(PAGE_PARAM_RE)
+    if (pageMatch) {
+      const range = normalizePageRange(
+        Number(pageMatch[1]),
+        pageMatch[2] != null ? Number(pageMatch[2]) : undefined,
+      )
+      if (range) {
+        pageStart = range.pageStart
+        pageEnd = range.pageEnd
+      }
+      continue
+    }
+    const clip = parseClipParam(part)
+    if (clip) {
+      clipTop = clip.clipTop
+      clipBottom = clip.clipBottom
+    }
+  }
+
+  const result: ResourceHrefPageRange = { base }
+  if (pageStart != null && pageEnd != null) {
+    result.pageStart = pageStart
+    result.pageEnd = pageEnd
+  }
+  if (clipTop != null && clipBottom != null && isClipFragmentActive(clipTop, clipBottom)) {
+    result.clipTop = clipTop
+    result.clipBottom = clipBottom
+  }
+  return result
 }
 
 /**
- * Attach Obsidian-style `#page=` fragment to a resource locator base.
- * Same start/end → `#page=N`; range → `#page=N-M`.
+ * Attach Obsidian-style `#page=` (+ optional `&clip=T-B`) to a resource locator base.
  */
 export function formatResourceHrefPage(
   base: string,
   startPage: number,
   endPage?: number,
+  clipTop = 0,
+  clipBottom = 1,
 ): string {
   const cleanBase = stripHrefFragment(base)
   const range = normalizePageRange(startPage, endPage)
   if (!range) return cleanBase
-  if (range.pageStart === range.pageEnd) {
-    return `${cleanBase}#page=${range.pageStart}`
+  const pagePart = range.pageStart === range.pageEnd
+    ? `page=${range.pageStart}`
+    : `page=${range.pageStart}-${range.pageEnd}`
+  const top = clampClipRatio(clipTop)
+  const bottom = clampClipRatio(clipBottom)
+  if (isClipFragmentActive(top, bottom)) {
+    return `${cleanBase}#${pagePart}&clip=${formatClipFragmentValue(top, bottom)}`
   }
-  return `${cleanBase}#page=${range.pageStart}-${range.pageEnd}`
+  return `${cleanBase}#${pagePart}`
 }
 
 /**
  * Rebuild resource href for PDF↔link sync.
- * Full view drops `#page=`; excerpt writes `#page=` from start/end.
+ * Full view drops fragment; excerpt writes `#page=` and optional `&clip=`.
  */
 export function syncResourceHrefWithPdfPages(
   sourceHref: string,
   viewMode: 'excerpt' | 'full',
   startPage: number,
   endPage: number,
+  clipTop = 0,
+  clipBottom = 1,
 ): string {
   const split = splitResourceHref(sourceHref)
   const base = split?.base || stripHrefFragment(sourceHref)
   if (!base.startsWith('resource:')) return sourceHref.trim()
   if (viewMode === 'full') return base
-  return formatResourceHrefPage(base, startPage, endPage)
+  return formatResourceHrefPage(base, startPage, endPage, clipTop, clipBottom)
 }
 
 export function parseResourceLocator(href: string | null | undefined): {

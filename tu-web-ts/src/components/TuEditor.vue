@@ -962,6 +962,8 @@ const insertPdfExcerptUsingExternalResourcePending = (input: {
   startPage: number
   endPage: number
   height?: number
+  clipTop?: number
+  clipBottom?: number
 }) => {
   if (pendingExternalResourceInsertPos != null) {
     pendingPdfExcerptInsertPos = pendingExternalResourceInsertPos
@@ -991,6 +993,8 @@ const insertPdfExcerptBlock = (input: {
   startPage: number
   endPage: number
   height?: number
+  clipTop?: number
+  clipBottom?: number
 }) => {
   if (!editor.value) return false
   const content = {
@@ -1055,6 +1059,8 @@ const updatePdfExcerptBlock = (
     startPage: number
     endPage: number
     height?: number
+    clipTop?: number
+    clipBottom?: number
   },
 ) => {
   const ed = editor.value
@@ -1074,9 +1080,22 @@ const updatePdfExcerptBlock = (
     if (!dispatch) return true
     const prev = found!.node.attrs
     const viewMode = parsePdfExcerptViewMode(String(input.viewMode ?? prev.viewMode ?? 'excerpt'))
+    const clipTop = viewMode === 'full'
+      ? 0
+      : (input.clipTop ?? Number(prev.clipTop) ?? 0)
+    const clipBottom = viewMode === 'full'
+      ? 1
+      : (input.clipBottom ?? (prev.clipBottom == null ? 1 : Number(prev.clipBottom)))
     const prevHref = String(prev.sourceHref || '').trim()
     const sourceHref = isResourceLocatorHref(prevHref)
-      ? syncResourceHrefWithPdfPages(prevHref, viewMode, input.startPage, input.endPage)
+      ? syncResourceHrefWithPdfPages(
+        prevHref,
+        viewMode,
+        input.startPage,
+        input.endPage,
+        clipTop,
+        clipBottom,
+      )
       : prevHref
     tr.setNodeMarkup(found!.pos, undefined, {
       ...createPdfExcerptNodeAttrs({
@@ -1085,6 +1104,8 @@ const updatePdfExcerptBlock = (
         blockId,
         sourceHref,
         sourceLabel: String(prev.sourceLabel || ''),
+        clipTop,
+        clipBottom,
       }),
     })
     return true
@@ -2507,8 +2528,17 @@ async function applyUrlDisplayMode(
     const viewMode = parsePdfExcerptViewMode(String(found.node.attrs.viewMode || 'excerpt'))
     const startPage = Math.max(1, Number(found.node.attrs.startPage) || 1)
     const endPage = Math.max(startPage, Number(found.node.attrs.endPage) || startPage)
+    const clipTop = Number(found.node.attrs.clipTop) || 0
+    const clipBottom = found.node.attrs.clipBottom == null ? 1 : Number(found.node.attrs.clipBottom)
     const sourceHref = isResourceLocatorHref(rawSourceHref)
-      ? syncResourceHrefWithPdfPages(rawSourceHref, viewMode, startPage, endPage)
+      ? syncResourceHrefWithPdfPages(
+        rawSourceHref,
+        viewMode,
+        startPage,
+        endPage,
+        viewMode === 'full' ? 0 : clipTop,
+        viewMode === 'full' ? 1 : clipBottom,
+      )
       : rawSourceHref
 
     if (mode === 'iframe') {

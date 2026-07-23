@@ -5,6 +5,8 @@ import { buildFileUrl, uploadPdfFile } from '@/api/fileStorage'
 import {
   PDF_EXCERPT_DEFAULT_HEIGHT,
   PDF_EXCERPT_LARGE_DOC_PAGES,
+  formatPdfExcerptRangeLabel,
+  normalizePdfClipRatio,
   normalizePdfPageRange,
   type PdfExcerptViewMode,
 } from '@/utils/pdfExcerpt'
@@ -17,6 +19,10 @@ export interface PdfExcerptSelection {
   startPage: number
   endPage: number
   height: number
+  /** Vertical start on first page (0–1). */
+  clipTop: number
+  /** Vertical end on last page (0–1). */
+  clipBottom: number
 }
 
 export type PdfExcerptPickerMode = 'insert' | 'edit'
@@ -42,6 +48,9 @@ const viewMode = ref<PdfExcerptViewMode>('excerpt')
 const startPage = ref(1)
 const endPage = ref(1)
 const height = ref(PDF_EXCERPT_DEFAULT_HEIGHT)
+/** UI uses percent 0–100; persisted as 0–1 ratios. */
+const clipTopPercent = ref(0)
+const clipBottomPercent = ref(100)
 
 const dialogVisible = computed({
   get: () => props.visible,
@@ -59,8 +68,49 @@ const isLargeDocument = computed(() => totalPages.value > PDF_EXCERPT_LARGE_DOC_
 const canConfirm = computed(() => {
   if (!fileId.value) return false
   if (viewMode.value === 'full') return totalPages.value >= 1
-  return startPage.value <= endPage.value
+  if (startPage.value > endPage.value) return false
+  // Single page requires a usable band; multi-page ratios are independent.
+  if (startPage.value === endPage.value) {
+    return clipTopPercent.value < clipBottomPercent.value
+  }
+  return true
 })
+
+const excerptRangePreview = computed(() => {
+  if (viewMode.value !== 'excerpt') return ''
+  return formatPdfExcerptRangeLabel(
+    startPage.value,
+    endPage.value,
+    clipTopPercent.value / 100,
+    clipBottomPercent.value / 100,
+  )
+})
+
+function resetClipPercents() {
+  clipTopPercent.value = 0
+  clipBottomPercent.value = 100
+}
+
+function applyClipFromRatios(clipTop: number, clipBottom: number) {
+  const clip = normalizePdfClipRatio(clipTop, clipBottom)
+  clipTopPercent.value = Math.round(clip.clipTop * 100)
+  clipBottomPercent.value = Math.round(clip.clipBottom * 100)
+}
+
+function clampClipPercents() {
+  let top = Math.min(100, Math.max(0, Math.round(Number(clipTopPercent.value) || 0)))
+  let bottom = Math.min(100, Math.max(0, Math.round(Number(clipBottomPercent.value) || 100)))
+  if (startPage.value === endPage.value && bottom <= top) {
+    if (top >= 99) {
+      top = 98
+      bottom = 100
+    } else {
+      bottom = Math.min(100, top + 1)
+    }
+  }
+  clipTopPercent.value = top
+  clipBottomPercent.value = bottom
+}
 
 function resetState() {
   uploading.value = false
@@ -72,6 +122,7 @@ function resetState() {
   startPage.value = 1
   endPage.value = 1
   height.value = PDF_EXCERPT_DEFAULT_HEIGHT
+  resetClipPercents()
 }
 
 async function applyInitial(initial: PdfExcerptSelection) {
@@ -82,6 +133,7 @@ async function applyInitial(initial: PdfExcerptSelection) {
   startPage.value = initial.startPage
   endPage.value = initial.endPage
   height.value = initial.height
+  applyClipFromRatios(initial.clipTop ?? 0, initial.clipBottom ?? 1)
   inspecting.value = true
   try {
     if (initial.fileId) {
@@ -93,6 +145,7 @@ async function applyInitial(initial: PdfExcerptSelection) {
       } else {
         startPage.value = 1
         endPage.value = totalPages.value
+        resetClipPercents()
       }
     } else {
       totalPages.value = Math.max(initial.endPage, 1)
@@ -137,6 +190,7 @@ async function handleFileChange(event: Event) {
     totalPages.value = pages
     startPage.value = 1
     endPage.value = pages >= 1 ? 1 : 1
+    resetClipPercents()
   } catch (error) {
     const message = error instanceof Error ? error.message : 'PDF 上传失败'
     ElMessage.error(message)
@@ -167,6 +221,7 @@ function onViewModeChange(mode: string | number | boolean | undefined) {
   if (next === 'full') {
     startPage.value = 1
     endPage.value = Math.max(1, totalPages.value)
+    resetClipPercents()
   } else {
     clampRange()
   }
@@ -176,7 +231,11 @@ function onConfirm() {
   if (!canConfirm.value || !fileId.value) return
   if (viewMode.value === 'excerpt') {
     clampRange()
+    clampClipPercents()
   }
+  const clip = viewMode.value === 'full'
+    ? { clipTop: 0, clipBottom: 1 }
+    : normalizePdfClipRatio(clipTopPercent.value / 100, clipBottomPercent.value / 100)
   emit('confirm', {
     fileId: fileId.value,
     fileName: fileName.value,
@@ -184,6 +243,8 @@ function onConfirm() {
     startPage: viewMode.value === 'full' ? 1 : startPage.value,
     endPage: viewMode.value === 'full' ? totalPages.value : endPage.value,
     height: height.value,
+    clipTop: clip.clipTop,
+    clipBottom: clip.clipBottom,
   })
   dialogVisible.value = false
 }
@@ -265,6 +326,32 @@ function onConfirm() {
           <span>当前模式</span>
           <strong>全文（1–{{ totalPages }}）。修改起止页将自动切到摘页。</strong>
         </div>
+        <template v-if="isExcerptMode">
+          <div class="pdf-excerpt-picker__field">
+            <span>起始页顶部起（%）</span>
+            <el-input-number
+              v-model="clipTopPercent"
+              :min="0"
+              :max="100"
+              :disabled="inspecting"
+              @change="clampClipPercents"
+            />
+          </div>
+          <div class="pdf-excerpt-picker__field">
+            <span>结束页底部止（%）</span>
+            <el-input-number
+              v-model="clipBottomPercent"
+              :min="0"
+              :max="100"
+              :disabled="inspecting"
+              @change="clampClipPercents"
+            />
+          </div>
+          <div class="pdf-excerpt-picker__field pdf-excerpt-picker__field--full">
+            <span>摘取范围</span>
+            <strong>{{ excerptRangePreview }}（默认整页为 0%–100%）</strong>
+          </div>
+        </template>
         <div class="pdf-excerpt-picker__field">
           <span>块高度</span>
           <el-input-number v-model="height" :min="160" :max="2000" :step="40" />

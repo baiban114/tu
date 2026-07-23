@@ -138,7 +138,7 @@ import type { UrlHoverTarget } from '@/editor/urlHoverTarget'
 import { buildUrlHoverTargetFromPdfBlock } from '@/editor/urlHoverTarget'
 import type { UrlDisplayMode } from '@/utils/urlDisplay'
 import { isHttpHref, isInternalLocatorHref } from '@/editor/linkLabelSuggestQuery'
-import { PDF_EXCERPT_SCROLL_EVENT, PDF_EXCERPT_DEFAULT_HEIGHT, parsePdfExcerptViewMode } from '@/utils/pdfExcerpt'
+import { PDF_EXCERPT_SCROLL_EVENT, PDF_EXCERPT_DEFAULT_HEIGHT, PDF_EXCERPT_CLIP_SELECT_EVENT, formatPdfExcerptRangeLabel, parsePdfExcerptViewMode } from '@/utils/pdfExcerpt'
 import {
   REF_GUTTER_DELEGATE_KEY,
   type RefGutterDelegate,
@@ -488,7 +488,18 @@ function applyPdfToolbarPageRange() {
     startPage,
     endPage,
     height: Number(attrs.height) || PDF_EXCERPT_DEFAULT_HEIGHT,
+    clipTop: Number(attrs.clipTop) || 0,
+    clipBottom: attrs.clipBottom == null ? 1 : Number(attrs.clipBottom),
   })
+}
+
+function handlePdfClipSelectFromToolbar() {
+  const blockId = nodeViewToolbar.blockId
+  if (!blockId || nodeViewToolbar.sourceType !== 'pdfExcerptBlock') return
+  const editorDom = tuEditorRef.value?.editor?.view.dom
+  const root = editorDom?.querySelector<HTMLElement>(`[data-block-id="${CSS.escape(blockId)}"]`)
+  root?.dispatchEvent(new CustomEvent(PDF_EXCERPT_CLIP_SELECT_EVENT, { bubbles: false }))
+  hideNodeViewToolbar()
 }
 const resourcePickerMode = ref<'insert' | 'markExcerpt' | 'bindSource' | 'setBasis'>('insert')
 const pendingResourceExcerptText = ref('')
@@ -1145,6 +1156,8 @@ const handleEditPdfExcerptSource = (blockId: string) => {
     startPage: Number(foundAttrs.startPage) || 1,
     endPage: Number(foundAttrs.endPage) || 1,
     height: Number(foundAttrs.height) || PDF_EXCERPT_DEFAULT_HEIGHT,
+    clipTop: Number(foundAttrs.clipTop) || 0,
+    clipBottom: foundAttrs.clipBottom == null ? 1 : Number(foundAttrs.clipBottom),
   }
   hideNodeViewToolbar()
   showPdfExcerptPicker.value = true
@@ -1156,12 +1169,25 @@ const handlePdfExcerptPickerConfirm = (selection: PdfExcerptSelection) => {
     if (!updated) return
     const rangeLabel = selection.viewMode === 'full'
       ? '全文'
-      : `第 ${selection.startPage}–${selection.endPage} 页`
+      : formatPdfExcerptRangeLabel(
+        selection.startPage,
+        selection.endPage,
+        selection.clipTop,
+        selection.clipBottom,
+      )
     showToast(`已更新 PDF 来源：${selection.fileName}（${rangeLabel}）`)
   } else {
     const inserted = tuEditorRef.value?.insertPdfExcerptBlock?.(selection)
     if (!inserted) return
-    showToast(`已插入 PDF 摘页：${selection.fileName} 第 ${selection.startPage}–${selection.endPage} 页`)
+    const rangeLabel = selection.viewMode === 'full'
+      ? '全文'
+      : formatPdfExcerptRangeLabel(
+        selection.startPage,
+        selection.endPage,
+        selection.clipTop,
+        selection.clipBottom,
+      )
+    showToast(`已插入 PDF 摘页：${selection.fileName} ${rangeLabel}`)
   }
   showPdfExcerptPicker.value = false
   pdfExcerptPickerMode.value = 'insert'
@@ -4269,6 +4295,12 @@ onBeforeUnmount(() => {
           class="nodeview-toolbar__btn"
           @click="handleEditPdfExcerptSource(nodeViewToolbar.blockId)"
         >更改来源</button>
+        <button
+          v-if="nodeViewToolbar.sourceType === 'pdfExcerptBlock'"
+          class="nodeview-toolbar__btn"
+          title="在 PDF 上拖拽划选纵向裁剪范围"
+          @click="handlePdfClipSelectFromToolbar"
+        >划选裁剪</button>
         <div
           v-if="nodeViewToolbar.sourceType === 'pdfExcerptBlock'"
           class="nodeview-toolbar__pdf-pages"

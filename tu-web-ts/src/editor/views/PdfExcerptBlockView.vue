@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, inject, markRaw, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import { nodeViewProps, NodeViewWrapper } from '@tiptap/vue-3'
+import { ElMessageBox } from 'element-plus'
 import { buildFileUrl } from '@/api/fileStorage'
 import ResizableBlockWrapper from '../components/ResizableBlockWrapper.vue'
 import {
@@ -16,8 +17,14 @@ import {
   PDF_EXCERPT_SIDEBAR_MIN_WIDTH,
   PDF_EXCERPT_SIDEBAR_MAX_WIDTH,
   formatPdfExcerptMetaLabel,
+  formatPdfExcerptRangeLabel,
   parsePdfExcerptViewMode,
   resolvePageRange,
+  resolvePdfPageVerticalClip,
+  normalizePdfClipRatio,
+  clipAttrsFromVerticalHits,
+  PDF_EXCERPT_CLIP_SELECT_EVENT,
+  type PdfPageVerticalHit,
 } from '@/utils/pdfExcerpt'
 import { syncResourceHrefWithPdfPages } from '@/editor/linkLabelSuggestQuery'
 import { isResourceLocatorHref } from '@/editor/resourceLinkToPdf'
@@ -44,6 +51,10 @@ const viewMode = computed(() => parsePdfExcerptViewMode(String(props.node.attrs.
 const startPage = computed(() => Number(props.node.attrs.startPage) || 1)
 const endPage = computed(() => Number(props.node.attrs.endPage) || 1)
 const height = computed(() => Number(props.node.attrs.height) || PDF_EXCERPT_DEFAULT_HEIGHT)
+const clipRatio = computed(() => normalizePdfClipRatio(
+  Number(props.node.attrs.clipTop) || 0,
+  props.node.attrs.clipBottom == null ? 1 : Number(props.node.attrs.clipBottom),
+))
 
 const fileUrl = computed(() => (fileId.value ? buildFileUrl(fileId.value) : ''))
 const loadError = ref('')
@@ -62,11 +73,28 @@ const pagesScrollRef = ref<HTMLElement | null>(null)
 const pdfBlockRef = ref<HTMLElement | null>(null)
 const isPdfBlockHovered = ref(false)
 const zoomScale = ref(1)
+const clipSelectActive = ref(false)
+/** While dragging: document-anchored start + mouse-following end (client Y). */
+const clipDrag = ref<{
+  anchorHit: PdfPageVerticalHit
+  currentClientY: number
+} | null>(null)
+/** After mouseup: waiting for explicit confirm. */
+const clipPending = ref<{
+  topHit: PdfPageVerticalHit
+  bottomHit: PdfPageVerticalHit
+} | null>(null)
+/** Bumped on pages scroll so selection box re-measures anchored hits. */
+const clipSelectLayoutTick = ref(0)
 
 let scrollHost: HTMLElement | null = null
 let wheelTarget: HTMLElement | null = null
 let pendingZoomDelta = 0
 let zoomRafId = 0
+let clipSelectRoot: HTMLElement | null = null
+/** Keep viewport center stable across zoom re-layout. */
+let pendingZoomCenter: { xRatio: number; yRatio: number } | null = null
+let zoomCenterRestoreRaf = 0
 
 const pageRefs = new Map<number, HTMLElement>()
 let renderManager: PdfPageRenderManager | null = null
@@ -84,9 +112,85 @@ let sidebarResizeStartWidth = 0
 const metaLabel = computed(() => formatPdfExcerptMetaLabel(
   fileName.value,
   viewMode.value,
-  resolvedStartPage,
-  resolvedEndPage,
+  startPage.value,
+  endPage.value,
+  viewMode.value === 'full' ? 0 : clipRatio.value.clipTop,
+  viewMode.value === 'full' ? 1 : clipRatio.value.clipBottom,
 ))
+
+/** Below `.page-chrome` (z-index 30) — document overlays must never cover page toolbar. */
+const CLIP_SELECT_BOX_Z_INDEX = 20
+
+function measureClipSelectBox(topClientY: number, bottomClientY: number) {
+  const root = pagesScrollRef.value
+  if (!root) return null
+  clipSelectLayoutTick.value
+  const rect = root.getBoundingClientRect()
+  const toolbarBottom = getDocumentToolbarBottom()
+  // Visible band: intersection of PDF pages viewport and area below document toolbar.
+  const bandTop = Math.max(rect.top, toolbarBottom)
+  const bandBottom = rect.bottom
+  if (bandBottom - bandTop < 1) return null
+
+  const top = Math.min(topClientY, bottomClientY)
+  const bottom = Math.max(topClientY, bottomClientY)
+  const clampedTop = Math.max(bandTop, Math.min(bandBottom, top))
+  const clampedBottom = Math.max(bandTop, Math.min(bandBottom, bottom))
+  if (clampedBottom - clampedTop < 1) {
+    // Anchor scrolled out of the visible band — thin edge marker only inside the band.
+    if (bottom < bandTop) {
+      return {
+        position: 'fixed' as const,
+        left: `${rect.left}px`,
+        width: `${rect.width}px`,
+        top: `${bandTop}px`,
+        height: '3px',
+        zIndex: CLIP_SELECT_BOX_Z_INDEX,
+      }
+    }
+    if (top > bandBottom) {
+      return {
+        position: 'fixed' as const,
+        left: `${rect.left}px`,
+        width: `${rect.width}px`,
+        top: `${bandBottom - 3}px`,
+        height: '3px',
+        zIndex: CLIP_SELECT_BOX_Z_INDEX,
+      }
+    }
+    return null
+  }
+  return {
+    position: 'fixed' as const,
+    left: `${rect.left}px`,
+    width: `${rect.width}px`,
+    top: `${clampedTop}px`,
+    height: `${Math.max(2, clampedBottom - clampedTop)}px`,
+    zIndex: CLIP_SELECT_BOX_Z_INDEX,
+  }
+}
+
+function getDocumentToolbarBottom(): number {
+  const chrome = document.querySelector('.page-chrome')
+  if (!(chrome instanceof HTMLElement)) return 0
+  return chrome.getBoundingClientRect().bottom
+}
+
+const clipSelectBoxStyle = computed(() => {
+  clipSelectLayoutTick.value
+  const pending = clipPending.value
+  if (pending) {
+    const topY = hitToClientY(pending.topHit)
+    const bottomY = hitToClientY(pending.bottomHit)
+    if (topY == null || bottomY == null) return null
+    return measureClipSelectBox(topY, bottomY)
+  }
+  const drag = clipDrag.value
+  if (!drag) return null
+  const anchorY = hitToClientY(drag.anchorHit)
+  if (anchorY == null) return null
+  return measureClipSelectBox(anchorY, drag.currentClientY)
+})
 
 const sidebarTitle = computed(() => {
   if (sidebarSource.value === 'outline') return '书签'
@@ -103,15 +207,6 @@ const sidebarEmptyHint = computed(() => (
     : ''
 ))
 
-const zoomLabel = computed(() => `${Math.round(zoomScale.value * 100)}%`)
-
-const showZoomBadge = computed(() => (
-  isPdfBlockHovered.value
-  && !loading.value
-  && !loadError.value
-  && pageCanvases.value.length > 0
-))
-
 function setPageRef(pageNumber: number, el: unknown) {
   if (el instanceof HTMLElement) {
     pageRefs.set(pageNumber, el)
@@ -122,6 +217,43 @@ function setPageRef(pageNumber: number, el: unknown) {
 
 function getPlaceholderHeight(pageNumber: number): number {
   return renderManager?.getPlaceholderHeight(pageNumber) ?? 120
+}
+
+function pageClipFor(pageNumber: number) {
+  if (clipSelectActive.value) return null
+  if (viewMode.value === 'full') return null
+  return resolvePdfPageVerticalClip(
+    pageNumber,
+    startPage.value,
+    endPage.value,
+    clipRatio.value.clipTop,
+    clipRatio.value.clipBottom,
+  )
+}
+
+function pageFullHeight(page: { pageNumber: number; placeholderHeight: number }): number {
+  return page.placeholderHeight || getPlaceholderHeight(page.pageNumber)
+}
+
+function pageClipViewportStyle(page: { pageNumber: number; placeholderHeight: number }) {
+  const clip = pageClipFor(page.pageNumber)
+  const fullH = pageFullHeight(page)
+  if (!clip) return { minHeight: `${fullH}px` }
+  const visible = Math.max(24, (clip.clipBottom - clip.clipTop) * fullH)
+  return {
+    height: `${visible}px`,
+    overflow: 'hidden',
+  }
+}
+
+function pageCanvasHostStyle(page: { pageNumber: number; placeholderHeight: number }) {
+  const clip = pageClipFor(page.pageNumber)
+  const fullH = pageFullHeight(page)
+  if (!clip) return {}
+  return {
+    height: `${fullH}px`,
+    transform: `translateY(${-clip.clipTop * fullH}px)`,
+  }
 }
 
 function expandSidebarAll() {
@@ -213,6 +345,265 @@ function handleEditSource() {
   onEditPdfExcerptSource(blockId.value)
 }
 
+function hitTestPageVertical(clientY: number): PdfPageVerticalHit | null {
+  const pages = [...pageCanvases.value].sort((a, b) => a.pageNumber - b.pageNumber)
+  if (pages.length === 0) return null
+
+  type Measured = { pageNumber: number; top: number; bottom: number }
+  const measured: Measured[] = []
+  for (const page of pages) {
+    const host = pageRefs.get(page.pageNumber)
+    if (!host) continue
+    const rect = host.getBoundingClientRect()
+    if (rect.height <= 0) continue
+    measured.push({ pageNumber: page.pageNumber, top: rect.top, bottom: rect.bottom })
+  }
+  if (measured.length === 0) return null
+
+  for (const item of measured) {
+    if (clientY >= item.top && clientY <= item.bottom) {
+      const ratio = (clientY - item.top) / Math.max(item.bottom - item.top, 1)
+      return {
+        pageNumber: item.pageNumber,
+        ratio: Math.min(1, Math.max(0, ratio)),
+      }
+    }
+  }
+
+  const first = measured[0]
+  const last = measured[measured.length - 1]
+  if (clientY < first.top) return { pageNumber: first.pageNumber, ratio: 0 }
+  if (clientY > last.bottom) return { pageNumber: last.pageNumber, ratio: 1 }
+
+  for (let i = 0; i < measured.length - 1; i += 1) {
+    const cur = measured[i]
+    const next = measured[i + 1]
+    if (clientY > cur.bottom && clientY < next.top) {
+      const mid = (cur.bottom + next.top) / 2
+      return clientY < mid
+        ? { pageNumber: cur.pageNumber, ratio: 1 }
+        : { pageNumber: next.pageNumber, ratio: 0 }
+    }
+  }
+  return { pageNumber: last.pageNumber, ratio: 1 }
+}
+
+function hitToClientY(hit: PdfPageVerticalHit): number | null {
+  const host = pageRefs.get(hit.pageNumber)
+  if (!host) return null
+  const rect = host.getBoundingClientRect()
+  if (rect.height <= 0) return null
+  return rect.top + hit.ratio * rect.height
+}
+
+function orderHits(
+  a: PdfPageVerticalHit,
+  b: PdfPageVerticalHit,
+): { topHit: PdfPageVerticalHit; bottomHit: PdfPageVerticalHit } {
+  const aFirst = a.pageNumber < b.pageNumber
+    || (a.pageNumber === b.pageNumber && a.ratio <= b.ratio)
+  return aFirst
+    ? { topHit: a, bottomHit: b }
+    : { topHit: b, bottomHit: a }
+}
+
+function unbindClipSelectDragListeners() {
+  document.removeEventListener('mousemove', onClipSelectMouseMove, true)
+  document.removeEventListener('mouseup', onClipSelectMouseUp, true)
+}
+
+function unbindClipSelectListeners() {
+  unbindClipSelectDragListeners()
+  document.removeEventListener('keydown', onClipSelectKeyDown, true)
+}
+
+function onClipSelectPagesScroll() {
+  if (clipDrag.value || clipPending.value) {
+    clipSelectLayoutTick.value += 1
+  }
+}
+
+let clipSelectScrollRoot: HTMLElement | null = null
+
+function bindClipSelectScrollListener() {
+  pagesScrollRef.value?.addEventListener('scroll', onClipSelectPagesScroll, { passive: true })
+  clipSelectScrollRoot = pagesScrollRef.value?.closest('.content-scroll') as HTMLElement | null
+  clipSelectScrollRoot?.addEventListener('scroll', onClipSelectPagesScroll, { passive: true })
+  window.addEventListener('scroll', onClipSelectPagesScroll, { passive: true, capture: true })
+  window.addEventListener('resize', onClipSelectPagesScroll, { passive: true })
+}
+
+function unbindClipSelectScrollListener() {
+  pagesScrollRef.value?.removeEventListener('scroll', onClipSelectPagesScroll)
+  clipSelectScrollRoot?.removeEventListener('scroll', onClipSelectPagesScroll)
+  clipSelectScrollRoot = null
+  window.removeEventListener('scroll', onClipSelectPagesScroll, true)
+  window.removeEventListener('resize', onClipSelectPagesScroll)
+}
+
+function cancelClipSelect() {
+  unbindClipSelectListeners()
+  unbindClipSelectScrollListener()
+  clipDrag.value = null
+  clipPending.value = null
+  clipConfirmPromptOpen = false
+  clipSelectActive.value = false
+}
+
+function startClipSelect() {
+  if (loading.value || loadError.value || pageCanvases.value.length === 0) return
+  clipSelectActive.value = true
+  clipDrag.value = null
+  clipPending.value = null
+  clipConfirmPromptOpen = false
+  document.addEventListener('keydown', onClipSelectKeyDown, true)
+  void nextTick().then(() => bindClipSelectScrollListener())
+}
+
+function toggleClipSelect() {
+  if (clipSelectActive.value) {
+    cancelClipSelect()
+    return
+  }
+  startClipSelect()
+}
+
+function onClipSelectKeyDown(event: KeyboardEvent) {
+  if (clipConfirmPromptOpen) return
+  if (event.key === 'Escape') {
+    event.preventDefault()
+    event.stopPropagation()
+    cancelClipSelect()
+  }
+}
+
+function onClipSelectMouseDown(event: MouseEvent) {
+  if (!clipSelectActive.value) return
+  if (event.button !== 0) return
+  // Pending confirm dialog: ignore drag on pages
+  if (clipPending.value || clipConfirmPromptOpen) return
+  event.preventDefault()
+  event.stopPropagation()
+  const anchorHit = hitTestPageVertical(event.clientY)
+  if (!anchorHit) return
+  clipDrag.value = { anchorHit, currentClientY: event.clientY }
+  document.addEventListener('mousemove', onClipSelectMouseMove, true)
+  document.addEventListener('mouseup', onClipSelectMouseUp, true)
+}
+
+function onClipSelectMouseMove(event: MouseEvent) {
+  if (!clipDrag.value) return
+  clipDrag.value = {
+    anchorHit: clipDrag.value.anchorHit,
+    currentClientY: event.clientY,
+  }
+}
+
+let clipConfirmPromptOpen = false
+
+function onClipSelectMouseUp(event: MouseEvent) {
+  unbindClipSelectDragListeners()
+  const drag = clipDrag.value
+  clipDrag.value = null
+  if (!drag) return
+
+  const endHit = hitTestPageVertical(event.clientY)
+  if (!endHit) return
+
+  const anchorY = hitToClientY(drag.anchorHit)
+  const endY = event.clientY
+  if (anchorY != null && Math.abs(endY - anchorY) < 8) {
+    // Too small — stay in select mode for retry
+    return
+  }
+
+  const ordered = orderHits(drag.anchorHit, endHit)
+  clipPending.value = ordered
+  clipSelectLayoutTick.value += 1
+  void promptApplyClipSelect()
+}
+
+async function promptApplyClipSelect() {
+  const pending = clipPending.value
+  if (!pending || clipConfirmPromptOpen) return
+  clipConfirmPromptOpen = true
+  const next = clipAttrsFromVerticalHits(pending.topHit, pending.bottomHit)
+  const label = formatPdfExcerptRangeLabel(
+    next.startPage,
+    next.endPage,
+    next.clipTop,
+    next.clipBottom,
+  )
+  try {
+    await ElMessageBox.confirm(
+      `确认应用划选裁剪范围：${label}？`,
+      '划选裁剪',
+      {
+        confirmButtonText: '应用',
+        cancelButtonText: '重新划选',
+        distinguishCancelAndClose: true,
+        type: 'info',
+      },
+    )
+    confirmClipSelect()
+  } catch (action) {
+    if (action === 'cancel') {
+      redoClipSelect()
+    } else {
+      cancelClipSelect()
+    }
+  } finally {
+    clipConfirmPromptOpen = false
+  }
+}
+
+function confirmClipSelect() {
+  const pending = clipPending.value
+  if (!pending) return
+  const next = clipAttrsFromVerticalHits(pending.topHit, pending.bottomHit)
+  const prevHref = String(props.node.attrs.sourceHref || '')
+  props.updateAttributes({
+    viewMode: 'excerpt',
+    startPage: next.startPage,
+    endPage: next.endPage,
+    clipTop: next.clipTop,
+    clipBottom: next.clipBottom,
+    ...(isResourceLocatorHref(prevHref)
+      ? {
+        sourceHref: syncResourceHrefWithPdfPages(
+          prevHref,
+          'excerpt',
+          next.startPage,
+          next.endPage,
+          next.clipTop,
+          next.clipBottom,
+        ),
+      }
+      : {}),
+  })
+  cancelClipSelect()
+}
+
+function redoClipSelect() {
+  clipPending.value = null
+  clipDrag.value = null
+}
+
+function onPdfClipSelectEvent() {
+  startClipSelect()
+}
+
+function bindClipSelectEvent() {
+  unbindClipSelectEvent()
+  clipSelectRoot = pdfBlockRef.value?.closest<HTMLElement>('[data-block-id]') ?? null
+  clipSelectRoot?.addEventListener(PDF_EXCERPT_CLIP_SELECT_EVENT, onPdfClipSelectEvent)
+}
+
+function unbindClipSelectEvent() {
+  clipSelectRoot?.removeEventListener(PDF_EXCERPT_CLIP_SELECT_EVENT, onPdfClipSelectEvent)
+  clipSelectRoot = null
+}
+
 function onResize(_width: number | null, nextHeight: number | null) {
   if (nextHeight == null) return
   const clamped = Math.min(PDF_EXCERPT_MAX_HEIGHT, Math.max(PDF_EXCERPT_MIN_HEIGHT, Math.round(nextHeight)))
@@ -238,10 +629,40 @@ function createRenderManager() {
       if (index >= 0) {
         pageCanvases.value[index] = { ...pageCanvases.value[index], placeholderHeight }
       }
+      scheduleRestoreZoomCenter()
     },
   })
   renderManager.setRange(resolvedStartPage, resolvedEndPage)
   renderManager.setZoomScale(zoomScale.value)
+}
+
+function captureZoomCenter() {
+  const root = pagesScrollRef.value
+  if (!root) {
+    pendingZoomCenter = null
+    return
+  }
+  pendingZoomCenter = {
+    xRatio: (root.scrollLeft + root.clientWidth / 2) / Math.max(1, root.scrollWidth),
+    yRatio: (root.scrollTop + root.clientHeight / 2) / Math.max(1, root.scrollHeight),
+  }
+}
+
+function restoreZoomCenter() {
+  const root = pagesScrollRef.value
+  const anchor = pendingZoomCenter
+  if (!root || !anchor) return
+  root.scrollLeft = Math.max(0, anchor.xRatio * root.scrollWidth - root.clientWidth / 2)
+  root.scrollTop = Math.max(0, anchor.yRatio * root.scrollHeight - root.clientHeight / 2)
+}
+
+function scheduleRestoreZoomCenter() {
+  if (!pendingZoomCenter) return
+  if (zoomCenterRestoreRaf) cancelAnimationFrame(zoomCenterRestoreRaf)
+  zoomCenterRestoreRaf = requestAnimationFrame(() => {
+    zoomCenterRestoreRaf = 0
+    restoreZoomCenter()
+  })
 }
 
 function applyZoomScale(nextScale: number) {
@@ -250,8 +671,15 @@ function applyZoomScale(nextScale: number) {
     Math.max(PDF_EXCERPT_ZOOM_MIN, Math.round(nextScale * 100) / 100),
   )
   if (Math.abs(clamped - zoomScale.value) < 0.001) return
+  captureZoomCenter()
   zoomScale.value = clamped
   renderManager?.setZoomScale(clamped)
+  scheduleRestoreZoomCenter()
+  // Heights update after re-render; clear anchor shortly after layout settles.
+  window.setTimeout(() => {
+    restoreZoomCenter()
+    pendingZoomCenter = null
+  }, 120)
 }
 
 function flushZoomDelta() {
@@ -394,6 +822,8 @@ async function loadDocument() {
               'excerpt',
               normalized.startPage,
               normalized.endPage,
+              clipRatio.value.clipTop,
+              clipRatio.value.clipBottom,
             ),
           }
           : {}),
@@ -432,7 +862,10 @@ async function loadDocument() {
 }
 
 onMounted(() => {
-  void nextTick().then(() => bindWheelListener())
+  void nextTick().then(() => {
+    bindWheelListener()
+    bindClipSelectEvent()
+  })
 })
 
 watch(fileUrl, () => {
@@ -476,7 +909,15 @@ onBeforeUnmount(() => {
     cancelAnimationFrame(zoomRafId)
     zoomRafId = 0
   }
+  if (zoomCenterRestoreRaf) {
+    cancelAnimationFrame(zoomCenterRestoreRaf)
+    zoomCenterRestoreRaf = 0
+  }
+  pendingZoomCenter = null
   pendingZoomDelta = 0
+  cancelClipSelect()
+  unbindClipSelectScrollListener()
+  unbindClipSelectEvent()
   unbindWheelListener()
   scrollHost?.removeEventListener(PDF_EXCERPT_SCROLL_EVENT, onPdfExcerptScrollEvent as EventListener)
   scrollHost = null
@@ -517,14 +958,33 @@ onBeforeUnmount(() => {
         >
           更改来源
         </button>
+        <button
+          type="button"
+          class="pdf-excerpt-block__edit-source"
+          :class="{ 'pdf-excerpt-block__edit-source--active': clipSelectActive }"
+          data-node-view-no-drag
+          :title="clipSelectActive ? '取消划选（Esc）' : '划选纵向裁剪范围'"
+          @mousedown.stop
+          @click.stop="toggleClipSelect"
+        >
+          {{ clipSelectActive ? '取消划选' : '划选裁剪' }}
+        </button>
       </template>
 
       <div
         ref="pdfBlockRef"
         class="pdf-excerpt-block"
+        :class="{ 'pdf-excerpt-block--clip-select': clipSelectActive }"
         @mouseenter="isPdfBlockHovered = true"
         @mouseleave="isPdfBlockHovered = false"
       >
+        <div
+          v-if="clipSelectActive && !clipPending"
+          class="pdf-excerpt-block__clip-hint"
+          data-node-view-no-drag
+        >
+          按下拖拽确定起点，滚动翻页时起点随内容移动、终点跟随鼠标；松开后弹窗确认应用 · Esc 取消
+        </div>
         <div v-if="loading" class="pdf-excerpt-block__status">正在加载 PDF…</div>
         <div v-else-if="loadError" class="pdf-excerpt-block__fallback">
           <p class="pdf-excerpt-block__error">{{ loadError }}</p>
@@ -622,33 +1082,45 @@ onBeforeUnmount(() => {
             </div>
           </div>
           <div class="pdf-excerpt-block__main">
-            <div ref="pagesScrollRef" class="pdf-excerpt-block__pages">
-              <div
-                v-if="showZoomBadge"
-                class="pdf-excerpt-block__zoom-badge"
-                aria-live="polite"
-              >
-                {{ zoomLabel }}
-              </div>
+            <div
+              ref="pagesScrollRef"
+              class="pdf-excerpt-block__pages"
+              :class="{
+                'pdf-excerpt-block__pages--clip-select': clipSelectActive && !clipPending,
+                'pdf-excerpt-block__pages--clip-pending': !!clipPending,
+              }"
+              @mousedown="onClipSelectMouseDown"
+            >
               <p v-if="largeDocWarning" class="pdf-excerpt-block__warn">{{ largeDocWarning }}</p>
               <div
                 v-for="page in pageCanvases"
                 :key="page.pageNumber"
                 class="pdf-excerpt-block__page"
                 :data-page-number="page.pageNumber"
-                :style="{ minHeight: `${page.placeholderHeight || getPlaceholderHeight(page.pageNumber)}px` }"
               >
-                <div class="pdf-excerpt-block__page-label">第 {{ page.pageNumber }} 页</div>
                 <div
-                  :ref="(el) => setPageRef(page.pageNumber, el)"
-                  class="pdf-excerpt-block__page-canvas-host"
-                />
+                  class="pdf-excerpt-block__page-clip"
+                  :style="pageClipViewportStyle(page)"
+                >
+                  <div
+                    :ref="(el) => setPageRef(page.pageNumber, el)"
+                    class="pdf-excerpt-block__page-canvas-host"
+                    :style="pageCanvasHostStyle(page)"
+                  />
+                </div>
               </div>
             </div>
           </div>
         </div>
       </div>
     </ResizableBlockWrapper>
+    <Teleport to="body">
+      <div
+        v-if="clipSelectBoxStyle"
+        class="pdf-excerpt-block__clip-select-box"
+        :style="clipSelectBoxStyle"
+      />
+    </Teleport>
   </node-view-wrapper>
 </template>
 
@@ -683,15 +1155,48 @@ onBeforeUnmount(() => {
   background: #f8fafc;
 }
 
+.pdf-excerpt-block__edit-source--active {
+  border-color: #1677ff;
+  color: #1677ff;
+  background: #e6f4ff;
+}
+
+.pdf-excerpt-block__clip-hint {
+  flex-shrink: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: #1d4ed8;
+  background: #eff6ff;
+  border-bottom: 1px solid #bfdbfe;
+}
+
+.pdf-excerpt-block--clip-select .pdf-excerpt-block__pages--clip-select {
+  cursor: crosshair;
+  user-select: none;
+}
+
+.pdf-excerpt-block--clip-select .pdf-excerpt-block__pages--clip-pending {
+  cursor: default;
+  user-select: none;
+}
+
 .pdf-excerpt-block {
   flex: 1;
   min-height: 0;
   overflow: hidden;
-  background: #f8fafc;
+  background: transparent;
+  display: flex;
+  flex-direction: column;
 }
 
 .pdf-excerpt-block__content {
   display: flex;
+  flex: 1;
   min-height: 0;
   height: 100%;
 }
@@ -861,35 +1366,22 @@ onBeforeUnmount(() => {
   overflow: auto;
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  padding: 12px;
+  align-items: center;
+  gap: 0;
+  padding: 0;
   box-sizing: border-box;
   position: relative;
-}
-
-.pdf-excerpt-block__zoom-badge {
-  position: sticky;
-  top: 8px;
-  z-index: 2;
-  align-self: flex-end;
-  margin: 0 0 -28px;
-  padding: 4px 8px;
-  border-radius: 6px;
-  background: rgba(15, 23, 42, 0.78);
-  color: #f8fafc;
-  font-size: 12px;
-  font-variant-numeric: tabular-nums;
-  line-height: 1.4;
-  pointer-events: none;
-  user-select: none;
+  background: transparent;
 }
 
 .pdf-excerpt-block__warn {
+  align-self: stretch;
   margin: 0;
   padding: 8px 10px;
-  border-radius: 8px;
+  border-radius: 0;
   background: #fffbeb;
-  border: 1px solid #fde68a;
+  border: none;
+  border-bottom: 1px solid #fde68a;
   font-size: 12px;
   color: #92400e;
   line-height: 1.5;
@@ -924,31 +1416,52 @@ onBeforeUnmount(() => {
 }
 
 .pdf-excerpt-block__page {
-  width: 100%;
-  min-width: 0;
-  max-width: 100%;
+  width: max-content;
+  max-width: none;
+  min-width: 100%;
   box-sizing: border-box;
-  background: #fff;
-  border: 1px solid #e5e7eb;
-  border-radius: 8px;
-  padding: 8px;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  padding: 0;
   overflow: visible;
+  display: flex;
+  justify-content: center;
+  margin-inline: auto;
+}
+
+.pdf-excerpt-block__page-clip {
+  width: max-content;
+  max-width: none;
+  min-width: 0;
+  position: relative;
+  background: transparent;
 }
 
 .pdf-excerpt-block__page-canvas-host {
-  width: 100%;
+  width: max-content;
   min-width: 0;
   overflow: visible;
-}
-
-.pdf-excerpt-block__page-label {
-  margin-bottom: 6px;
-  font-size: 11px;
-  color: #64748b;
+  display: flex;
+  justify-content: center;
+  background: transparent;
 }
 
 .pdf-excerpt-block__page :deep(.pdf-excerpt-block__canvas) {
   display: block;
   max-width: none;
+  margin: 0 auto;
+  background: transparent;
+}
+</style>
+
+<style>
+/* Teleported marquee (body) — keep unscoped */
+.pdf-excerpt-block__clip-select-box {
+  box-sizing: border-box;
+  pointer-events: none;
+  border: 2px dashed #1677ff;
+  background: rgba(22, 119, 255, 0.12);
+  box-shadow: 0 0 0 9999px rgba(15, 23, 42, 0.25);
 }
 </style>
