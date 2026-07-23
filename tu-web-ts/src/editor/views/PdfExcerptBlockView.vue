@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed, inject, markRaw, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import { nodeViewProps, NodeViewWrapper } from '@tiptap/vue-3'
-import { ElMessageBox } from 'element-plus'
 import { buildFileUrl } from '@/api/fileStorage'
 import ResizableBlockWrapper from '../components/ResizableBlockWrapper.vue'
 import {
@@ -190,6 +189,26 @@ const clipSelectBoxStyle = computed(() => {
   const anchorY = hitToClientY(drag.anchorHit)
   if (anchorY == null) return null
   return measureClipSelectBox(anchorY, drag.currentClientY)
+})
+
+/** Floating confirm bar above the selection marquee (teleported; no PDF layout shift). */
+const clipPendingConfirmStyle = computed(() => {
+  const box = clipSelectBoxStyle.value
+  if (!clipPending.value || !box) return null
+  const topPx = Number.parseFloat(String(box.top))
+  const leftPx = Number.parseFloat(String(box.left))
+  const widthPx = Number.parseFloat(String(box.width))
+  if (!Number.isFinite(topPx) || !Number.isFinite(leftPx) || !Number.isFinite(widthPx)) return null
+  const toolbarBottom = getDocumentToolbarBottom()
+  const preferAbove = topPx - 40
+  const top = preferAbove >= toolbarBottom + 4 ? preferAbove : topPx + 8
+  return {
+    position: 'fixed' as const,
+    left: `${leftPx}px`,
+    width: `${widthPx}px`,
+    top: `${top}px`,
+    zIndex: CLIP_SELECT_BOX_Z_INDEX + 1,
+  }
 })
 
 const sidebarTitle = computed(() => {
@@ -446,7 +465,6 @@ function cancelClipSelect() {
   unbindClipSelectScrollListener()
   clipDrag.value = null
   clipPending.value = null
-  clipConfirmPromptOpen = false
   clipSelectActive.value = false
 }
 
@@ -455,7 +473,6 @@ function startClipSelect() {
   clipSelectActive.value = true
   clipDrag.value = null
   clipPending.value = null
-  clipConfirmPromptOpen = false
   document.addEventListener('keydown', onClipSelectKeyDown, true)
   void nextTick().then(() => bindClipSelectScrollListener())
 }
@@ -469,7 +486,6 @@ function toggleClipSelect() {
 }
 
 function onClipSelectKeyDown(event: KeyboardEvent) {
-  if (clipConfirmPromptOpen) return
   if (event.key === 'Escape') {
     event.preventDefault()
     event.stopPropagation()
@@ -480,8 +496,8 @@ function onClipSelectKeyDown(event: KeyboardEvent) {
 function onClipSelectMouseDown(event: MouseEvent) {
   if (!clipSelectActive.value) return
   if (event.button !== 0) return
-  // Pending confirm dialog: ignore drag on pages
-  if (clipPending.value || clipConfirmPromptOpen) return
+  // Pending confirm: ignore drag on pages (use hint bar actions)
+  if (clipPending.value) return
   event.preventDefault()
   event.stopPropagation()
   const anchorHit = hitTestPageVertical(event.clientY)
@@ -499,7 +515,17 @@ function onClipSelectMouseMove(event: MouseEvent) {
   }
 }
 
-let clipConfirmPromptOpen = false
+const clipPendingRangeLabel = computed(() => {
+  const pending = clipPending.value
+  if (!pending) return ''
+  const next = clipAttrsFromVerticalHits(pending.topHit, pending.bottomHit)
+  return formatPdfExcerptRangeLabel(
+    next.startPage,
+    next.endPage,
+    next.clipTop,
+    next.clipBottom,
+  )
+})
 
 function onClipSelectMouseUp(event: MouseEvent) {
   unbindClipSelectDragListeners()
@@ -517,44 +543,10 @@ function onClipSelectMouseUp(event: MouseEvent) {
     return
   }
 
-  const ordered = orderHits(drag.anchorHit, endHit)
-  clipPending.value = ordered
+  // Keep hint bar mounted (no MessageBox / body scroll-lock) so PDF layout and
+  // the fixed selection overlay stay aligned; saved ratios use these hits as-is.
+  clipPending.value = orderHits(drag.anchorHit, endHit)
   clipSelectLayoutTick.value += 1
-  void promptApplyClipSelect()
-}
-
-async function promptApplyClipSelect() {
-  const pending = clipPending.value
-  if (!pending || clipConfirmPromptOpen) return
-  clipConfirmPromptOpen = true
-  const next = clipAttrsFromVerticalHits(pending.topHit, pending.bottomHit)
-  const label = formatPdfExcerptRangeLabel(
-    next.startPage,
-    next.endPage,
-    next.clipTop,
-    next.clipBottom,
-  )
-  try {
-    await ElMessageBox.confirm(
-      `确认应用划选裁剪范围：${label}？`,
-      '划选裁剪',
-      {
-        confirmButtonText: '应用',
-        cancelButtonText: '重新划选',
-        distinguishCancelAndClose: true,
-        type: 'info',
-      },
-    )
-    confirmClipSelect()
-  } catch (action) {
-    if (action === 'cancel') {
-      redoClipSelect()
-    } else {
-      cancelClipSelect()
-    }
-  } finally {
-    clipConfirmPromptOpen = false
-  }
 }
 
 function confirmClipSelect() {
@@ -978,13 +970,6 @@ onBeforeUnmount(() => {
         @mouseenter="isPdfBlockHovered = true"
         @mouseleave="isPdfBlockHovered = false"
       >
-        <div
-          v-if="clipSelectActive && !clipPending"
-          class="pdf-excerpt-block__clip-hint"
-          data-node-view-no-drag
-        >
-          按下拖拽确定起点，滚动翻页时起点随内容移动、终点跟随鼠标；松开后弹窗确认应用 · Esc 取消
-        </div>
         <div v-if="loading" class="pdf-excerpt-block__status">正在加载 PDF…</div>
         <div v-else-if="loadError" class="pdf-excerpt-block__fallback">
           <p class="pdf-excerpt-block__error">{{ loadError }}</p>
@@ -1120,6 +1105,37 @@ onBeforeUnmount(() => {
         class="pdf-excerpt-block__clip-select-box"
         :style="clipSelectBoxStyle"
       />
+      <div
+        v-if="clipPendingConfirmStyle"
+        class="pdf-excerpt-block__clip-confirm"
+        :style="clipPendingConfirmStyle"
+        @mousedown.stop
+      >
+        <span class="pdf-excerpt-block__clip-confirm-text">
+          确认应用：{{ clipPendingRangeLabel }}？
+        </span>
+        <button
+          type="button"
+          class="pdf-excerpt-block__clip-confirm-btn pdf-excerpt-block__clip-confirm-btn--primary"
+          @click.stop="confirmClipSelect"
+        >
+          应用
+        </button>
+        <button
+          type="button"
+          class="pdf-excerpt-block__clip-confirm-btn"
+          @click.stop="redoClipSelect"
+        >
+          重新划选
+        </button>
+        <button
+          type="button"
+          class="pdf-excerpt-block__clip-confirm-btn"
+          @click.stop="cancelClipSelect"
+        >
+          取消
+        </button>
+      </div>
     </Teleport>
   </node-view-wrapper>
 </template>
@@ -1159,20 +1175,6 @@ onBeforeUnmount(() => {
   border-color: #1677ff;
   color: #1677ff;
   background: #e6f4ff;
-}
-
-.pdf-excerpt-block__clip-hint {
-  flex-shrink: 0;
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 10px;
-  font-size: 12px;
-  line-height: 1.4;
-  color: #1d4ed8;
-  background: #eff6ff;
-  border-bottom: 1px solid #bfdbfe;
 }
 
 .pdf-excerpt-block--clip-select .pdf-excerpt-block__pages--clip-select {
@@ -1456,12 +1458,63 @@ onBeforeUnmount(() => {
 </style>
 
 <style>
-/* Teleported marquee (body) — keep unscoped */
+/* Teleported marquee / confirm (body) — keep unscoped */
 .pdf-excerpt-block__clip-select-box {
   box-sizing: border-box;
   pointer-events: none;
   border: 2px dashed #1677ff;
   background: rgba(22, 119, 255, 0.12);
   box-shadow: 0 0 0 9999px rgba(15, 23, 42, 0.25);
+}
+
+.pdf-excerpt-block__clip-confirm {
+  box-sizing: border-box;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  border: 1px solid #93c5fd;
+  background: #eff6ff;
+  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.12);
+  font-size: 12px;
+  line-height: 1.4;
+  color: #1d4ed8;
+  pointer-events: auto;
+}
+
+.pdf-excerpt-block__clip-confirm-text {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.pdf-excerpt-block__clip-confirm-btn {
+  flex-shrink: 0;
+  padding: 2px 10px;
+  border: 1px solid #93c5fd;
+  border-radius: 4px;
+  background: #fff;
+  color: #1e40af;
+  font-size: 12px;
+  line-height: 1.4;
+  cursor: pointer;
+}
+
+.pdf-excerpt-block__clip-confirm-btn:hover {
+  border-color: #60a5fa;
+  background: #f8fafc;
+}
+
+.pdf-excerpt-block__clip-confirm-btn--primary {
+  border-color: #1677ff;
+  background: #1677ff;
+  color: #fff;
+}
+
+.pdf-excerpt-block__clip-confirm-btn--primary:hover {
+  border-color: #0958d9;
+  background: #0958d9;
+  color: #fff;
 }
 </style>
