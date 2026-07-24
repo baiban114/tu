@@ -1,0 +1,148 @@
+# Standalone Valkey Cluster (ops infra — Redis-protocol compatible).
+# 3 masters + 3 replicas; host clients use cluster mode against any node port.
+#
+#   cd infra/valkey
+#   copy .env.example .env          # PowerShell: Copy-Item .env.example .env
+#   docker compose --env-file .env pull
+#   docker compose --env-file .env up -d
+#
+# Cluster nodes: localhost:7379-7384 (override via VALKEY_NODE_*_PORT in .env)
+# Coexists with Redis Cluster (6379-6384) when both stacks run.
+
+name: valkey
+
+x-valkey-node: &valkey-node
+  image: valkey/valkey:8-alpine
+  restart: unless-stopped
+  extra_hosts:
+    - "host.docker.internal:host-gateway"
+  volumes:
+    - ./scripts/valkey-cluster-node.sh:/usr/local/bin/valkey-cluster-node.sh:ro
+  entrypoint: ["/bin/sh", "/usr/local/bin/valkey-cluster-node.sh"]
+  networks:
+    - valkey-net
+
+services:
+  valkey-1:
+    <<: *valkey-node
+    container_name: valkey-1
+    environment:
+      VALKEY_ANNOUNCE_PORT: ${VALKEY_NODE_1_PORT:-7379}
+      VALKEY_ANNOUNCE_BUS_PORT: ${VALKEY_NODE_1_BUS_PORT:-17379}
+    ports:
+      - "${VALKEY_NODE_1_PORT:-7379}:6379"
+      - "${VALKEY_NODE_1_BUS_PORT:-17379}:16379"
+    volumes:
+      - valkey-1-data:/data
+      - ./scripts/valkey-cluster-node.sh:/usr/local/bin/valkey-cluster-node.sh:ro
+
+  valkey-2:
+    <<: *valkey-node
+    container_name: valkey-2
+    environment:
+      VALKEY_ANNOUNCE_PORT: ${VALKEY_NODE_2_PORT:-7380}
+      VALKEY_ANNOUNCE_BUS_PORT: ${VALKEY_NODE_2_BUS_PORT:-17380}
+    ports:
+      - "${VALKEY_NODE_2_PORT:-7380}:6379"
+      - "${VALKEY_NODE_2_BUS_PORT:-17380}:16379"
+    volumes:
+      - valkey-2-data:/data
+      - ./scripts/valkey-cluster-node.sh:/usr/local/bin/valkey-cluster-node.sh:ro
+
+  valkey-3:
+    <<: *valkey-node
+    container_name: valkey-3
+    environment:
+      VALKEY_ANNOUNCE_PORT: ${VALKEY_NODE_3_PORT:-7381}
+      VALKEY_ANNOUNCE_BUS_PORT: ${VALKEY_NODE_3_BUS_PORT:-17381}
+    ports:
+      - "${VALKEY_NODE_3_PORT:-7381}:6379"
+      - "${VALKEY_NODE_3_BUS_PORT:-17381}:16379"
+    volumes:
+      - valkey-3-data:/data
+      - ./scripts/valkey-cluster-node.sh:/usr/local/bin/valkey-cluster-node.sh:ro
+
+  valkey-4:
+    <<: *valkey-node
+    container_name: valkey-4
+    environment:
+      VALKEY_ANNOUNCE_PORT: ${VALKEY_NODE_4_PORT:-7382}
+      VALKEY_ANNOUNCE_BUS_PORT: ${VALKEY_NODE_4_BUS_PORT:-17382}
+    ports:
+      - "${VALKEY_NODE_4_PORT:-7382}:6379"
+      - "${VALKEY_NODE_4_BUS_PORT:-17382}:16379"
+    volumes:
+      - valkey-4-data:/data
+      - ./scripts/valkey-cluster-node.sh:/usr/local/bin/valkey-cluster-node.sh:ro
+
+  valkey-5:
+    <<: *valkey-node
+    container_name: valkey-5
+    environment:
+      VALKEY_ANNOUNCE_PORT: ${VALKEY_NODE_5_PORT:-7383}
+      VALKEY_ANNOUNCE_BUS_PORT: ${VALKEY_NODE_5_BUS_PORT:-17383}
+    ports:
+      - "${VALKEY_NODE_5_PORT:-7383}:6379"
+      - "${VALKEY_NODE_5_BUS_PORT:-17383}:16379"
+    volumes:
+      - valkey-5-data:/data
+      - ./scripts/valkey-cluster-node.sh:/usr/local/bin/valkey-cluster-node.sh:ro
+
+  valkey-6:
+    <<: *valkey-node
+    container_name: valkey-6
+    environment:
+      VALKEY_ANNOUNCE_PORT: ${VALKEY_NODE_6_PORT:-7384}
+      VALKEY_ANNOUNCE_BUS_PORT: ${VALKEY_NODE_6_BUS_PORT:-17384}
+    ports:
+      - "${VALKEY_NODE_6_PORT:-7384}:6379"
+      - "${VALKEY_NODE_6_BUS_PORT:-17384}:16379"
+    volumes:
+      - valkey-6-data:/data
+      - ./scripts/valkey-cluster-node.sh:/usr/local/bin/valkey-cluster-node.sh:ro
+
+  valkey-cluster-init:
+    image: valkey/valkey:8-alpine
+    container_name: valkey-cluster-init
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      - valkey-1
+      - valkey-2
+      - valkey-3
+      - valkey-4
+      - valkey-5
+      - valkey-6
+    networks:
+      - valkey-net
+    restart: "no"
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        for host in valkey-1 valkey-2 valkey-3 valkey-4 valkey-5 valkey-6; do
+          until valkey-cli -h "$$host" -p 6379 ping | grep -q PONG; do
+            echo "waiting for $$host..."
+            sleep 1
+          done
+        done
+        if valkey-cli -h valkey-1 -p 6379 cluster info | grep -q 'cluster_state:ok'; then
+          echo "cluster already initialized"
+          exit 0
+        fi
+        valkey-cli --cluster create \
+          valkey-1:6379 valkey-2:6379 valkey-3:6379 \
+          valkey-4:6379 valkey-5:6379 valkey-6:6379 \
+          --cluster-replicas 1 --cluster-yes
+        echo "cluster initialized"
+
+networks:
+  valkey-net:
+
+volumes:
+  valkey-1-data:
+  valkey-2-data:
+  valkey-3-data:
+  valkey-4-data:
+  valkey-5-data:
+  valkey-6-data:

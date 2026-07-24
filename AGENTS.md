@@ -24,6 +24,7 @@
 | `tu-integration-service/` | Java + Spring Boot | 外部任务系统集成 |
 | `tu-rag-service/` | Python + FastAPI | RAG retrieval/indexing on Qdrant |
 | `tu-backend/tu-platform-api/` | Java API jar | Dubbo 契约（tu-backend Provider；studyflow-service Consumer） |
+| `infra/` | Ops-owned middleware stacks (no `tu` prefix); e.g. Valkey Cluster | Compose under `infra/<component>/` |
 | `通用数据结构转换系统.md` | — | Design doc for DataMorph platform |
 
 ## StudyFlow (`studyflow/` + `studyflow-service/`)

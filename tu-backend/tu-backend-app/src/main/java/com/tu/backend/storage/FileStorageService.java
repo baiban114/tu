@@ -57,6 +57,7 @@ public class FileStorageService {
             throw new BusinessException(40000, "file required");
         }
 
+
         String contentType = FileUploadSupport.normalizeContentType(file.getContentType());
         if (file.getSize() > FileUploadSupport.resolveMaxFileSize(properties, contentType)) {
             throw new BusinessException(40000, "file too large");

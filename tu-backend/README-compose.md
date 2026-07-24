@@ -56,6 +56,28 @@ Stop / remove only Redis Cluster:
 docker compose -f docker-compose.redis.yml --env-file .env.redis down
 ```
 
+## Valkey Cluster Only（运维入口 `infra/`）
+
+Redis 协议兼容的独立集群栈，**Compose project / 容器名均无 `tu` 前缀**，与应用解耦。
+默认同机端口与 Redis Cluster 错开，可并存。
+
+```powershell
+cd infra/valkey
+Copy-Item .env.example .env
+docker compose --env-file .env pull
+docker compose --env-file .env up -d
+```
+
+- Cluster nodes: `127.0.0.1:7379`–`7384`（见 `infra/valkey/.env.example`）
+- Topology: `docker exec valkey-1 valkey-cli cluster nodes`
+- 文档：[`infra/README.md`](../infra/README.md)、[`infra/valkey/README.md`](../infra/valkey/README.md)
+
+Stop / remove only Valkey Cluster:
+
+```powershell
+docker compose --env-file .env down
+```
+
 ## MinIO Only (object storage)
 
 When MySQL / ES / other containers are already running, use the **standalone** compose file.

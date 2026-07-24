@@ -44,6 +44,9 @@ export interface ExternalResourcePickerPdfInsert {
   startPage: number
   endPage: number
   height: number
+  /** Bind notes / link conversion to this resource entity. */
+  sourceHref?: string
+  sourceLabel?: string
 }
 
 export interface ExternalResourcePickerSelection {
@@ -537,6 +540,8 @@ const selectResource = async (item: ResourceItem) => {
           startPage: 1,
           endPage: 1,
           height: PDF_EXCERPT_DEFAULT_HEIGHT,
+          sourceHref: `resource:${item.id}`,
+          sourceLabel: item.title,
         },
         externalResource,
       })

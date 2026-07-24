@@ -15,10 +15,12 @@
 | [`tu-rag-service/`](./tu-rag-service/) | Python FastAPI RAG 服务（端口 19080） |
 | [`studyflow/`](./studyflow/) | StudyFlow 学习驾驶舱前端（Vite + React，端口 5180） |
 | [`studyflow-service/`](./studyflow-service/) | StudyFlow 学习域微服务（REST + Dubbo Consumer，端口 18082） |
+| [`infra/`](./infra/) | 运维基础设施（独立 Compose 栈，无 `tu` 前缀；含 Valkey Cluster 等） |
 
 ## 本地开发（最小链路）
 
 1. 基础设施：`cd tu-backend && docker compose -f docker-compose.infra.yml up -d`
+   - Valkey Cluster（可选，运维独立栈）：`cd infra/valkey && Copy-Item .env.example .env && docker compose --env-file .env up -d`（端口 7379–7384，见 [`infra/`](./infra/)）
 2. 后端：`cd tu-backend && mvn spring-boot:run -pl tu-backend-app`
 3. 网关：`cd tu-gateway && mvn spring-boot:run`
 4. 前端：`cd tu-web-ts && npm run dev`（代理到 `http://localhost:18080`）

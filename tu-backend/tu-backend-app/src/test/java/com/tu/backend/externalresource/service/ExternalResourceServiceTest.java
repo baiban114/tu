@@ -24,6 +24,7 @@ import com.tu.backend.externalresource.entity.ResourceWorkEntity;
 import com.tu.backend.externalresource.repository.ResourceExcerptRepository;
 import com.tu.backend.externalresource.repository.ResourceItemRelationRepository;
 import com.tu.backend.externalresource.repository.ResourceItemRepository;
+import com.tu.backend.externalresource.repository.ResourcePdfRegionNoteRepository;
 import com.tu.backend.externalresource.repository.ResourceTypeRepository;
 import com.tu.backend.externalresource.repository.ResourceWorkRepository;
 import com.tu.backend.externalresource.service.UrlClusterMatcherService;
@@ -389,6 +390,7 @@ class ExternalResourceServiceTest {
         final ResourceWorkRepository workRepository = mock(ResourceWorkRepository.class);
         final ResourceItemRepository itemRepository = mock(ResourceItemRepository.class);
         final ResourceExcerptRepository excerptRepository = mock(ResourceExcerptRepository.class);
+        final ResourcePdfRegionNoteRepository pdfRegionNoteRepository = mock(ResourcePdfRegionNoteRepository.class);
         final ContentTreeNodeService contentTreeNodeService = mock(ContentTreeNodeService.class);
         final ResourceItemRelationRepository itemRelationRepository = mock(ResourceItemRelationRepository.class);
         final UrlClusterMatcherService clusterMatcherService = mock(UrlClusterMatcherService.class);
@@ -397,6 +399,7 @@ class ExternalResourceServiceTest {
             workRepository,
             itemRepository,
             excerptRepository,
+            pdfRegionNoteRepository,
             contentTreeNodeService,
             itemRelationRepository,
             clusterMatcherService,

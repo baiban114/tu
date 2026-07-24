@@ -61,6 +61,7 @@ describe('parseLinkLabelQuery', () => {
       childQuery: null,
       headingQuery: null,
       drilled: false,
+      pageRange: null,
     })
     expect(parseLinkLabelQuery('入门>')).toEqual({
       pageQuery: '入门',
@@ -68,6 +69,7 @@ describe('parseLinkLabelQuery', () => {
       childQuery: '',
       headingQuery: '',
       drilled: true,
+      pageRange: null,
     })
     expect(parseLinkLabelQuery('入门>安装')).toEqual({
       pageQuery: '入门',
@@ -75,6 +77,7 @@ describe('parseLinkLabelQuery', () => {
       childQuery: '安装',
       headingQuery: '安装',
       drilled: true,
+      pageRange: null,
     })
   })
 
@@ -85,6 +88,7 @@ describe('parseLinkLabelQuery', () => {
       childQuery: '',
       headingQuery: '第1章',
       drilled: true,
+      pageRange: null,
     })
     expect(parseLinkLabelQuery('王道 > 第1章 > 1.1')).toEqual({
       pageQuery: '王道',
@@ -92,6 +96,59 @@ describe('parseLinkLabelQuery', () => {
       childQuery: '1.1',
       headingQuery: '第1章 1.1',
       drilled: true,
+      pageRange: null,
+    })
+  })
+
+  it('parses PDF-style -N / -N-M page ranges', () => {
+    expect(parseLinkLabelQuery('王道-12')).toEqual({
+      pageQuery: '王道',
+      pathSegments: [],
+      childQuery: null,
+      headingQuery: null,
+      drilled: false,
+      pageRange: { pageStart: 12, pageEnd: 12 },
+    })
+    expect(parseLinkLabelQuery('王道-12-20')).toEqual({
+      pageQuery: '王道',
+      pathSegments: [],
+      childQuery: null,
+      headingQuery: null,
+      drilled: false,
+      pageRange: { pageStart: 12, pageEnd: 20 },
+    })
+    expect(parseLinkLabelQuery('王道>12-20')).toEqual({
+      pageQuery: '王道',
+      pathSegments: [],
+      childQuery: '',
+      headingQuery: '',
+      drilled: true,
+      pageRange: { pageStart: 12, pageEnd: 20 },
+    })
+    expect(parseLinkLabelQuery('王道>第1章>3-5')).toEqual({
+      pageQuery: '王道',
+      pathSegments: ['第1章'],
+      childQuery: '',
+      headingQuery: '第1章',
+      drilled: true,
+      pageRange: { pageStart: 3, pageEnd: 5 },
+    })
+    expect(parseLinkLabelQuery('王道>第1章-3-5')).toEqual({
+      pageQuery: '王道',
+      pathSegments: [],
+      childQuery: '第1章',
+      headingQuery: '第1章',
+      drilled: true,
+      pageRange: { pageStart: 3, pageEnd: 5 },
+    })
+    // Non-digit hyphenated titles stay as search text.
+    expect(parseLinkLabelQuery('TCP-IP')).toEqual({
+      pageQuery: 'TCP-IP',
+      pathSegments: [],
+      childQuery: null,
+      headingQuery: null,
+      drilled: false,
+      pageRange: null,
     })
   })
 })
@@ -241,6 +298,27 @@ describe('collectResourceScopeSuggests display / apply separation', () => {
     const items = collectResourceScopeSuggests(item, chapters, excerpts, ['第1章'], 'TCP', 20)
     expect(items.map((i) => i.label)).toEqual(['TCP 握手'])
     expect(items[0].applyLabel).toBe('王道2027计算机网络 > 第1章 > 1.1 概述 > TCP 握手')
+  })
+
+  it('attaches #page= range to resource / chapter suggests', () => {
+    const root = collectResourceScopeSuggests(
+      item, chapters, excerpts, [], '', 20, { pageStart: 12, pageEnd: 20 },
+    )
+    expect(root[0]).toMatchObject({
+      kind: 'resourceItem',
+      href: 'resource:ri#page=12-20',
+      applyLabel: '王道2027计算机网络-12-20',
+    })
+    expect(root.some((i) => i.href === 'resource:ri:chapter:c1#page=12-20')).toBe(true)
+
+    const under = collectResourceScopeSuggests(
+      item, chapters, excerpts, ['第1章'], '', 20, { pageStart: 3, pageEnd: 5 },
+    )
+    expect(under[0]).toMatchObject({
+      kind: 'resourceChapter',
+      href: 'resource:ri:chapter:c1#page=3-5',
+      applyLabel: '王道2027计算机网络 > 第1章-3-5',
+    })
   })
 })
 

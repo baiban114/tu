@@ -41,6 +41,7 @@ import { HEADING_SOURCE_COMMENT_RE, parseHeadingSourceComment } from '@/utils/he
 import { createInitialPageContent } from '@/utils/boardPageContent';
 import type {
   CreateResourceExcerptPayload,
+  CreateResourcePdfRegionNotePayload,
   CreateResourceChapterPayload,
   CreateResourceItemPayload,
   CreateResourceTypePayload,
@@ -48,12 +49,14 @@ import type {
   CreateUrlClusterRulePayload,
   RegisterExternalUrlResult,
   ResourceExcerpt,
+  ResourcePdfRegionNote,
   ResourceChapter,
   ResourceItem,
   ResourceItemRelation,
   ResourceType,
   ResourceWork,
   UpdateResourceExcerptPayload,
+  UpdateResourcePdfRegionNotePayload,
   UpdateResourceChapterPayload,
   UpdateResourceItemPayload,
   UpdateResourceTypePayload,
@@ -80,6 +83,7 @@ interface MockState {
   resourceItems: ResourceItem[];
   resourceChapters: ResourceChapter[];
   resourceExcerpts: ResourceExcerpt[];
+  resourcePdfRegionNotes: ResourcePdfRegionNote[];
   urlClusterRules: UrlClusterRule[];
   resourceItemRelations: ResourceItemRelation[];
   kbResourceLinks: KbResourceLink[];
@@ -343,6 +347,7 @@ const initialState: MockState = {
       sortOrder: 1,
     },
   ],
+  resourcePdfRegionNotes: [],
   contentTreeHours: {},
 };
 
@@ -372,6 +377,9 @@ function loadState(): MockState {
       resourceItems: Array.isArray(parsed.resourceItems) ? parsed.resourceItems : cloneState(initialState.resourceItems),
       resourceChapters: Array.isArray(parsed.resourceChapters) ? parsed.resourceChapters : cloneState(initialState.resourceChapters),
       resourceExcerpts: Array.isArray(parsed.resourceExcerpts) ? parsed.resourceExcerpts : cloneState(initialState.resourceExcerpts),
+      resourcePdfRegionNotes: Array.isArray(parsed.resourcePdfRegionNotes)
+        ? parsed.resourcePdfRegionNotes
+        : cloneState(initialState.resourcePdfRegionNotes),
       urlClusterRules: Array.isArray(parsed.urlClusterRules) ? parsed.urlClusterRules : cloneState(initialState.urlClusterRules),
       resourceItemRelations: Array.isArray(parsed.resourceItemRelations) ? parsed.resourceItemRelations : cloneState(initialState.resourceItemRelations),
       kbResourceLinks: Array.isArray(parsed.kbResourceLinks) ? parsed.kbResourceLinks : cloneState(initialState.kbResourceLinks),
@@ -1011,6 +1019,7 @@ export function removeResourceItemMock(id: string): void {
   state.resourceItems = state.resourceItems.filter((item) => item.id !== id);
   state.resourceChapters = state.resourceChapters.filter((chapter) => chapter.resourceItemId !== id);
   state.resourceExcerpts = state.resourceExcerpts.filter((excerpt) => excerpt.resourceItemId !== id);
+  state.resourcePdfRegionNotes = state.resourcePdfRegionNotes.filter((note) => note.resourceItemId !== id);
   state.resourceItemRelations = state.resourceItemRelations.filter(
     (relation) => relation.fromItemId !== id && relation.toItemId !== id,
   );
@@ -1486,6 +1495,86 @@ export function deleteResourceExcerptMock(id: string): void {
     }
   });
   state.resourceExcerpts = state.resourceExcerpts.filter((entry) => entry.id !== id);
+  persistState();
+}
+
+function clampClipRatio(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  return Math.min(1, Math.max(0, value));
+}
+
+export function listResourcePdfRegionNotesMock(resourceItemId: string): ResourcePdfRegionNote[] {
+  getResourceItemOrThrow(resourceItemId);
+  return cloneState(
+    state.resourcePdfRegionNotes
+      .filter((note) => note.resourceItemId === resourceItemId)
+      .sort((a, b) => a.startPage - b.startPage || String(a.createdAt).localeCompare(String(b.createdAt))),
+  );
+}
+
+export function createResourcePdfRegionNoteMock(
+  resourceItemId: string,
+  payload: CreateResourcePdfRegionNotePayload,
+): ResourcePdfRegionNote {
+  getResourceItemOrThrow(resourceItemId);
+  const startPage = Math.max(1, Math.floor(payload.startPage) || 1);
+  const endPage = Math.max(startPage, Math.floor(payload.endPage) || startPage);
+  const clipTop = clampClipRatio(payload.clipTop);
+  const clipBottom = clampClipRatio(payload.clipBottom);
+  if (startPage === endPage && clipBottom < clipTop) {
+    throw new Error('clipBottom must be >= clipTop on the same page');
+  }
+  const now = new Date().toISOString();
+  const note: ResourcePdfRegionNote = {
+    id: nextId('rpn'),
+    resourceItemId,
+    fileId: payload.fileId?.trim() || null,
+    startPage,
+    endPage,
+    clipTop,
+    clipBottom,
+    note: payload.note.trim(),
+    color: payload.color?.trim() || null,
+    createdAt: now,
+    updatedAt: now,
+  };
+  state.resourcePdfRegionNotes.push(note);
+  persistState();
+  return cloneState(note);
+}
+
+export function updateResourcePdfRegionNoteMock(
+  noteId: string,
+  payload: UpdateResourcePdfRegionNotePayload,
+): ResourcePdfRegionNote {
+  const note = state.resourcePdfRegionNotes.find((entry) => entry.id === noteId);
+  if (!note) throw new Error(`resource pdf region note not found: ${noteId}`);
+  if (payload.startPage != null) note.startPage = Math.max(1, Math.floor(payload.startPage) || 1);
+  if (payload.endPage != null) note.endPage = Math.max(note.startPage, Math.floor(payload.endPage) || note.startPage);
+  note.endPage = Math.max(note.startPage, note.endPage);
+  if (payload.clipTop != null) note.clipTop = clampClipRatio(payload.clipTop);
+  if (payload.clipBottom != null) note.clipBottom = clampClipRatio(payload.clipBottom);
+  if (note.startPage === note.endPage && note.clipBottom < note.clipTop) {
+    throw new Error('clipBottom must be >= clipTop on the same page');
+  }
+  if (payload.note != null) {
+    const text = payload.note.trim();
+    if (!text) throw new Error('note must not be blank');
+    note.note = text;
+  }
+  if (payload.fileId !== undefined) note.fileId = payload.fileId?.trim() || null;
+  if (payload.color !== undefined) note.color = payload.color?.trim() || null;
+  note.updatedAt = new Date().toISOString();
+  persistState();
+  return cloneState(note);
+}
+
+export function deleteResourcePdfRegionNoteMock(noteId: string): void {
+  const before = state.resourcePdfRegionNotes.length;
+  state.resourcePdfRegionNotes = state.resourcePdfRegionNotes.filter((entry) => entry.id !== noteId);
+  if (state.resourcePdfRegionNotes.length === before) {
+    throw new Error(`resource pdf region note not found: ${noteId}`);
+  }
   persistState();
 }
 

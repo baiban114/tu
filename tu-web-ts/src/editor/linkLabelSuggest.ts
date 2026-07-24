@@ -14,16 +14,21 @@ import {
 } from '@/editor/hierarchicalScopeSearch'
 import {
   formatHeadingSuggestLabel,
+  formatLinkLabelWithPageRange,
   formatResourceChildSuggestLabel,
+  applyPageRangeToHref,
   headingLocator,
   isHttpHref,
+  linkLabelPageRangeText,
   pageLocator,
   parseLinkLabelQuery,
   parseResourceLocator,
   resolveResourceItemHref,
   resourceChapterLocator,
   resourceExcerptLocator,
+  resourceHrefPageLimitText,
   resourceItemSearchText,
+  type LinkLabelPageRange,
   type LinkSuggestItem,
 } from '@/editor/linkLabelSuggestQuery'
 
@@ -47,6 +52,9 @@ export {
   resourceItemSearchText,
   resourceChapterLocator,
   resourceExcerptLocator,
+  extractLinkLabelPageRange,
+  formatLinkLabelWithPageRange,
+  applyPageRangeToHref,
 } from '@/editor/linkLabelSuggestQuery'
 
 export { applyLinkSuggest } from '@/editor/linkLabelSuggestApply'
@@ -142,6 +150,23 @@ function toResourceSuggest(item: ResourceItem): LinkSuggestItem {
     label: item.title,
     href,
     description: href,
+  }
+}
+
+function withPageRange(
+  item: LinkSuggestItem,
+  pageRange: LinkLabelPageRange | null | undefined,
+): LinkSuggestItem {
+  if (!pageRange) return item
+  const href = applyPageRangeToHref(item.href, pageRange)
+  if (href === item.href) return item
+  const pageText = linkLabelPageRangeText(pageRange)
+  return {
+    ...item,
+    id: `${item.id}#page=${pageText}`,
+    href,
+    applyLabel: formatLinkLabelWithPageRange(item.applyLabel ?? item.label, pageRange),
+    description: resourceHrefPageLimitText(href) || item.description,
   }
 }
 
@@ -251,6 +276,7 @@ async function resolveResourcesForDrill(
 /**
  * Collect resource chapter/excerpt suggests under a drill scope.
  * Empty childQuery → Browse (direct children); non-empty → DeepSearch in subtree.
+ * Optional pageRange attaches `#page=` (PDF-style start–end) to resource locators.
  */
 export function collectResourceScopeSuggests(
   item: ResourceItem,
@@ -259,6 +285,7 @@ export function collectResourceScopeSuggests(
   pathSegments: string[],
   childQuery: string,
   limit: number,
+  pageRange: LinkLabelPageRange | null = null,
 ): LinkSuggestItem[] {
   const scopeNodes = toChapterScopeNodes(chapters)
   const resolved = resolveScopeParent(scopeNodes, pathSegments)
@@ -268,12 +295,29 @@ export function collectResourceScopeSuggests(
   const browsing = !childQuery.trim()
   const items: LinkSuggestItem[] = []
 
+  // With an explicit page range and empty filter, prefer the current scope target itself.
+  if (pageRange && browsing) {
+    if (parentId) {
+      const chapter = scopeNodes.find((node) => node.id === parentId)
+      if (chapter) {
+        items.push(withPageRange(toResourceChapterHitSuggest(item, {
+          node: chapter,
+          pathFromRoot: resolvedPath,
+          pathFromScope: resolvedPath.slice(-1),
+        }), pageRange))
+      }
+    } else {
+      items.push(withPageRange(toResourceSuggest(item), pageRange))
+    }
+    if (items.length >= limit) return items
+  }
+
   const chapterHits = browsing
     ? browseChildren(scopeNodes, parentId, resolvedPath)
     : deepSearchInSubtree(scopeNodes, parentId, childQuery, resolvedPath)
 
   for (const hit of chapterHits) {
-    items.push(toResourceChapterHitSuggest(item, hit))
+    items.push(withPageRange(toResourceChapterHitSuggest(item, hit), pageRange))
     if (items.length >= limit) return items
   }
 
@@ -291,7 +335,10 @@ export function collectResourceScopeSuggests(
 
     const pathFromRoot = [...resolvedPath, title]
     const pathFromScope = [title]
-    items.push(toResourceExcerptHitSuggest(item, excerpt, pathFromRoot, pathFromScope))
+    items.push(withPageRange(
+      toResourceExcerptHitSuggest(item, excerpt, pathFromRoot, pathFromScope),
+      pageRange,
+    ))
     if (items.length >= limit) return items
   }
 
@@ -303,6 +350,7 @@ async function collectResourceChildSuggests(
   pathSegments: string[],
   childQuery: string,
   limit: number,
+  pageRange: LinkLabelPageRange | null = null,
 ): Promise<LinkSuggestItem[]> {
   const { listResourceChapters, listResourceExcerpts } = await import('@/api/externalResource')
   let chapters: ResourceChapter[] = []
@@ -320,7 +368,21 @@ async function collectResourceChildSuggests(
     // ignore excerpt load failures
   }
 
-  return collectResourceScopeSuggests(item, chapters, excerpts, pathSegments, childQuery, limit)
+  const items = collectResourceScopeSuggests(
+    item,
+    chapters,
+    excerpts,
+    pathSegments,
+    childQuery,
+    limit,
+    pageRange,
+  )
+  if (items.length > 0) return items
+  // No chapters/excerpts (or empty browse): still allow resource + page range.
+  if (pageRange && pathSegments.length === 0 && !childQuery.trim()) {
+    return [withPageRange(toResourceSuggest(item), pageRange)].slice(0, limit)
+  }
+  return items
 }
 
 async function collectPageHeadingSuggests(
@@ -390,7 +452,10 @@ export async function fetchLinkSuggestItems(
   if (parsed.drilled) {
     const headingQuery = parsed.headingQuery ?? ''
     const childQuery = parsed.childQuery ?? ''
-    const pageItems = await collectPageHeadingSuggests(matchedPages, headingQuery, options, limit)
+    // Page ranges target resource/PDF locators; skip document heading suggests.
+    const pageItems = parsed.pageRange
+      ? []
+      : await collectPageHeadingSuggests(matchedPages, headingQuery, options, limit)
     const remaining = Math.max(0, limit - pageItems.length)
     if (remaining === 0) return pageItems
 
@@ -402,6 +467,7 @@ export async function fetchLinkSuggestItems(
         parsed.pathSegments,
         childQuery,
         remaining - resourceItems.length,
+        parsed.pageRange,
       )
       resourceItems.push(...children)
       if (resourceItems.length >= remaining) break
@@ -441,7 +507,7 @@ export async function fetchLinkSuggestItems(
     resourceItems = result.items
       .filter((item) => resourceItemSearchText(item).toLowerCase().includes(needle))
       .slice(0, limit)
-      .map(toResourceSuggest)
+      .map((item) => withPageRange(toResourceSuggest(item), parsed.pageRange))
   } catch {
     resourceItems = []
   }

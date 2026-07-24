@@ -10,10 +10,13 @@ import {
 import { normalizeResourcePositionLocatorKey } from '@/utils/resourcePositionLocator';
 import {
   createResourceExcerptMock,
+  createResourcePdfRegionNoteMock,
   createResourceItemMock,
   createResourceTypeMock,
   createResourceWorkMock,
   deleteResourceExcerptMock,
+  deleteResourcePdfRegionNoteMock,
+  listResourcePdfRegionNotesMock,
   removeResourceItemMock,
   mergeResourceWorksMock,
   splitResourceItemWorkMock,
@@ -39,6 +42,7 @@ import {
   listResourceTypesMock,
   listResourceWorksMock,
   updateResourceExcerptMock,
+  updateResourcePdfRegionNoteMock,
   updateResourceItemMock,
   updateResourceTypeMock,
   updateResourceWorkMock,
@@ -389,6 +393,77 @@ export function createResourceExcerpt(resourceItemId: string, payload: CreateRes
   return request<ResourceExcerpt>(`/api/resource-items/${encodeURIComponent(resourceItemId)}/excerpts`, {
     method: 'POST',
     body: JSON.stringify(payload),
+  });
+}
+
+export interface ResourcePdfRegionNote {
+  id: string;
+  resourceItemId: string;
+  fileId?: string | null;
+  startPage: number;
+  endPage: number;
+  clipTop: number;
+  clipBottom: number;
+  note: string;
+  color?: string | null;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export type CreateResourcePdfRegionNotePayload = {
+  startPage: number;
+  endPage: number;
+  clipTop: number;
+  clipBottom: number;
+  note: string;
+  fileId?: string;
+  color?: string;
+};
+
+export type UpdateResourcePdfRegionNotePayload = Partial<CreateResourcePdfRegionNotePayload>;
+
+export function listResourcePdfRegionNotes(resourceItemId: string): Promise<ResourcePdfRegionNote[]> {
+  if (isMockDataSource()) {
+    return Promise.resolve(listResourcePdfRegionNotesMock(resourceItemId));
+  }
+  return request<ResourcePdfRegionNote[]>(
+    `/api/resource-items/${encodeURIComponent(resourceItemId)}/pdf-region-notes`,
+  );
+}
+
+export function createResourcePdfRegionNote(
+  resourceItemId: string,
+  payload: CreateResourcePdfRegionNotePayload,
+): Promise<ResourcePdfRegionNote> {
+  if (isMockDataSource()) {
+    return Promise.resolve(createResourcePdfRegionNoteMock(resourceItemId, payload));
+  }
+  return request<ResourcePdfRegionNote>(
+    `/api/resource-items/${encodeURIComponent(resourceItemId)}/pdf-region-notes`,
+    { method: 'POST', body: JSON.stringify(payload) },
+  );
+}
+
+export function updateResourcePdfRegionNote(
+  noteId: string,
+  payload: UpdateResourcePdfRegionNotePayload,
+): Promise<ResourcePdfRegionNote> {
+  if (isMockDataSource()) {
+    return Promise.resolve(updateResourcePdfRegionNoteMock(noteId, payload));
+  }
+  return request<ResourcePdfRegionNote>(
+    `/api/resource-pdf-region-notes/${encodeURIComponent(noteId)}`,
+    { method: 'PATCH', body: JSON.stringify(payload) },
+  );
+}
+
+export function deleteResourcePdfRegionNote(noteId: string): Promise<void> {
+  if (isMockDataSource()) {
+    deleteResourcePdfRegionNoteMock(noteId);
+    return Promise.resolve();
+  }
+  return request<void>(`/api/resource-pdf-region-notes/${encodeURIComponent(noteId)}`, {
+    method: 'DELETE',
   });
 }
 

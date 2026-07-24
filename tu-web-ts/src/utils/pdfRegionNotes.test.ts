@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import type { TextAnnotation } from '@/api/types'
-import { collectPdfRegionNotesForBlock, remountPdfRegionNotes } from '@/utils/pdfRegionNotes'
+import {
+  collectPdfRegionNotesForBlock,
+  filterNotesOverlappingViewport,
+  pdfRegionsOverlap,
+  remountPdfRegionNotes,
+} from '@/utils/pdfRegionNotes'
 
 function note(partial: Partial<TextAnnotation> & { id: string }): TextAnnotation {
   return {
@@ -103,5 +108,66 @@ describe('pdfRegionNotes', () => {
       fileId: 'file-1',
     })
     expect(found.map((a) => a.id)).toEqual(['a1'])
+  })
+
+  it('detects page+clip interval overlap for excerpt viewport matching', () => {
+    expect(pdfRegionsOverlap(
+      { startPage: 2, endPage: 2, clipTop: 0.1, clipBottom: 0.4 },
+      { startPage: 2, endPage: 2, clipTop: 0.3, clipBottom: 0.9 },
+    )).toBe(true)
+    expect(pdfRegionsOverlap(
+      { startPage: 2, endPage: 2, clipTop: 0.1, clipBottom: 0.3 },
+      { startPage: 2, endPage: 2, clipTop: 0.3, clipBottom: 0.9 },
+    )).toBe(false)
+    expect(pdfRegionsOverlap(
+      { startPage: 1, endPage: 2, clipTop: 0.8, clipBottom: 1 },
+      { startPage: 2, endPage: 2, clipTop: 0, clipBottom: 0.2 },
+    )).toBe(true)
+  })
+
+  it('filters resource notes to those overlapping excerpt viewport', () => {
+    const annotations = [
+      note({
+        id: 'inside',
+        blockId: 'pe-1',
+        pdfRegion: {
+          blockId: 'pe-1',
+          resourceItemId: 'ri-1',
+          startPage: 3,
+          endPage: 3,
+          clipTop: 0.2,
+          clipBottom: 0.5,
+        },
+      }),
+      note({
+        id: 'outside',
+        blockId: 'pe-1',
+        pdfRegion: {
+          blockId: 'pe-1',
+          resourceItemId: 'ri-1',
+          startPage: 9,
+          endPage: 9,
+          clipTop: 0,
+          clipBottom: 1,
+        },
+      }),
+    ]
+    const filtered = filterNotesOverlappingViewport(annotations, {
+      viewMode: 'excerpt',
+      startPage: 3,
+      endPage: 3,
+      clipTop: 0,
+      clipBottom: 1,
+    })
+    expect(filtered.map((a) => a.id)).toEqual(['inside'])
+
+    const full = filterNotesOverlappingViewport(annotations, {
+      viewMode: 'full',
+      startPage: 1,
+      endPage: 100,
+      clipTop: 0,
+      clipBottom: 1,
+    })
+    expect(full.map((a) => a.id)).toEqual(['inside', 'outside'])
   })
 })

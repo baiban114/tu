@@ -21,6 +21,12 @@ export interface LinkSuggestItem {
   description: string
 }
 
+/** PDF-style page start/end attached via `-N` / `-N-M` in link label search. */
+export interface LinkLabelPageRange {
+  pageStart: number
+  pageEnd: number
+}
+
 export interface ParsedLinkLabelQuery {
   pageQuery: string
   /**
@@ -39,19 +45,93 @@ export interface ParsedLinkLabelQuery {
    */
   headingQuery: string | null
   drilled: boolean
+  /**
+   * Optional PDF-style page range from `-12` / `-12-20`, or a final `>` segment that is only digits.
+   * Written onto resource locators as `#page=…` when selecting a suggest.
+   */
+  pageRange: LinkLabelPageRange | null
 }
 
 export const HEADING_SEP = '>'
 
-export function parseLinkLabelQuery(raw: string): ParsedLinkLabelQuery {
+/** Trailing `-12` or `-12-20` (same start–end meaning as PDF `#page=`). */
+const PAGE_RANGE_SUFFIX_RE = /-(\d+)(?:-(\d+))?$/
+/** Entire segment is a page or page range (e.g. last part of `王道>12-20`). */
+const PAGE_RANGE_SEGMENT_RE = /^(\d+)(?:-(\d+))?$/
+
+function normalizeLinkLabelPageRange(
+  startRaw: string,
+  endRaw?: string,
+): LinkLabelPageRange | null {
+  const pageStart = Math.floor(Number(startRaw))
+  const pageEnd = endRaw == null ? pageStart : Math.floor(Number(endRaw))
+  if (!Number.isFinite(pageStart) || pageStart < 1) return null
+  if (!Number.isFinite(pageEnd) || pageEnd < pageStart) return null
+  return { pageStart, pageEnd }
+}
+
+function formatLinkLabelPageRangeText(range: LinkLabelPageRange): string {
+  return range.pageStart === range.pageEnd
+    ? String(range.pageStart)
+    : `${range.pageStart}-${range.pageEnd}`
+}
+
+/**
+ * Strip PDF-style page start/end from a link-label query.
+ * - `王道>12-20` / `王道>第1章>12` → last `>` segment is only digits → range; remaining path browses that scope
+ * - `王道-12` / `王道>第1章-3-5` → trailing `-N` / `-N-M` suffix
+ */
+export function extractLinkLabelPageRange(raw: string): {
+  text: string
+  pageRange: LinkLabelPageRange | null
+  /** True when the page came from a dedicated final `>` segment (force browse at remaining path). */
+  pageSegmentDrilled: boolean
+} {
   const text = raw.replace(/^\uFEFF/, '')
+  if (!text) return { text: '', pageRange: null, pageSegmentDrilled: false }
+
+  if (text.includes(HEADING_SEP)) {
+    const parts = text.split(HEADING_SEP)
+    const lastIdx = parts.length - 1
+    const last = (parts[lastIdx] ?? '').trim()
+    const segmentMatch = last.match(PAGE_RANGE_SEGMENT_RE)
+    if (segmentMatch) {
+      const pageRange = normalizeLinkLabelPageRange(segmentMatch[1]!, segmentMatch[2])
+      if (pageRange) {
+        const rest = parts.slice(0, lastIdx).join(HEADING_SEP)
+        return { text: rest, pageRange, pageSegmentDrilled: true }
+      }
+    }
+  }
+
+  const suffixMatch = text.match(PAGE_RANGE_SUFFIX_RE)
+  if (!suffixMatch || suffixMatch.index == null) {
+    return { text, pageRange: null, pageSegmentDrilled: false }
+  }
+  const pageRange = normalizeLinkLabelPageRange(suffixMatch[1]!, suffixMatch[2])
+  if (!pageRange) return { text, pageRange: null, pageSegmentDrilled: false }
+  // Require some non-empty label before the page suffix (bare `-12` is not a search query).
+  const before = text.slice(0, suffixMatch.index).trimEnd()
+  if (!before) return { text, pageRange: null, pageSegmentDrilled: false }
+  return { text: before, pageRange, pageSegmentDrilled: false }
+}
+
+export function parseLinkLabelQuery(raw: string): ParsedLinkLabelQuery {
+  const extracted = extractLinkLabelPageRange(raw)
+  let text = extracted.text
+  // `王道>第1章>12` → remaining `王道>第1章` should browse under 第1章 (as if ended with `>`).
+  if (extracted.pageSegmentDrilled && text.includes(HEADING_SEP) && !text.trimEnd().endsWith(HEADING_SEP)) {
+    text = `${text.trimEnd()}${HEADING_SEP}`
+  }
+
   if (!text.includes(HEADING_SEP)) {
     return {
       pageQuery: text.trim(),
       pathSegments: [],
-      childQuery: null,
-      headingQuery: null,
-      drilled: false,
+      childQuery: extracted.pageSegmentDrilled ? '' : null,
+      headingQuery: extracted.pageSegmentDrilled ? '' : null,
+      drilled: extracted.pageSegmentDrilled,
+      pageRange: extracted.pageRange,
     }
   }
   const parts = text.split(HEADING_SEP).map((part) => part.trim())
@@ -65,7 +145,32 @@ export function parseLinkLabelQuery(raw: string): ParsedLinkLabelQuery {
     childQuery,
     headingQuery,
     drilled: true,
+    pageRange: extracted.pageRange,
   }
+}
+
+/** Append `-N` / `-N-M` to a readable applyLabel (mirrors search grammar). */
+export function formatLinkLabelWithPageRange(
+  label: string,
+  pageRange: LinkLabelPageRange | null | undefined,
+): string {
+  if (!pageRange) return label
+  return `${label}-${formatLinkLabelPageRangeText(pageRange)}`
+}
+
+export function linkLabelPageRangeText(pageRange: LinkLabelPageRange): string {
+  return formatLinkLabelPageRangeText(pageRange)
+}
+
+/** Attach `#page=` (and optional clip-less range) to a suggest href when pageRange is set. */
+export function applyPageRangeToHref(
+  href: string,
+  pageRange: LinkLabelPageRange | null | undefined,
+): string {
+  if (!pageRange) return href
+  const trimmed = href.trim()
+  if (!trimmed) return href
+  return formatResourceHrefPage(trimmed, pageRange.pageStart, pageRange.pageEnd)
 }
 
 export function isInternalLocatorHref(href: string): boolean {

@@ -137,7 +137,7 @@ const emit = defineEmits<{
   'block-click': [blockId: string, event: MouseEvent]
   'compound-badge-click': [blockId: string, annotationId: string, clientY: number, clientX: number]
   'publish-pdf-region-note': [payload: PdfRegionAnchor]
-  'pdf-region-annotation-click': [payload: { annotationId: string; event: MouseEvent }]
+  'pdf-region-annotation-click': [payload: { annotationId: string; annotation?: TextAnnotation; event: MouseEvent }]
   'remount-pdf-region-notes': [payload: { fileId: string; newBlockId: string; previousBlockId?: string }]
   'open-block-picker': []
   'open-resource-picker': []
@@ -484,7 +484,7 @@ provide('onCompoundBadgeClick', handleCompoundBadgeClick)
 provide('onPublishPdfRegionNote', (payload: PdfRegionAnchor) => {
   emit('publish-pdf-region-note', payload)
 })
-provide('onPdfRegionAnnotationClick', (payload: { annotationId: string; event: MouseEvent }) => {
+provide('onPdfRegionAnnotationClick', (payload: { annotationId: string; annotation?: TextAnnotation; event: MouseEvent }) => {
   emit('pdf-region-annotation-click', payload)
 })
 
@@ -991,6 +991,9 @@ const insertPdfExcerptUsingExternalResourcePending = (input: {
   height?: number
   clipTop?: number
   clipBottom?: number
+  sourceHref?: string
+  sourceLabel?: string
+  notesVisible?: boolean
 }) => {
   if (pendingExternalResourceInsertPos != null) {
     pendingPdfExcerptInsertPos = pendingExternalResourceInsertPos
@@ -1022,6 +1025,9 @@ const insertPdfExcerptBlock = (input: {
   height?: number
   clipTop?: number
   clipBottom?: number
+  sourceHref?: string
+  sourceLabel?: string
+  notesVisible?: boolean
 }) => {
   if (!editor.value) return false
   const content = {

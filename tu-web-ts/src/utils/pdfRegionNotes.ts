@@ -1,4 +1,30 @@
 import type { PdfRegionAnchor, TextAnnotation } from '@/api/types'
+import { formatPdfExcerptRangeLabel } from '@/utils/pdfExcerpt'
+
+export interface PdfRegionGeometry {
+  startPage: number
+  endPage: number
+  clipTop: number
+  clipBottom: number
+}
+
+/** Normalize region to a 1D interval on the page+ratio axis. */
+export function pdfRegionInterval(region: PdfRegionGeometry): { start: number; end: number } {
+  const startPage = Math.max(1, Math.floor(Number(region.startPage) || 1))
+  const endPage = Math.max(startPage, Math.floor(Number(region.endPage) || startPage))
+  const clipTop = Math.min(1, Math.max(0, Number(region.clipTop) || 0))
+  const clipBottom = Math.min(1, Math.max(0, Number(region.clipBottom) || 1))
+  return {
+    start: startPage + clipTop,
+    end: endPage + clipBottom,
+  }
+}
+
+export function pdfRegionsOverlap(a: PdfRegionGeometry, b: PdfRegionGeometry): boolean {
+  const left = pdfRegionInterval(a)
+  const right = pdfRegionInterval(b)
+  return left.start < right.end && right.start < left.end
+}
 
 /**
  * Remount pdfRegion notes onto a (re)created PDF excerpt block.
@@ -65,4 +91,73 @@ export function collectPdfRegionNotesForBlock(
     byId.set(ann.id, ann)
   }
   return [...byId.values()]
+}
+
+/** Filter notes that overlap the current PDF block viewport (full = all pages). */
+export function filterNotesOverlappingViewport(
+  annotations: TextAnnotation[],
+  viewport: PdfRegionGeometry & { viewMode?: 'excerpt' | 'full' },
+): TextAnnotation[] {
+  if (viewport.viewMode === 'full') return annotations
+  return annotations.filter((ann) => {
+    const region = ann.pdfRegion
+    if (!region) return false
+    return pdfRegionsOverlap(region, viewport)
+  })
+}
+
+export function resourcePdfNoteToAnnotation(
+  note: {
+    id: string
+    resourceItemId: string
+    fileId?: string | null
+    startPage: number
+    endPage: number
+    clipTop: number
+    clipBottom: number
+    note: string
+    color?: string | null
+    createdAt?: string | number | Date | null
+    updatedAt?: string | number | Date | null
+  },
+  blockId: string,
+): TextAnnotation {
+  const createdAt = toEpochMs(note.createdAt) || Date.now()
+  const updatedAt = toEpochMs(note.updatedAt) || createdAt
+  const fileId = String(note.fileId || '').trim()
+  return {
+    id: note.id,
+    selectedText: formatPdfExcerptRangeLabel(
+      note.startPage,
+      note.endPage,
+      note.clipTop,
+      note.clipBottom,
+    ),
+    contextBefore: '',
+    contextAfter: '',
+    note: note.note,
+    color: note.color || '#FFE082',
+    createdAt,
+    updatedAt,
+    blockId,
+    scope: 'pdfRegion',
+    kind: 'note',
+    pdfRegion: {
+      blockId,
+      fileId: fileId || undefined,
+      resourceItemId: note.resourceItemId,
+      startPage: note.startPage,
+      endPage: note.endPage,
+      clipTop: note.clipTop,
+      clipBottom: note.clipBottom,
+    },
+  }
+}
+
+function toEpochMs(value: string | number | Date | null | undefined): number {
+  if (value == null) return 0
+  if (typeof value === 'number') return value
+  if (value instanceof Date) return value.getTime()
+  const parsed = Date.parse(String(value))
+  return Number.isFinite(parsed) ? parsed : 0
 }

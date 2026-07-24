@@ -33,6 +33,7 @@ import com.tu.backend.externalresource.model.VariantKind;
 import com.tu.backend.externalresource.repository.ResourceExcerptRepository;
 import com.tu.backend.externalresource.repository.ResourceItemRelationRepository;
 import com.tu.backend.externalresource.repository.ResourceItemRepository;
+import com.tu.backend.externalresource.repository.ResourcePdfRegionNoteRepository;
 import com.tu.backend.externalresource.repository.ResourceTypeRepository;
 import com.tu.backend.externalresource.repository.ResourceWorkRepository;
 import com.tu.backend.externalresource.util.ExternalUrlNormalizer;
@@ -66,6 +67,7 @@ public class ExternalResourceService {
     private final ResourceWorkRepository workRepository;
     private final ResourceItemRepository itemRepository;
     private final ResourceExcerptRepository excerptRepository;
+    private final ResourcePdfRegionNoteRepository pdfRegionNoteRepository;
     private final ContentTreeNodeService contentTreeNodeService;
     private final ResourceItemRelationRepository itemRelationRepository;
     private final UrlClusterMatcherService clusterMatcherService;
@@ -76,6 +78,7 @@ public class ExternalResourceService {
         ResourceWorkRepository workRepository,
         ResourceItemRepository itemRepository,
         ResourceExcerptRepository excerptRepository,
+        ResourcePdfRegionNoteRepository pdfRegionNoteRepository,
         ContentTreeNodeService contentTreeNodeService,
         ResourceItemRelationRepository itemRelationRepository,
         UrlClusterMatcherService clusterMatcherService,
@@ -85,6 +88,7 @@ public class ExternalResourceService {
         this.workRepository = workRepository;
         this.itemRepository = itemRepository;
         this.excerptRepository = excerptRepository;
+        this.pdfRegionNoteRepository = pdfRegionNoteRepository;
         this.contentTreeNodeService = contentTreeNodeService;
         this.itemRelationRepository = itemRelationRepository;
         this.clusterMatcherService = clusterMatcherService;
@@ -373,6 +377,7 @@ public class ExternalResourceService {
     @Transactional
     public void removeItem(String id) {
         excerptRepository.deleteByResourceItemId(id);
+        pdfRegionNoteRepository.deleteByResourceItemId(id);
         contentTreeNodeService.deleteResourceScope(id);
         itemRelationRepository.deleteByFromItemIdOrToItemId(id, id);
         itemRepository.delete(findItem(id));

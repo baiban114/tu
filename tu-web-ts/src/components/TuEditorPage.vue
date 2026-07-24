@@ -142,6 +142,11 @@ import { isHttpHref, isInternalLocatorHref } from '@/editor/linkLabelSuggestQuer
 import { PDF_EXCERPT_SCROLL_EVENT, PDF_EXCERPT_DEFAULT_HEIGHT, PDF_EXCERPT_CLIP_SELECT_EVENT, PDF_EXCERPT_FIT_HEIGHT_EVENT, formatPdfExcerptRangeLabel, parsePdfExcerptViewMode } from '@/utils/pdfExcerpt'
 import { remountPdfRegionNotes } from '@/utils/pdfRegionNotes'
 import {
+  createResourcePdfRegionNote,
+  deleteResourcePdfRegionNote,
+  updateResourcePdfRegionNote,
+} from '@/api/externalResource'
+import {
   REF_GUTTER_DELEGATE_KEY,
   type RefGutterDelegate,
   type RefGutterHostContext,
@@ -952,6 +957,11 @@ provide('sectionTagsMap', sectionTagsMap)
 provide('sectionTagAnchors', sectionTagAnchors)
 provide('textTagSpans', currentTextTagSpans)
 provide('textTagSpanRevision', computed(() => textTagSpanRevision.value))
+const resourcePdfNotesReloadToken = ref(0)
+provide('resourcePdfNotesReloadToken', resourcePdfNotesReloadToken)
+const bumpResourcePdfNotesReload = () => {
+  resourcePdfNotesReloadToken.value += 1
+}
 
 const availableTags = computed(() => collectAvailableTags(
   localBlocks.value,
@@ -3749,8 +3759,13 @@ const handleRemountPdfRegionNotes = (payload: {
   emitLocalContentChange()
 }
 
-const handlePdfRegionAnnotationClick = (payload: { annotationId: string; event: MouseEvent }) => {
-  const annotation = localAnnotations.value.find((item) => item.id === payload.annotationId)
+const handlePdfRegionAnnotationClick = (payload: {
+  annotationId: string
+  annotation?: TextAnnotation
+  event: MouseEvent
+}) => {
+  const annotation = payload.annotation
+    ?? localAnnotations.value.find((item) => item.id === payload.annotationId)
   if (!annotation) return
   notePopoverAnnotation.value = annotation
   notePopoverAnnotations.value = [annotation]
@@ -3762,10 +3777,54 @@ const handlePdfRegionAnnotationClick = (payload: { annotationId: string; event: 
   updateNotePopoverPosition()
 }
 
-const handleSaveAnnotation = (payload: { note: string; tags: BlockTag[] }) => {
+const handleSaveAnnotation = async (payload: { note: string; tags: BlockTag[] }) => {
   const note = payload.note.trim()
   const now = Date.now()
   const existing = editingAnnotation.value
+
+  const resourceItemId = existing?.pdfRegion?.resourceItemId
+    || pendingNotePdfRegion.value?.resourceItemId
+    || ''
+
+  if (existing?.scope === 'pdfRegion' && resourceItemId) {
+    try {
+      if (!note) {
+        await deleteResourcePdfRegionNote(existing.id)
+      } else {
+        await updateResourcePdfRegionNote(existing.id, { note })
+      }
+      bumpResourcePdfNotesReload()
+    } catch (err) {
+      ElMessage.error(err instanceof Error ? err.message : '保存资源划选笔记失败')
+      return
+    }
+    applyTextTagSpanFromMarking(payload.tags)
+    resetTextMarkingPending()
+    return
+  }
+
+  if (!existing && note && pendingNotePdfRegion.value?.resourceItemId) {
+    const pdfRegion = pendingNotePdfRegion.value
+    try {
+      await createResourcePdfRegionNote(pdfRegion.resourceItemId!, {
+        startPage: pdfRegion.startPage,
+        endPage: pdfRegion.endPage,
+        clipTop: pdfRegion.clipTop,
+        clipBottom: pdfRegion.clipBottom,
+        note,
+        fileId: pdfRegion.fileId,
+        color: '#FFE082',
+      })
+      bumpResourcePdfNotesReload()
+    } catch (err) {
+      ElMessage.error(err instanceof Error ? err.message : '发布资源划选笔记失败')
+      return
+    }
+    applyTextTagSpanFromMarking(payload.tags)
+    resetTextMarkingPending()
+    return
+  }
+
   let annotations = [...localAnnotations.value]
 
   if (existing) {
@@ -4049,7 +4108,7 @@ const handlePromoteAnnotationToUser = (annotation?: TextAnnotation) => {
   showToast('已转为手动标记')
 }
 
-const handleDeleteAnnotation = (annotation?: TextAnnotation) => {
+const handleDeleteAnnotation = async (annotation?: TextAnnotation) => {
   const target = annotation ?? notePopoverAnnotation.value
   if (!target) return
 
@@ -4057,8 +4116,18 @@ const handleDeleteAnnotation = (annotation?: TextAnnotation) => {
     clearBlockquoteBindingForExcerptAnnotation(target)
   }
 
-  localAnnotations.value = localAnnotations.value.filter(a => a.id !== target.id)
-  emitLocalContentChange()
+  if (target.scope === 'pdfRegion' && target.pdfRegion?.resourceItemId) {
+    try {
+      await deleteResourcePdfRegionNote(target.id)
+      bumpResourcePdfNotesReload()
+    } catch (err) {
+      ElMessage.error(err instanceof Error ? err.message : '删除资源划选笔记失败')
+      return
+    }
+  } else {
+    localAnnotations.value = localAnnotations.value.filter(a => a.id !== target.id)
+    emitLocalContentChange()
+  }
 
   notePopoverAnnotations.value = notePopoverAnnotations.value.filter(item => item.id !== target.id)
   notePopoverAnnotation.value = notePopoverAnnotations.value[0] ?? null
@@ -4426,9 +4495,9 @@ onBeforeUnmount(() => {
         <button
           v-if="nodeViewToolbar.sourceType === 'pdfExcerptBlock'"
           class="nodeview-toolbar__btn"
-          title="在 PDF 上拖拽划选纵向裁剪范围"
+          title="在 PDF 上划选区域（可发布笔记或应用裁剪）"
           @click="handlePdfClipSelectFromToolbar"
-        >划选裁剪</button>
+        >划选笔记</button>
         <button
           v-if="nodeViewToolbar.sourceType === 'pdfExcerptBlock'"
           class="nodeview-toolbar__btn"

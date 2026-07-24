@@ -1,9 +1,14 @@
 <script setup lang="ts">
-import { computed, inject, markRaw, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch, type ComputedRef } from 'vue'
+import { computed, inject, markRaw, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch, type ComputedRef, type Ref } from 'vue'
 import { nodeViewProps, NodeViewWrapper } from '@tiptap/vue-3'
 import { buildFileUrl } from '@/api/fileStorage'
+import { listResourcePdfRegionNotes } from '@/api/externalResource'
 import type { PdfRegionAnchor, TextAnnotation } from '@/api/types'
-import { collectPdfRegionNotesForBlock } from '@/utils/pdfRegionNotes'
+import {
+  collectPdfRegionNotesForBlock,
+  filterNotesOverlappingViewport,
+  resourcePdfNoteToAnnotation,
+} from '@/utils/pdfRegionNotes'
 import ResizableBlockWrapper from '../components/ResizableBlockWrapper.vue'
 import {
   PDF_EXCERPT_DEFAULT_HEIGHT,
@@ -28,7 +33,7 @@ import {
   PDF_EXCERPT_FIT_HEIGHT_EVENT,
   type PdfPageVerticalHit,
 } from '@/utils/pdfExcerpt'
-import { syncResourceHrefWithPdfPages } from '@/editor/linkLabelSuggestQuery'
+import { parseResourceLocator, syncResourceHrefWithPdfPages } from '@/editor/linkLabelSuggestQuery'
 import { isResourceLocatorHref } from '@/editor/resourceLinkToPdf'
 import { acquirePdfDocument, releasePdfDocument } from '@/utils/pdfDocumentCache'
 import type { PdfDocumentProxy } from '@/utils/pdfjsSetup'
@@ -47,22 +52,18 @@ const props = defineProps(nodeViewProps)
 const onEditPdfExcerptSource = inject<(blockId: string) => void>('onEditPdfExcerptSource', () => {})
 const onPublishPdfRegionNote = inject<(payload: PdfRegionAnchor) => void>('onPublishPdfRegionNote', () => {})
 const onPdfRegionAnnotationClick = inject<
-  (payload: { annotationId: string; event: MouseEvent }) => void
+  (payload: { annotationId: string; annotation?: TextAnnotation; event: MouseEvent }) => void
 >('onPdfRegionAnnotationClick', () => {})
 const pagePdfRegionAnnotations = inject<ComputedRef<TextAnnotation[]>>(
   'pagePdfRegionAnnotations',
   computed(() => []),
 )
+const resourcePdfNotesReloadToken = inject<Ref<number>>('resourcePdfNotesReloadToken', ref(0))
 
 const blockId = computed(() => props.node.attrs.blockId || '')
 const fileId = computed(() => String(props.node.attrs.fileId || ''))
-
-const blockPdfRegionAnnotations = computed(() => (
-  collectPdfRegionNotesForBlock(pagePdfRegionAnnotations.value, {
-    blockId: blockId.value,
-    fileId: fileId.value,
-  })
-))
+const sourceHref = computed(() => String(props.node.attrs.sourceHref || '').trim())
+const resourceItemId = computed(() => parseResourceLocator(sourceHref.value)?.itemId || '')
 const fileName = computed(() => String(props.node.attrs.fileName || 'PDF'))
 const viewMode = computed(() => parsePdfExcerptViewMode(String(props.node.attrs.viewMode || 'excerpt')))
 const startPage = computed(() => Number(props.node.attrs.startPage) || 1)
@@ -72,6 +73,47 @@ const clipRatio = computed(() => normalizePdfClipRatio(
   Number(props.node.attrs.clipTop) || 0,
   props.node.attrs.clipBottom == null ? 1 : Number(props.node.attrs.clipBottom),
 ))
+
+const resourcePdfNotes = ref<TextAnnotation[]>([])
+let resourceNotesLoadSeq = 0
+
+async function loadResourcePdfNotes() {
+  const itemId = resourceItemId.value
+  const bid = blockId.value
+  if (!itemId || !bid) {
+    resourcePdfNotes.value = []
+    return
+  }
+  const seq = ++resourceNotesLoadSeq
+  try {
+    const notes = await listResourcePdfRegionNotes(itemId)
+    if (seq !== resourceNotesLoadSeq) return
+    resourcePdfNotes.value = notes.map((note) => resourcePdfNoteToAnnotation(note, bid))
+  } catch {
+    if (seq !== resourceNotesLoadSeq) return
+    resourcePdfNotes.value = []
+  }
+}
+
+const blockPdfRegionAnnotations = computed(() => {
+  const pageLocal = collectPdfRegionNotesForBlock(pagePdfRegionAnnotations.value, {
+    blockId: blockId.value,
+    fileId: fileId.value,
+  }).filter((ann) => !ann.pdfRegion?.resourceItemId)
+
+  const fromResource = filterNotesOverlappingViewport(resourcePdfNotes.value, {
+    viewMode: viewMode.value,
+    startPage: startPage.value,
+    endPage: endPage.value,
+    clipTop: clipRatio.value.clipTop,
+    clipBottom: clipRatio.value.clipBottom,
+  })
+
+  const byId = new Map<string, TextAnnotation>()
+  for (const ann of pageLocal) byId.set(ann.id, ann)
+  for (const ann of fromResource) byId.set(ann.id, ann)
+  return [...byId.values()]
+})
 
 const fileUrl = computed(() => (fileId.value ? buildFileUrl(fileId.value) : ''))
 const loadError = ref('')
@@ -711,6 +753,7 @@ function publishClipNote() {
   onPublishPdfRegionNote({
     blockId: blockId.value,
     fileId: fileId.value,
+    resourceItemId: resourceItemId.value || undefined,
     startPage: next.startPage,
     endPage: next.endPage,
     clipTop: next.clipTop,
@@ -728,7 +771,8 @@ function publishClipNote() {
 function handlePdfRegionOverlayClick(annotationId: string, event: MouseEvent) {
   event.preventDefault()
   event.stopPropagation()
-  onPdfRegionAnnotationClick({ annotationId, event })
+  const annotation = blockPdfRegionAnnotations.value.find((item) => item.id === annotationId)
+  onPdfRegionAnnotationClick({ annotationId, annotation, event })
 }
 
 function redoClipSelect() {
@@ -1146,6 +1190,14 @@ watch(
   },
 )
 
+watch(
+  [resourceItemId, blockId, resourcePdfNotesReloadToken],
+  () => {
+    void loadResourcePdfNotes()
+  },
+  { immediate: true },
+)
+
 watch(pdfRegionNotesVisible, () => {
   syncOverlayScrollListeners()
   overlayLayoutTick.value += 1
@@ -1251,11 +1303,11 @@ onBeforeUnmount(() => {
           class="pdf-excerpt-block__edit-source"
           :class="{ 'pdf-excerpt-block__edit-source--active': clipSelectActive }"
           data-node-view-no-drag
-          :title="clipSelectActive ? '取消划选（Esc）' : '划选纵向裁剪范围'"
+          :title="clipSelectActive ? '取消划选（Esc）' : '在 PDF 上划选区域（可发布笔记或应用裁剪）'"
           @mousedown.stop
           @click.stop="toggleClipSelect"
         >
-          {{ clipSelectActive ? '取消划选' : '划选裁剪' }}
+          {{ clipSelectActive ? '取消划选' : '划选笔记' }}
         </button>
         <button
           v-if="blockPdfRegionAnnotations.length > 0"
@@ -1442,16 +1494,16 @@ onBeforeUnmount(() => {
         <button
           type="button"
           class="pdf-excerpt-block__clip-confirm-btn pdf-excerpt-block__clip-confirm-btn--primary"
-          @click.stop="confirmClipSelect"
-        >
-          应用裁剪
-        </button>
-        <button
-          type="button"
-          class="pdf-excerpt-block__clip-confirm-btn pdf-excerpt-block__clip-confirm-btn--note"
           @click.stop="publishClipNote"
         >
           发布笔记
+        </button>
+        <button
+          type="button"
+          class="pdf-excerpt-block__clip-confirm-btn"
+          @click.stop="confirmClipSelect"
+        >
+          应用裁剪
         </button>
         <button
           type="button"
@@ -1890,18 +1942,6 @@ onBeforeUnmount(() => {
   border-color: #0958d9;
   background: #0958d9;
   color: #fff;
-}
-
-.pdf-excerpt-block__clip-confirm-btn--note {
-  border-color: #f59e0b;
-  background: #fffbeb;
-  color: #b45309;
-}
-
-.pdf-excerpt-block__clip-confirm-btn--note:hover {
-  border-color: #d97706;
-  background: #fef3c7;
-  color: #92400e;
 }
 
 .pdf-excerpt-block__pdf-note-region {
