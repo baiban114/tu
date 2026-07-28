@@ -63,7 +63,7 @@ flowchart LR
 
 工具：`tu-web-ts/src/utils/resourcePositionLocator.ts`；UI：`ResourcePositionLocatorField.vue`（标记节选、资源管理节选表单）。粘贴带 `#` 的链接时自动写入 `anchor:…`；历史 `#…` / `p. 18` 等形式读入时自动规范化。
 
-**浏览定位（选资源 / 已标记节选）**：`ResourceLocatorBrowse`（`src/components/resourceLocator/`）以资源实体 → 已标记节选树为统一入口，供「设置依据 / 标记节选 / 绑定来源」等复用；左侧点击仅选中并在右侧展示信息，须点确认按钮后才关联。与上方 `ResourcePositionLocatorField`（编辑节选内 `page:`/`anchor:` 位置串）职责不同。
+**浏览定位（选资源 / 章节 / 已标记节选）**：`ResourceLocatorBrowse`（`src/components/resourceLocator/`）以资源实体为根；图书类型在实体下展示章节树，节选挂在所属章节下（未归章节选挂在图书根下）。供「设置依据 / 标记节选 / 绑定来源」等复用；左侧点击仅选中并在右侧展示信息，须点确认按钮后才关联。**设置依据**可确认实体、章节或节选任一层级；标记来源 / 标记节选仍以节选为主。与上方 `ResourcePositionLocatorField`（编辑节选内 `page:`/`anchor:` 位置串）职责不同。
 
 ## 4. 关系类型注册表
 

@@ -19,6 +19,7 @@ describe('headingSourceMetaChips', () => {
       '来源',
       '图书',
       '结构化笔记',
+      '示例之书',
       '第 18 页',
       '关于结构化笔记',
     ])

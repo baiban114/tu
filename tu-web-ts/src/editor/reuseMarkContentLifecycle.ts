@@ -1,4 +1,9 @@
 import type { Node as ProseMirrorNode } from '@tiptap/pm/model'
+import type { TextAnnotation } from '@/api/types'
+import {
+  resolveBlockResourceBinding,
+  type ResolvedBlockResourceBinding,
+} from '@/utils/blockquoteExcerpt'
 
 /**
  * Newly inserted plain text between two document snapshots (reuse-mark lifecycle).
@@ -19,6 +24,70 @@ export interface InsertedContentDelta {
 }
 
 const BLOCK_SEP = '\n'
+const META_NODE_TYPES = new Set(['blockquote', 'paragraph'])
+
+function hasVisibleResourceMeta(resolved: ResolvedBlockResourceBinding | null): boolean {
+  if (!resolved?.binding.resourceItemId) return false
+  // Excerpt meta requires an excerpt id (same rule as BlockquoteExcerptDecorations).
+  if (resolved.role === 'excerpt' && !resolved.binding.resourceExcerptId) return false
+  return true
+}
+
+/**
+ * True when the insert range sits in a paragraph/blockquote that already shows
+ * resource-excerpt / basis metadata — paste into such a block should not offer reuse-mark.
+ */
+export function rangeTouchesExistingResourceMeta(
+  doc: ProseMirrorNode,
+  from: number,
+  to: number,
+  annotations: TextAnnotation[],
+): boolean {
+  const lo = Math.max(0, Math.min(from, to))
+  const hi = Math.min(doc.content.size, Math.max(from, to))
+  if (hi < lo) return false
+
+  let touches = false
+  const checkNode = (node: ProseMirrorNode, pos: number) => {
+    if (!META_NODE_TYPES.has(node.type.name)) return
+    if (node.type.name === 'paragraph') {
+      const $pos = doc.resolve(Math.min(pos + 1, doc.content.size))
+      for (let d = $pos.depth; d > 0; d -= 1) {
+        if ($pos.node(d).type.name === 'blockquote') {
+          const bq = $pos.node(d)
+          const bqPos = $pos.before(d)
+          if (hasVisibleResourceMeta(resolveBlockResourceBinding(bq, bqPos, bq.nodeSize, annotations))) {
+            touches = true
+          }
+          return
+        }
+      }
+    }
+    if (hasVisibleResourceMeta(resolveBlockResourceBinding(node, pos, node.nodeSize, annotations))) {
+      touches = true
+    }
+  }
+
+  doc.nodesBetween(lo, Math.max(lo + 1, hi), (node, pos) => {
+    if (touches) return false
+    checkNode(node, pos)
+    return !touches
+  })
+
+  // Cursor-only / collapsed inserts: also resolve the parent textblock at `from`.
+  if (!touches && lo <= doc.content.size) {
+    const $from = doc.resolve(Math.min(Math.max(lo, 1), doc.content.size))
+    for (let d = $from.depth; d > 0; d -= 1) {
+      const node = $from.node(d)
+      if (!META_NODE_TYPES.has(node.type.name)) continue
+      const pos = $from.before(d)
+      checkNode(node, pos)
+      if (touches) break
+    }
+  }
+
+  return touches
+}
 
 /** Common-prefix / common-suffix extraction of text newly present in `afterText`. */
 export function extractInsertedPlainText(beforeText: string, afterText: string): string {

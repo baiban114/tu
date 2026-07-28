@@ -36,7 +36,7 @@ describe('blockquoteExcerptMetaChips', () => {
       resourceExcerptId: 're-1',
       snapshot: { resourceTitle: '书名', resourceTypeName: '图书', workTitle: '系列', excerptLocator: 'page:3' },
     })
-    expect(blockquoteExcerptMetaPathParts(b, 'basis')).toEqual(['图书', '系列', '第 3 页'])
+    expect(blockquoteExcerptMetaPathParts(b, 'basis')).toEqual(['图书', '系列', '书名', '第 3 页'])
     expect(blockquoteExcerptMetaRole('basis')).toBe('依据')
   })
 })

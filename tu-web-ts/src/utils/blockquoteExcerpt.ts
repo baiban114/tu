@@ -1,6 +1,6 @@
 import type { HeadingSourceBinding, TextAnnotation } from '@/api/types'
 import { effectiveMarkerSource } from '@/utils/headingSource'
-import { resourcePositionDisplay } from '@/utils/resourcePositionLocator'
+import { buildResourceMetaPathParts, formatResourceMetaPath } from '@/utils/resourceMetaPath'
 
 export const BLOCKQUOTE_EXCERPT_COMMENT_RE = /<!--tu:blockquote-excerpt\s+([^>]+)-->/
 
@@ -77,15 +77,8 @@ export function blockquoteExcerptBadgeTitle(
   binding: HeadingSourceBinding,
   role: BlockResourceBindingRole = 'excerpt',
 ): string {
-  const snapshot = binding.snapshot
-  const parts = [
-    snapshot.resourceTypeName,
-    snapshot.workTitle,
-    snapshot.resourceTitle,
-    snapshot.excerptLocator ? resourcePositionDisplay(snapshot.excerptLocator) : '',
-    snapshot.excerptTitle,
-  ].filter(Boolean)
-  if (parts.length) return parts.join(' > ')
+  const path = formatResourceMetaPath(binding.snapshot)
+  if (path) return path
   return role === 'basis'
     ? (binding.resourceExcerptId ? '外部资源依据' : '外部资源')
     : '外部资源节选'
@@ -95,19 +88,7 @@ export function blockquoteExcerptMetaChips(
   binding: HeadingSourceBinding,
   role: BlockResourceBindingRole = 'excerpt',
 ): string[] {
-  const snapshot = binding.snapshot
-  const chips = [role === 'basis' ? '依据' : '资源节选']
-  if (snapshot.resourceTypeName) chips.push(snapshot.resourceTypeName)
-  if (snapshot.workTitle) chips.push(snapshot.workTitle)
-  else if (snapshot.resourceTitle) chips.push(snapshot.resourceTitle)
-  if (snapshot.excerptLocator) chips.push(resourcePositionDisplay(snapshot.excerptLocator))
-  if (role === 'basis' && snapshot.excerptTitle) {
-    const last = chips[chips.length - 1]
-    if (snapshot.excerptTitle !== last && snapshot.excerptTitle !== snapshot.workTitle) {
-      chips.push(snapshot.excerptTitle)
-    }
-  }
-  return chips
+  return [role === 'basis' ? '依据' : '资源节选', ...buildResourceMetaPathParts(binding.snapshot)]
 }
 
 /** Role label (依据 / 资源节选) — not part of the locator path. */
@@ -120,9 +101,9 @@ export function blockquoteExcerptMetaRole(
 /** Resource locator layers only (joined with ` > ` in UI). */
 export function blockquoteExcerptMetaPathParts(
   binding: HeadingSourceBinding,
-  role: BlockResourceBindingRole = 'excerpt',
+  _role: BlockResourceBindingRole = 'excerpt',
 ): string[] {
-  return blockquoteExcerptMetaChips(binding, role).slice(1)
+  return buildResourceMetaPathParts(binding.snapshot)
 }
 
 export type BlockResourceBindingRole = 'excerpt' | 'basis'

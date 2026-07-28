@@ -1,5 +1,6 @@
 import type { ExternalResourceEmbedData, HeadingSourceBinding, KnowledgeMarkerSource } from '@/api/types'
 import { resourcePositionDisplay } from '@/utils/resourcePositionLocator'
+import { buildResourceMetaPathParts, formatResourceMetaPath } from '@/utils/resourceMetaPath'
 
 export function effectiveMarkerSource(source?: KnowledgeMarkerSource | null): KnowledgeMarkerSource {
   return source === 'ai' ? 'ai' : 'user'
@@ -35,29 +36,33 @@ export function bindingFromExternalResource(data: ExternalResourceEmbedData): He
   return {
     resourceItemId: data.resourceItemId,
     resourceExcerptId: data.resourceExcerptId,
+    resourceChapterId: data.resourceChapterId ?? null,
     snapshot: {
       resourceTitle: snapshot.resourceTitle,
       resourceTypeName: snapshot.resourceTypeName,
       workTitle: snapshot.workTitle,
       excerptTitle: snapshot.excerptTitle,
       excerptLocator: snapshot.excerptLocator,
+      chapterTitle: snapshot.chapterTitle,
     },
   }
 }
 
-/** 依据标注：可挂靠资源实体，节选可选 */
+/** 依据标注：可挂靠资源实体、章节或节选 */
 export function basisBindingFromExternalResource(data: ExternalResourceEmbedData): HeadingSourceBinding | null {
   if (!data.resourceItemId) return null
   const snapshot = data.snapshot || { resourceTitle: '' }
   return {
     resourceItemId: data.resourceItemId,
     resourceExcerptId: data.resourceExcerptId ?? null,
+    resourceChapterId: data.resourceChapterId ?? null,
     snapshot: {
       resourceTitle: snapshot.resourceTitle,
       resourceTypeName: snapshot.resourceTypeName,
       workTitle: snapshot.workTitle,
       excerptTitle: snapshot.excerptTitle,
       excerptLocator: snapshot.excerptLocator,
+      chapterTitle: snapshot.chapterTitle,
     },
   }
 }
@@ -107,6 +112,7 @@ export function serializeHeadingSourceComment(blockId: string, binding: HeadingS
 export function headingSourceBadgeLabel(binding: HeadingSourceBinding): string {
   const snapshot = binding.snapshot
   const label = snapshot.excerptTitle
+    || snapshot.chapterTitle
     || (snapshot.excerptLocator ? resourcePositionDisplay(snapshot.excerptLocator) : '')
     || snapshot.resourceTitle
     || '来源'
@@ -114,15 +120,11 @@ export function headingSourceBadgeLabel(binding: HeadingSourceBinding): string {
 }
 
 export function headingSourceBadgeTitle(binding: HeadingSourceBinding): string {
-  const snapshot = binding.snapshot
-  const parts = [
-    snapshot.resourceTitle,
-    snapshot.workTitle,
-    snapshot.resourceTypeName,
-    snapshot.excerptTitle,
-    snapshot.excerptLocator ? resourcePositionDisplay(snapshot.excerptLocator) : '',
-  ].filter(Boolean)
-  return parts.join(' > ') || (binding.resourceExcerptId ? '外部资源节选' : '外部资源')
+  const path = formatResourceMetaPath(binding.snapshot)
+  return path
+    || (binding.resourceExcerptId ? '外部资源节选'
+      : binding.resourceChapterId ? '外部资源章节'
+        : '外部资源')
 }
 
 /** Structured source fields for popover / detail panels after clicking 来源 or 资源节选 meta. */
@@ -140,6 +142,9 @@ export function headingSourceInfoRows(
   if (snapshot.workTitle?.trim()) {
     rows.push({ label: '归类', value: snapshot.workTitle.trim() })
   }
+  if (snapshot.chapterTitle?.trim()) {
+    rows.push({ label: '章节', value: snapshot.chapterTitle.trim() })
+  }
   if (snapshot.excerptTitle?.trim()) {
     rows.push({ label: '节选', value: snapshot.excerptTitle.trim() })
   }
@@ -156,27 +161,18 @@ export function headingSourceInfoPrimaryTitle(binding: HeadingSourceBinding): st
   const snapshot = binding.snapshot
   return (
     snapshot.excerptTitle?.trim()
+    || snapshot.chapterTitle?.trim()
     || snapshot.resourceTitle?.trim()
     || (snapshot.excerptLocator ? resourcePositionDisplay(snapshot.excerptLocator) : '')
-    || (binding.resourceExcerptId ? '外部资源节选' : '外部资源')
+    || (binding.resourceExcerptId ? '外部资源节选'
+      : binding.resourceChapterId ? '外部资源章节'
+        : '外部资源')
   )
 }
 
 /** 正文标题节元数据条：首项为类型标识「来源」，其后为定位层级 */
 export function headingSourceMetaChips(binding: HeadingSourceBinding): string[] {
-  const snapshot = binding.snapshot
-  const chips = ['来源']
-  if (snapshot.resourceTypeName) chips.push(snapshot.resourceTypeName)
-  if (snapshot.workTitle) chips.push(snapshot.workTitle)
-  else if (snapshot.resourceTitle) chips.push(snapshot.resourceTitle)
-  if (snapshot.excerptLocator) chips.push(resourcePositionDisplay(snapshot.excerptLocator))
-  if (snapshot.excerptTitle) {
-    const last = chips[chips.length - 1]
-    if (snapshot.excerptTitle !== last && snapshot.excerptTitle !== snapshot.workTitle) {
-      chips.push(snapshot.excerptTitle)
-    }
-  }
-  return chips
+  return ['来源', ...buildResourceMetaPathParts(binding.snapshot)]
 }
 
 export function headingSourceMetaRole(): string {
@@ -185,7 +181,7 @@ export function headingSourceMetaRole(): string {
 
 /** Resource locator layers only (joined with ` > ` in UI). */
 export function headingSourceMetaPathParts(binding: HeadingSourceBinding): string[] {
-  return headingSourceMetaChips(binding).slice(1)
+  return buildResourceMetaPathParts(binding.snapshot)
 }
 
 export function isAiHeadingSource(binding: HeadingSourceBinding): boolean {
@@ -195,16 +191,19 @@ export function isAiHeadingSource(binding: HeadingSourceBinding): boolean {
 /** Convert a heading/basis binding into embed data for ExternalResourceExcerptMeta. */
 export function externalResourceFromBinding(binding: HeadingSourceBinding): ExternalResourceEmbedData {
   const hasExcerpt = Boolean(binding.resourceExcerptId)
+  const hasChapter = Boolean(binding.resourceChapterId)
   return {
     resourceItemId: binding.resourceItemId,
     resourceExcerptId: binding.resourceExcerptId ?? null,
-    mode: hasExcerpt ? 'excerpt' : 'resource',
+    resourceChapterId: binding.resourceChapterId ?? null,
+    mode: hasExcerpt ? 'excerpt' : hasChapter ? 'chapter' : 'resource',
     snapshot: {
       resourceTitle: binding.snapshot.resourceTitle || '',
       resourceTypeName: binding.snapshot.resourceTypeName,
       workTitle: binding.snapshot.workTitle,
       excerptTitle: binding.snapshot.excerptTitle,
       excerptLocator: binding.snapshot.excerptLocator,
+      chapterTitle: binding.snapshot.chapterTitle,
     },
   }
 }

@@ -130,6 +130,7 @@ import {
   buildSelectionAnchor,
   headingAnchor,
   navigateKnowledgeAnchor,
+  parseLocator,
   sectionAnchor,
   type KnowledgeAnchorNavigateHandlers,
 } from '@/utils/knowledgeAnchor'
@@ -163,6 +164,7 @@ import {
 import {
   resolveInsertedContentDelta,
   shouldOfferReuseMarkForContentAddition,
+  rangeTouchesExistingResourceMeta,
 } from '@/editor/reuseMarkContentLifecycle'
 
 type TocItem = TocTreeItem
@@ -760,6 +762,51 @@ function openPageRelationGraphDialog() {
     return
   }
   pageRelationGraphDialogVisible.value = true
+}
+
+async function handleOutlineMindmapNavigate(payload: { locator: string; label: string; tocEntryId?: string }) {
+  outlineMindmapDialogVisible.value = false
+  await nextTick()
+  await navigateKnowledgeAnchor(
+    { kind: 'page', locator: payload.locator, snapshot: { title: payload.label } },
+    knowledgeNavigateHandlers.value,
+  )
+}
+
+async function resolveOutlineMindmapSectionText(payload: {
+  locator: string
+  label: string
+  tocEntryId?: string
+}): Promise<string | null> {
+  const editorApi = tuEditorRef.value
+  if (!editorApi) return null
+  if (payload.tocEntryId) {
+    return editorApi.getSectionPlainText?.(payload.tocEntryId) ?? null
+  }
+  const parsed = parseLocator(payload.locator)
+  if (parsed.kind === 'page') {
+    return editorApi.getDocumentPlainText?.() ?? null
+  }
+  if (parsed.kind === 'heading' && parsed.entityId) {
+    // Fallback: find TOC entry by block id when tocEntryId missing (e.g. preview jump payload).
+    const match = findTocEntryByBlockId(tocItems.value, parsed.entityId)
+    if (match) return editorApi.getSectionPlainText?.(match.id) ?? null
+  }
+  return null
+}
+
+function findTocEntryByBlockId(
+  items: TocItem[],
+  blockId: string,
+): TocItem | null {
+  for (const item of items) {
+    if (item.blockId === blockId) return item
+    if (item.children?.length) {
+      const found = findTocEntryByBlockId(item.children, blockId)
+      if (found) return found
+    }
+  }
+  return null
 }
 
 function stopDocumentMarkingAnalysis() {
@@ -1430,7 +1477,7 @@ const saveExcerptBasisAnnotation = (binding: HeadingSourceBinding) => {
   localAnnotations.value = [...localAnnotations.value, annotation]
   emitLocalContentChange()
   pendingBasisTarget.value = null
-  showToast(`已设置依据：${binding.snapshot.excerptTitle || binding.snapshot.resourceTitle || '外部资源'}`)
+  showToast(`已设置依据：${binding.snapshot.excerptTitle || binding.snapshot.chapterTitle || binding.snapshot.resourceTitle || '外部资源'}`)
 }
 
 const handleBindResourceFromPicker = (payload: { binding: HeadingSourceBinding }) => {
@@ -1590,6 +1637,17 @@ function tryOfferReuseMarkAfterTransaction(editor: Editor, tr: Transaction) {
   // Compare pre-transaction doc to live doc (paste/input rules already applied).
   const delta = resolveInsertedContentDelta(tr.before, editor.state.doc)
   if (!shouldOfferReuseMarkForContentAddition(delta, { isPaste: isPasteTransaction(tr) })) {
+    return
+  }
+
+  // Pasting again into a paragraph/blockquote that already shows excerpt/basis meta
+  // must not re-trigger the auto-mark toolbar.
+  if (rangeTouchesExistingResourceMeta(
+    editor.state.doc,
+    delta.from,
+    delta.to,
+    localAnnotations.value,
+  )) {
     return
   }
 
@@ -1895,6 +1953,7 @@ const handleNavigateSourceFromPopover = () => {
 const sameExcerptBasis = (a: HeadingSourceBinding, b: HeadingSourceBinding) =>
   a.resourceItemId === b.resourceItemId
   && (a.resourceExcerptId ?? null) === (b.resourceExcerptId ?? null)
+  && (a.resourceChapterId ?? null) === (b.resourceChapterId ?? null)
 
 const findBlockquoteRangeByBlockId = (blockId: string): { from: number; to: number } | null => {
   const editor = tuEditorRef.value?.editor
@@ -4774,8 +4833,11 @@ onBeforeUnmount(() => {
 
     <DocumentOutlineMindmapDialog
       v-model="outlineMindmapDialogVisible"
+      :page-id="workspaceStore.currentPageId || ''"
       :page-title="pageTitleDraft || props.pageTitle || '未命名页面'"
       :toc-items="tocItems"
+      :resolve-page-section-text="resolveOutlineMindmapSectionText"
+      @navigate-source="handleOutlineMindmapNavigate"
     />
 
     <DocumentPageRelationGraphDialog

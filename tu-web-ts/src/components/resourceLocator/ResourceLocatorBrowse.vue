@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { ElEmpty, ElPagination, ElScrollbar } from 'element-plus'
-import type { ResourceExcerpt, ResourceItem } from '@/api/externalResource'
+import type { ResourceChapter, ResourceExcerpt, ResourceItem } from '@/api/externalResource'
 import { DEFAULT_PAGE_SIZE } from '@/constants/pagination'
 import { clampPage, paginateSlice } from '@/utils/clientPagination'
+import ResourceLocatorChapterBranch from './ResourceLocatorChapterBranch.vue'
 import ResourceLocatorExcerptBranch from './ResourceLocatorExcerptBranch.vue'
 
 const EXCERPT_CHILD_LIMIT = 100
@@ -11,15 +12,20 @@ const EXCERPT_CHILD_LIMIT = 100
 const props = withDefaults(defineProps<{
   items: ResourceItem[]
   excerptIndex: Record<string, ResourceExcerpt[]>
+  chapterIndex: Record<string, ResourceChapter[]>
   selectedItemId: string
   selectedExcerptId: string
+  selectedChapterId?: string
   keyword?: string
   loading?: boolean
   /** Returns true when the item can have marked excerpts (expandable). */
   itemSupportsExcerpts: (item: ResourceItem) => boolean
+  /** Returns true when the item is a book with a chapter tree. */
+  itemSupportsChapters: (item: ResourceItem) => boolean
   emptyDescription?: string
   showPagination?: boolean
 }>(), {
+  selectedChapterId: '',
   keyword: '',
   loading: false,
   emptyDescription: '没有找到外部资源',
@@ -28,8 +34,11 @@ const props = withDefaults(defineProps<{
 
 const emit = defineEmits<{
   'update:selectedItemId': [itemId: string]
+  'select-item': [item: ResourceItem]
   'select-excerpt': [item: ResourceItem, excerpt: ResourceExcerpt]
+  'select-chapter': [item: ResourceItem, chapter: ResourceChapter]
   'ensure-excerpts': [itemId: string]
+  'ensure-chapters': [itemId: string]
 }>()
 
 const listPage = ref(0)
@@ -69,6 +78,14 @@ function listExcerptsForItem(itemId: string): ResourceExcerpt[] {
   return props.excerptIndex[itemId] ?? []
 }
 
+function listChaptersForItem(itemId: string): ResourceChapter[] {
+  return props.chapterIndex[itemId] ?? []
+}
+
+function itemCanExpand(item: ResourceItem) {
+  return props.itemSupportsExcerpts(item) || props.itemSupportsChapters(item)
+}
+
 function excerptMatchesKeyword(excerpt: ResourceExcerpt, keywordText: string): boolean {
   const plainExcerpt = (excerpt.excerptText ?? '').replace(/[#*`>\-_\[\]]/g, ' ').trim()
   const haystack = [
@@ -81,33 +98,58 @@ function excerptMatchesKeyword(excerpt: ResourceExcerpt, keywordText: string): b
   return haystack.includes(keywordText)
 }
 
-function getDirectChildExcerpts(itemId: string, parentId: string | null): ResourceExcerpt[] {
+function getRootExcerpts(itemId: string, chapterScope: string | null | undefined) {
   const q = props.keyword.trim().toLowerCase()
-  let list = listExcerptsForItem(itemId)
-    .filter((excerpt) => (excerpt.parentId ?? null) === parentId)
-    .sort((a, b) => a.sortOrder - b.sortOrder || a.title.localeCompare(b.title) || a.id.localeCompare(b.id))
+  let list = listExcerptsForItem(itemId).filter((excerpt) => {
+    if ((excerpt.parentId ?? null) !== null) return false
+    if (chapterScope === undefined) return true
+    const chapterId = excerpt.chapterId ?? null
+    if (chapterScope === null) return chapterId == null
+    return chapterId === chapterScope
+  })
+  list = list.sort((a, b) => a.sortOrder - b.sortOrder || a.title.localeCompare(b.title) || a.id.localeCompare(b.id))
   if (q) list = list.filter((excerpt) => excerptMatchesKeyword(excerpt, q))
-  return list
-}
-
-function getExpandChildren(itemId: string, parentId: string | null) {
-  const all = getDirectChildExcerpts(itemId, parentId)
   return {
-    items: all.slice(0, EXCERPT_CHILD_LIMIT),
-    total: all.length,
-    truncated: all.length > EXCERPT_CHILD_LIMIT,
+    items: list.slice(0, EXCERPT_CHILD_LIMIT),
+    total: list.length,
   }
 }
 
-function toggleItemExcerptExpand(item: ResourceItem) {
+function rootChapters(itemId: string): ResourceChapter[] {
+  return listChaptersForItem(itemId)
+    .filter((chapter) => (chapter.parentId ?? null) === null)
+    .sort((a, b) => a.sortOrder - b.sortOrder || a.title.localeCompare(b.title) || a.id.localeCompare(b.id))
+}
+
+function itemTreeReady(item: ResourceItem) {
+  const excerptsReady = !props.itemSupportsExcerpts(item) || item.id in props.excerptIndex
+  const chaptersReady = !props.itemSupportsChapters(item) || item.id in props.chapterIndex
+  return excerptsReady && chaptersReady
+}
+
+function itemTreeHasContent(item: ResourceItem) {
+  if (props.itemSupportsChapters(item)) {
+    return rootChapters(item.id).length > 0 || getRootExcerpts(item.id, null).total > 0
+  }
+  return getRootExcerpts(item.id, undefined).total > 0
+}
+
+function ensureItemTree(item: ResourceItem) {
+  if (props.itemSupportsExcerpts(item) && !(item.id in props.excerptIndex)) {
+    emit('ensure-excerpts', item.id)
+  }
+  if (props.itemSupportsChapters(item) && !(item.id in props.chapterIndex)) {
+    emit('ensure-chapters', item.id)
+  }
+}
+
+function toggleItemExpand(item: ResourceItem) {
   const key = itemNodeKey(item.id)
   if (isNodeExpanded(key)) {
     setNodeExpanded(key, false)
     return
   }
-  if (!(item.id in props.excerptIndex)) {
-    emit('ensure-excerpts', item.id)
-  }
+  ensureItemTree(item)
   setNodeExpanded(key, true)
 }
 
@@ -116,13 +158,24 @@ function toggleExcerptExpand(excerptId: string) {
   setNodeExpanded(key, !isNodeExpanded(key))
 }
 
+function toggleChapterExpand(chapterId: string) {
+  const key = `ch:${chapterId}`
+  setNodeExpanded(key, !isNodeExpanded(key))
+}
+
 function onSelectItem(item: ResourceItem) {
   emit('update:selectedItemId', item.id)
+  emit('select-item', item)
 }
 
 function onSelectExcerpt(item: ResourceItem, excerpt: ResourceExcerpt) {
   emit('update:selectedItemId', item.id)
   emit('select-excerpt', item, excerpt)
+}
+
+function onSelectChapter(item: ResourceItem, chapter: ResourceChapter) {
+  emit('update:selectedItemId', item.id)
+  emit('select-chapter', item, chapter)
 }
 
 function onListPageChange(page: number) {
@@ -133,7 +186,7 @@ function onListPageChange(page: number) {
 <template>
   <div class="resource-locator-browse">
     <div class="resource-locator-browse__scroll">
-      <el-scrollbar>
+      <el-scrollbar class="resource-locator-browse__scrollbar">
         <div
           v-for="item in pagedItems"
           :key="item.id"
@@ -141,11 +194,11 @@ function onListPageChange(page: number) {
         >
           <div class="resource-locator-browse__item-row">
             <button
-              v-if="itemSupportsExcerpts(item)"
+              v-if="itemCanExpand(item)"
               type="button"
               class="resource-locator-browse__expand"
-              :aria-label="isNodeExpanded(itemNodeKey(item.id)) ? '收起节选' : '展开节选'"
-              @click.stop="toggleItemExcerptExpand(item)"
+              :aria-label="isNodeExpanded(itemNodeKey(item.id)) ? '收起' : '展开'"
+              @click.stop="toggleItemExpand(item)"
             >
               {{ isNodeExpanded(itemNodeKey(item.id)) ? '▼' : '▶' }}
             </button>
@@ -156,7 +209,7 @@ function onListPageChange(page: number) {
             <button
               type="button"
               class="resource-locator-browse__item"
-              :class="{ 'resource-locator-browse__item--active': selectedItemId === item.id }"
+              :class="{ 'resource-locator-browse__item--active': selectedItemId === item.id && !selectedExcerptId && !selectedChapterId }"
               @click="onSelectItem(item)"
             >
               <span class="resource-locator-browse__item-title">{{ item.title }}</span>
@@ -170,24 +223,65 @@ function onListPageChange(page: number) {
             v-if="isNodeExpanded(itemNodeKey(item.id))"
             class="resource-locator-browse__excerpt-children"
           >
-            <ResourceLocatorExcerptBranch
-              v-if="getExpandChildren(item.id, null).total > 0"
-              :item="item"
-              :parent-id="null"
-              :depth="0"
-              :excerpts="listExcerptsForItem(item.id)"
-              :expanded-ids="expandedNodeIds"
-              :selected-excerpt-id="selectedExcerptId"
-              :keyword="keyword"
-              @toggle="toggleExcerptExpand"
-              @select="(excerpt) => onSelectExcerpt(item, excerpt)"
-            />
-            <p
-              v-else-if="item.id in excerptIndex"
-              class="resource-locator-browse__tree-empty"
-            >
-              {{ keyword.trim() ? '没有匹配的节选' : '暂无节选' }}
-            </p>
+            <template v-if="itemTreeReady(item)">
+              <template v-if="itemSupportsChapters(item)">
+                <ResourceLocatorChapterBranch
+                  v-if="rootChapters(item.id).length > 0"
+                  :item="item"
+                  :parent-id="null"
+                  :depth="0"
+                  :chapters="listChaptersForItem(item.id)"
+                  :excerpts="listExcerptsForItem(item.id)"
+                  :expanded-ids="expandedNodeIds"
+                  :selected-chapter-id="selectedChapterId"
+                  :selected-excerpt-id="selectedExcerptId"
+                  :keyword="keyword"
+                  @toggle-chapter="toggleChapterExpand"
+                  @toggle-excerpt="toggleExcerptExpand"
+                  @select-chapter="(chapter) => onSelectChapter(item, chapter)"
+                  @select-excerpt="(excerpt) => onSelectExcerpt(item, excerpt)"
+                />
+                <ResourceLocatorExcerptBranch
+                  v-if="getRootExcerpts(item.id, null).total > 0"
+                  :item="item"
+                  :parent-id="null"
+                  :depth="0"
+                  :excerpts="listExcerptsForItem(item.id)"
+                  :chapter-scope="null"
+                  :expanded-ids="expandedNodeIds"
+                  :selected-excerpt-id="selectedExcerptId"
+                  :keyword="keyword"
+                  @toggle="toggleExcerptExpand"
+                  @select="(excerpt) => onSelectExcerpt(item, excerpt)"
+                />
+                <p
+                  v-if="!itemTreeHasContent(item)"
+                  class="resource-locator-browse__tree-empty"
+                >
+                  {{ keyword.trim() ? '没有匹配的章节或节选' : '暂无章节与节选' }}
+                </p>
+              </template>
+              <template v-else>
+                <ResourceLocatorExcerptBranch
+                  v-if="getRootExcerpts(item.id, undefined).total > 0"
+                  :item="item"
+                  :parent-id="null"
+                  :depth="0"
+                  :excerpts="listExcerptsForItem(item.id)"
+                  :expanded-ids="expandedNodeIds"
+                  :selected-excerpt-id="selectedExcerptId"
+                  :keyword="keyword"
+                  @toggle="toggleExcerptExpand"
+                  @select="(excerpt) => onSelectExcerpt(item, excerpt)"
+                />
+                <p
+                  v-else
+                  class="resource-locator-browse__tree-empty"
+                >
+                  {{ keyword.trim() ? '没有匹配的节选' : '暂无节选' }}
+                </p>
+              </template>
+            </template>
             <p v-else class="resource-locator-browse__tree-empty">加载中…</p>
           </div>
         </div>
@@ -220,23 +314,34 @@ function onListPageChange(page: number) {
 .resource-locator-browse {
   display: flex;
   flex-direction: column;
+  flex: 1 1 0;
   min-height: 0;
+  width: 100%;
   height: 100%;
+  max-height: 100%;
   overflow: hidden;
   box-sizing: border-box;
 }
 
 .resource-locator-browse__scroll {
-  flex: 1;
+  position: relative;
+  flex: 1 1 0;
   min-height: 0;
   overflow: hidden;
 }
 
-.resource-locator-browse__scroll :deep(.el-scrollbar) {
+.resource-locator-browse__scrollbar {
+  position: absolute;
+  inset: 0;
+  height: auto !important;
+}
+
+.resource-locator-browse__scrollbar :deep(.el-scrollbar__wrap) {
+  max-height: 100%;
   height: 100%;
 }
 
-.resource-locator-browse__scroll :deep(.el-scrollbar__view) {
+.resource-locator-browse__scrollbar :deep(.el-scrollbar__view) {
   min-height: 100%;
   box-sizing: border-box;
 }
@@ -330,6 +435,7 @@ function onListPageChange(page: number) {
   align-items: center;
   justify-content: center;
   min-height: 160px;
+  height: 100%;
   box-sizing: border-box;
 }
 </style>

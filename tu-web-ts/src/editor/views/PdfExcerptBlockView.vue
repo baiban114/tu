@@ -143,6 +143,8 @@ const sidebarExpand = useExpandCollapse()
 const pagesScrollRef = ref<HTMLElement | null>(null)
 const pdfBlockRef = ref<HTMLElement | null>(null)
 const isPdfBlockHovered = ref(false)
+/** Wheel scrolls PDF pages only after the NodeView is clicked; outside click clears. */
+const pdfWheelScrollActive = ref(false)
 const zoomScale = ref(1)
 const clipSelectActive = ref(false)
 /** While dragging: document-anchored start + mouse-following end (client Y). */
@@ -1055,6 +1057,7 @@ function flushZoomDelta() {
 }
 
 function onPdfBlockWheel(event: WheelEvent) {
+  if (!pdfWheelScrollActive.value) return
   if (!event.ctrlKey) return
   if (!isPdfBlockHovered.value) return
   event.preventDefault()
@@ -1067,15 +1070,48 @@ function onPdfBlockWheel(event: WheelEvent) {
   }
 }
 
+function getPdfNodeViewHost(): HTMLElement | null {
+  const block = pdfBlockRef.value
+  if (!block) return null
+  return (
+    (block.closest('.pdf-excerpt-block-nv') as HTMLElement | null)
+    ?? (block.closest('[data-node-view-wrapper]') as HTMLElement | null)
+    ?? block
+  )
+}
+
+function isPdfUiOverlayTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof Element)) return false
+  return Boolean(
+    target.closest('.pdf-excerpt-block__clip-confirm')
+    || target.closest('.pdf-excerpt-block__clip-select-box')
+    || target.closest('.pdf-excerpt-block__pdf-note-region')
+    || target.closest('.pdf-excerpt-block__pdf-note-marker'),
+  )
+}
+
+function onDocumentPointerDownForPdfWheel(event: PointerEvent) {
+  const host = getPdfNodeViewHost()
+  const target = event.target
+  if (target instanceof Node && host?.contains(target)) {
+    pdfWheelScrollActive.value = true
+    return
+  }
+  if (isPdfUiOverlayTarget(target)) return
+  pdfWheelScrollActive.value = false
+}
+
 function bindWheelListener() {
   unbindWheelListener()
   wheelTarget = pdfBlockRef.value
   wheelTarget?.addEventListener('wheel', onPdfBlockWheel, { passive: false })
+  document.addEventListener('pointerdown', onDocumentPointerDownForPdfWheel, true)
 }
 
 function unbindWheelListener() {
   wheelTarget?.removeEventListener('wheel', onPdfBlockWheel)
   wheelTarget = null
+  document.removeEventListener('pointerdown', onDocumentPointerDownForPdfWheel, true)
 }
 
 function disconnectObserver() {
@@ -1392,7 +1428,10 @@ onBeforeUnmount(() => {
       <div
         ref="pdfBlockRef"
         class="pdf-excerpt-block"
-        :class="{ 'pdf-excerpt-block--clip-select': clipSelectActive }"
+        :class="{
+          'pdf-excerpt-block--clip-select': clipSelectActive,
+          'pdf-excerpt-block--wheel-active': pdfWheelScrollActive,
+        }"
         @mouseenter="isPdfBlockHovered = true"
         @mouseleave="isPdfBlockHovered = false"
       >
@@ -1440,7 +1479,12 @@ onBeforeUnmount(() => {
                   </button>
                 </div>
               </div>
-              <nav v-if="sidebarNodes.length > 0" class="pdf-excerpt-block__sidebar-nav" aria-label="PDF 目录">
+              <nav
+                v-if="sidebarNodes.length > 0"
+                class="pdf-excerpt-block__sidebar-nav"
+                :class="{ 'pdf-excerpt-block__sidebar-nav--wheel-active': pdfWheelScrollActive }"
+                aria-label="PDF 目录"
+              >
                 <PdfExcerptSidebar
                   :nodes="sidebarNodes"
                   :start-page="resolvedStartPage"
@@ -1506,6 +1550,7 @@ onBeforeUnmount(() => {
               :class="{
                 'pdf-excerpt-block__pages--clip-select': clipSelectActive && !clipPending,
                 'pdf-excerpt-block__pages--clip-pending': !!clipPending,
+                'pdf-excerpt-block__pages--wheel-active': pdfWheelScrollActive,
               }"
               @mousedown="onClipSelectMouseDown"
             >
@@ -1803,8 +1848,12 @@ onBeforeUnmount(() => {
 .pdf-excerpt-block__sidebar-nav {
   flex: 1;
   min-height: 0;
-  overflow-y: auto;
+  overflow: hidden;
   padding: 0 4px 8px 0;
+}
+
+.pdf-excerpt-block__sidebar-nav--wheel-active {
+  overflow-y: auto;
 }
 
 .pdf-excerpt-block__sidebar-empty {
@@ -1829,7 +1878,8 @@ onBeforeUnmount(() => {
   flex: 1;
   min-width: 0;
   min-height: 0;
-  overflow: auto;
+  /* Locked until NodeView is clicked — wheel should scroll the page, not the PDF. */
+  overflow: hidden;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -1838,6 +1888,15 @@ onBeforeUnmount(() => {
   box-sizing: border-box;
   position: relative;
   background: transparent;
+}
+
+.pdf-excerpt-block__pages--wheel-active {
+  overflow: auto;
+}
+
+.pdf-excerpt-block--wheel-active {
+  outline: 1px solid rgba(37, 99, 235, 0.35);
+  outline-offset: -1px;
 }
 
 .pdf-excerpt-block__zoom-badge {

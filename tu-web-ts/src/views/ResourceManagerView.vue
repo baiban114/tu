@@ -77,6 +77,7 @@ import { useWorkspaceStore } from '@/stores/workspace';
 import TreeListPanel from '@/components/tree/TreeListPanel.vue';
 import ResourcePositionLocatorField from '@/components/ResourcePositionLocatorField.vue';
 import { ElTree } from 'element-plus';
+import { topmostSelectedIds } from '@/utils/listSelection';
 import {
   listKnowledgeRelations,
   deleteKnowledgeRelation,
@@ -181,6 +182,8 @@ const excerptPanelVisible = ref(false);
 const excerptPanelRoute = ref<'list' | 'edit'>('list');
 const selectedChapterItemId = ref('');
 const chapterPanelVisible = ref(false);
+/** Right pane of chapter dialog: manual edit vs import-from-resource. */
+const chapterRightMode = ref<'edit' | 'fromResource'>('edit');
 const selectedReferenceCategory = ref<ReferenceCategoryFilter>('all');
 const selectedReferenceStatus = ref<ReferenceStatusFilter>('all');
 const referenceKeyword = ref('');
@@ -223,6 +226,7 @@ const linkWorkSelectedId = ref('');
 const linkWorkSubmitting = ref(false);
 const chaptersLoading = ref(false);
 const chapters = ref<ResourceChapter[]>([]);
+const selectedChapterIds = ref<string[]>([]);
 const excerpts = ref<ResourceExcerpt[]>([]);
 const excerptPage = ref(0);
 const excerptPageSize = ref(DEFAULT_PAGE_SIZE);
@@ -361,13 +365,15 @@ const chapterOutlineHint = computed(() => {
     return '请先在资源实体中配置访问地址（打开资源的手段）。图书站内 PDF 将从书签/目录判断章节。';
   }
   if (chapterOutlineSource.value === 'outline') {
-    return '已加载 PDF 书签：点选一项填入当前章节；也可导入全部为章节树。';
+    return '已加载 PDF 书签：点选一项创建根章节；也可追加导入或完全覆盖为章节树。';
   }
   if (chapterOutlineSource.value === 'pages') {
-    return '该 PDF 无书签，已列出页目录：点选填入，或导入为章节。';
+    return '该 PDF 无书签，已列出页目录：点选创建根章节，或追加/覆盖导入为章节树。';
   }
-  return '选择访问地址后点「读取结构」。算法按资源类型与内容判断（PDF → 书签/目录），不是解析 URL 参数。';
+  return '选择访问地址后点「读取结构」。左侧章节支持 Ctrl/⌘ 多选、Shift 连选、空白处拖拽划选后批量删除。';
 });
+
+const selectedChapterCount = computed(() => selectedChapterIds.value.length);
 
 const chapterTreeNodes = computed(() => {
   const flat = chapters.value.map((chapter) => ({
@@ -953,11 +959,19 @@ function resetChapterForm() {
   });
 }
 
+function startNewChapter() {
+  chapterRightMode.value = 'edit';
+  selectedChapterIds.value = [];
+  resetChapterForm();
+}
+
 function clearChapterPanel() {
   chapterPanelVisible.value = false;
   selectedChapterItemId.value = '';
   chapters.value = [];
+  selectedChapterIds.value = [];
   chapterAccessUrlPick.value = '';
+  chapterRightMode.value = 'edit';
   resetChapterOutlinePanel();
   resetChapterForm();
 }
@@ -1003,13 +1017,21 @@ async function loadChapterOutlineFromResource() {
   }
 }
 
-function applyChapterOutlineNode(node: PdfSidebarNode) {
+async function createChapterFromOutlineNode(node: PdfSidebarNode) {
+  const item = selectedChapterItem.value;
+  if (!item) return;
   const fields = chapterFieldsFromOutlineNode(node);
-  chapterForm.title = fields.title;
-  if (fields.locator) {
-    chapterForm.locator = fields.locator;
+  try {
+    await createResourceChapter(item.id, {
+      title: fields.title,
+      locator: fields.locator,
+      sortOrder: nextRootChapterSortOrder(),
+    });
+    await loadChapters(item.id);
+    showSuccess(`已创建章节「${fields.title}」`);
+  } catch (error) {
+    showError(error);
   }
-  showSuccess(`已填入「${fields.title}」`);
 }
 
 async function importChapterOutlineTree(
@@ -1017,44 +1039,67 @@ async function importChapterOutlineTree(
   nodes: PdfSidebarNode[],
   parentId: string | null,
   sortBase: number,
-): Promise<number> {
-  let sortOrder = sortBase;
+): Promise<void> {
+  let sortOrder = sortBase
   for (const node of nodes) {
-    const fields = chapterFieldsFromOutlineNode(node);
+    const fields = chapterFieldsFromOutlineNode(node)
     const created = await createResourceChapter(itemId, {
       parentId: parentId || undefined,
       title: fields.title,
       locator: fields.locator,
       sortOrder,
-    });
-    sortOrder += 1;
+    })
+    sortOrder += 1
+    // Children use their own 0-based order; do not reuse the returned counter for siblings.
     if (node.children.length > 0) {
-      sortOrder = await importChapterOutlineTree(itemId, node.children, created.id, 0);
+      await importChapterOutlineTree(itemId, node.children, created.id, 0)
     }
   }
-  return sortOrder;
 }
 
-async function importAllChapterOutlineNodes() {
-  const item = selectedChapterItem.value;
-  if (!item || chapterOutlineNodes.value.length === 0) return;
+function nextRootChapterSortOrder(): number {
+  const rootOrders = chapters.value
+    .filter((chapter) => !(chapter.parentId ?? null))
+    .map((chapter) => chapter.sortOrder ?? 0)
+  return rootOrders.length ? Math.max(...rootOrders) + 1 : 0
+}
+
+async function importAllChapterOutlineNodes(mode: 'append' | 'overwrite' = 'append') {
+  const item = selectedChapterItem.value
+  if (!item || chapterOutlineNodes.value.length === 0) return
 
   try {
-    if (chapters.value.length > 0) {
-      await confirmAction(
-        `当前已有 ${chapters.value.length} 个章节。将把读取到的结构追加导入为新章节树（不删除已有），是否继续？`,
-        '导入书签为章节',
-      );
+    if (mode === 'overwrite') {
+      if (chapters.value.length > 0) {
+        await confirmAction(
+          `将删除现有 ${chapters.value.length} 个章节及其子章节，并以资源结构完全覆盖。相关节选的章节关联将被清除。是否继续？`,
+          '覆盖导入章节',
+        )
+      }
+      chapterOutlineImporting.value = true
+      const roots = chapters.value.filter((chapter) => !(chapter.parentId ?? null))
+      for (const root of roots) {
+        await deleteResourceChapter(root.id)
+      }
+      await importChapterOutlineTree(item.id, chapterOutlineNodes.value, null, 0)
+    } else {
+      if (chapters.value.length > 0) {
+        await confirmAction(
+          `当前已有 ${chapters.value.length} 个章节。将把读取到的结构追加导入为新章节树（不删除已有），是否继续？`,
+          '追加导入章节',
+        )
+      }
+      chapterOutlineImporting.value = true
+      await importChapterOutlineTree(item.id, chapterOutlineNodes.value, null, nextRootChapterSortOrder())
     }
-    chapterOutlineImporting.value = true;
-    await importChapterOutlineTree(item.id, chapterOutlineNodes.value, null, chapters.value.length);
-    await loadChapters(item.id);
-    showSuccess('已导入章节结构');
-    resetChapterForm();
+    await loadChapters(item.id)
+    selectedChapterIds.value = []
+    showSuccess(mode === 'overwrite' ? '已覆盖导入章节结构' : '已追加导入章节结构')
+    resetChapterForm()
   } catch (error) {
-    if (error !== 'cancel' && error !== 'close') showError(error);
+    if (error !== 'cancel' && error !== 'close') showError(error)
   } finally {
-    chapterOutlineImporting.value = false;
+    chapterOutlineImporting.value = false
   }
 }
 
@@ -1118,6 +1163,7 @@ async function openChapterPanel(item: ResourceItem) {
   if (!supportsBookChapters(typeById.value.get(item.typeId)?.code)) return;
   selectedChapterItemId.value = item.id;
   chapterPanelVisible.value = true;
+  chapterRightMode.value = 'edit';
   resetChapterOutlinePanel();
   resetChapterForm();
   chapterAccessUrlPick.value = defaultAccessUrl(item.accessUrls);
@@ -1775,6 +1821,7 @@ async function saveChapter() {
 }
 
 function editChapter(chapter: ResourceChapter) {
+  chapterRightMode.value = 'edit';
   Object.assign(chapterForm, {
     id: chapter.id,
     title: chapter.title,
@@ -1785,11 +1832,22 @@ function editChapter(chapter: ResourceChapter) {
   });
 }
 
+function onChapterTreeSelect(node: { meta?: unknown }) {
+  const chapter = node.meta as ResourceChapter | undefined;
+  if (!chapter) return;
+  editChapter(chapter);
+}
+
+function onChapterSelectedIdsUpdate(ids: string[]) {
+  selectedChapterIds.value = ids;
+}
+
 async function removeChapter(chapter: ResourceChapter) {
   try {
     await confirmAction(`确定删除章节「${chapter.title}」及其子章节？相关节选的章节关联将被清除。`, '删除章节');
     await deleteResourceChapter(chapter.id);
     showSuccess('章节已删除');
+    selectedChapterIds.value = selectedChapterIds.value.filter((id) => id !== chapter.id);
     if (selectedChapterItem.value) {
       await loadChapters(selectedChapterItem.value.id);
     }
@@ -1797,6 +1855,36 @@ async function removeChapter(chapter: ResourceChapter) {
       await loadExcerpts(chapter.resourceItemId, excerptPage.value);
     }
     if (chapterForm.id === chapter.id) resetChapterForm();
+  } catch (error) {
+    if (error !== 'cancel' && error !== 'close') showError(error);
+  }
+}
+
+async function removeSelectedChapters() {
+  const selected = new Set(selectedChapterIds.value);
+  if (selected.size === 0) return;
+  const parentById = new Map(
+    chapters.value.map((chapter) => [chapter.id, chapter.parentId ?? null] as const),
+  );
+  const toDelete = topmostSelectedIds(selected, parentById);
+  if (toDelete.length === 0) return;
+  try {
+    await confirmAction(
+      `确定删除选中的 ${toDelete.length} 个章节（含其子章节）？相关节选的章节关联将被清除。`,
+      '批量删除章节',
+    );
+    for (const id of toDelete) {
+      await deleteResourceChapter(id);
+    }
+    showSuccess(`已删除 ${toDelete.length} 个章节`);
+    selectedChapterIds.value = [];
+    if (selectedChapterItem.value) {
+      await loadChapters(selectedChapterItem.value.id);
+    }
+    if (selectedExcerptItem.value && selectedChapterItem.value?.id === selectedExcerptItem.value.id) {
+      await loadExcerpts(selectedExcerptItem.value.id, excerptPage.value);
+    }
+    if (chapterForm.id && toDelete.includes(chapterForm.id)) resetChapterForm();
   } catch (error) {
     if (error !== 'cancel' && error !== 'close') showError(error);
   }
@@ -3560,125 +3648,173 @@ watch(
       </template>
       <div v-loading="chaptersLoading" class="chapter-panel__body">
         <div class="chapter-panel__tree">
+          <div class="chapter-panel__tree-toolbar">
+            <span class="chapter-panel__tree-hint">
+              {{ selectedChapterCount > 0 ? `已选 ${selectedChapterCount} 项` : 'Ctrl/⌘ 多选 · Shift 连选 · 拖拽划选' }}
+            </span>
+            <el-space wrap :size="6">
+              <el-button type="primary" plain size="small" @click="startNewChapter">
+                新增章节
+              </el-button>
+              <el-button
+                type="danger"
+                plain
+                size="small"
+                :disabled="selectedChapterCount === 0"
+                @click="removeSelectedChapters"
+              >
+                删除选中
+              </el-button>
+            </el-space>
+          </div>
           <TreeListPanel
             :nodes="chapterTreeNodes"
             :selected-id="chapterForm.id || null"
+            :selected-ids="selectedChapterIds"
+            multi-select
             :default-expand-depth="2"
-            empty-text="暂无章节，可在右侧新增"
-            @select="(node) => editChapter(node.meta as ResourceChapter)"
+            empty-text="暂无章节，可点「新增章节」或切到「从资源判断」"
+            @update:selected-ids="onChapterSelectedIdsUpdate"
+            @select="onChapterTreeSelect"
           />
         </div>
-        <el-form class="chapter-form resource-form" label-position="top" @submit.prevent="saveChapter">
-          <h3>{{ chapterForm.id ? '编辑章节' : '新增章节' }}</h3>
-          <el-form-item label="标题" required>
-            <el-input v-model="chapterForm.title" maxlength="255" />
-          </el-form-item>
-          <el-form-item label="父章节">
-            <el-select
-              v-model="chapterForm.parentId"
-              clearable
-              filterable
-              placeholder="留空表示根章节"
-              style="width: 100%"
-            >
-              <el-option
-                v-for="option in chapterParentOptions"
-                :key="option.value"
-                :label="option.label"
-                :value="option.value"
-              />
-            </el-select>
-          </el-form-item>
-          <el-form-item label="从资源判断">
-            <div class="chapter-resource-judge">
-              <div class="excerpt-url-row">
-                <el-select
-                  :model-value="chapterAccessUrlPick"
-                  clearable
-                  filterable
-                  placeholder="选择访问地址（打开资源）"
-                  style="width: 100%; min-width: 0"
-                  :disabled="!chapterAccessUrlOptions.length || chapterOutlineLoading"
-                  @update:model-value="onChapterAccessUrlPick"
-                >
-                  <el-option
-                    v-for="url in chapterAccessUrlOptions"
-                    :key="url"
-                    :label="url"
-                    :value="url"
-                  />
-                </el-select>
-                <el-button
-                  type="primary"
-                  plain
-                  native-type="button"
-                  :loading="chapterOutlineLoading"
-                  :disabled="!chapterAccessUrlOptions.length"
-                  @click.prevent="loadChapterOutlineFromResource"
-                >
-                  读取结构
+        <div class="chapter-panel__right">
+          <el-radio-group v-model="chapterRightMode" size="small" class="chapter-panel__mode-switch">
+            <el-radio-button value="edit">编辑章节</el-radio-button>
+            <el-radio-button value="fromResource">从资源判断</el-radio-button>
+          </el-radio-group>
+
+          <el-form
+            v-if="chapterRightMode === 'edit'"
+            class="chapter-form resource-form"
+            label-position="top"
+            @submit.prevent="saveChapter"
+          >
+            <h3>{{ chapterForm.id ? '编辑章节' : '新增章节' }}</h3>
+            <el-form-item label="标题" required>
+              <el-input v-model="chapterForm.title" maxlength="255" />
+            </el-form-item>
+            <el-form-item label="父章节">
+              <el-select
+                v-model="chapterForm.parentId"
+                clearable
+                filterable
+                placeholder="留空表示根章节"
+                style="width: 100%"
+              >
+                <el-option
+                  v-for="option in chapterParentOptions"
+                  :key="option.value"
+                  :label="option.label"
+                  :value="option.value"
+                />
+              </el-select>
+            </el-form-item>
+            <el-form-item label="结构定位">
+              <el-input v-model="chapterForm.locator" maxlength="255" placeholder="例如 page:1、page:1-20，或 第 1 卷" />
+            </el-form-item>
+            <el-form-item label="备注">
+              <el-input v-model="chapterForm.note" type="textarea" :rows="3" maxlength="1024" />
+            </el-form-item>
+            <el-form-item label="排序">
+              <el-input-number v-model="chapterForm.sortOrder" :min="0" :step="1" />
+            </el-form-item>
+            <el-form-item>
+              <el-space wrap>
+                <el-button type="primary" native-type="submit" :disabled="!chapterForm.title.trim()">
+                  {{ chapterForm.id ? '保存章节' : '创建章节' }}
                 </el-button>
+                <el-button
+                  v-if="chapterForm.id"
+                  type="danger"
+                  plain
+                  @click="() => { const chapter = chapters.find((entry) => entry.id === chapterForm.id); if (chapter) removeChapter(chapter); }"
+                >
+                  删除
+                </el-button>
+                <el-button @click="resetChapterForm">取消</el-button>
+              </el-space>
+            </el-form-item>
+          </el-form>
+
+          <div v-else class="chapter-from-resource">
+            <h3>从资源判断</h3>
+            <div class="excerpt-url-row">
+              <el-select
+                :model-value="chapterAccessUrlPick"
+                clearable
+                filterable
+                placeholder="选择访问地址（打开资源）"
+                style="width: 100%; min-width: 0"
+                :disabled="!chapterAccessUrlOptions.length || chapterOutlineLoading"
+                @update:model-value="onChapterAccessUrlPick"
+              >
+                <el-option
+                  v-for="url in chapterAccessUrlOptions"
+                  :key="url"
+                  :label="url"
+                  :value="url"
+                />
+              </el-select>
+              <el-button
+                type="primary"
+                plain
+                native-type="button"
+                :loading="chapterOutlineLoading"
+                :disabled="!chapterAccessUrlOptions.length"
+                @click.prevent="loadChapterOutlineFromResource"
+              >
+                读取结构
+              </el-button>
+              <el-dropdown
+                trigger="click"
+                :disabled="chapterOutlineNodes.length === 0 || chapterOutlineLoading || chapterOutlineImporting"
+                @command="(cmd: 'append' | 'overwrite') => importAllChapterOutlineNodes(cmd)"
+              >
                 <el-button
                   plain
                   native-type="button"
                   :loading="chapterOutlineImporting"
                   :disabled="chapterOutlineNodes.length === 0 || chapterOutlineLoading"
-                  @click.prevent="importAllChapterOutlineNodes"
                 >
                   导入全部
                 </el-button>
-              </div>
-              <p class="excerpt-url-hint">{{ chapterOutlineHint }}</p>
-              <div v-loading="chapterOutlineLoading" class="chapter-outline-panel">
-                <el-tree
-                  v-if="chapterOutlineNodes.length"
-                  class="chapter-outline-panel__tree"
-                  :data="chapterOutlineNodes"
-                  node-key="id"
-                  :props="{ label: 'title', children: 'children' }"
-                  highlight-current
-                  default-expand-all
-                  @node-click="(data: PdfSidebarNode) => applyChapterOutlineNode(data)"
-                >
-                  <template #default="{ data }">
-                    <span class="chapter-outline-panel__node">
-                      <span class="chapter-outline-panel__node-title">{{ data.title }}</span>
-                      <small v-if="data.pageNumber != null">p.{{ data.pageNumber }}</small>
-                    </span>
-                  </template>
-                </el-tree>
-                <p v-else class="chapter-outline-panel__empty">
-                  {{ chapterOutlineMessage || '读取后在此显示书签/目录，点选填入当前章节' }}
-                </p>
-              </div>
+                <template #dropdown>
+                  <el-dropdown-menu>
+                    <el-dropdown-item command="append">追加导入（保留现有章节）</el-dropdown-item>
+                    <el-dropdown-item command="overwrite" divided>
+                      完全覆盖（删除现有后导入）
+                    </el-dropdown-item>
+                  </el-dropdown-menu>
+                </template>
+              </el-dropdown>
             </div>
-          </el-form-item>
-          <el-form-item label="结构定位">
-            <el-input v-model="chapterForm.locator" maxlength="255" placeholder="例如 page:1、page:1-20，或 第 1 卷" />
-          </el-form-item>
-          <el-form-item label="备注">
-            <el-input v-model="chapterForm.note" type="textarea" :rows="3" maxlength="1024" />
-          </el-form-item>
-          <el-form-item label="排序">
-            <el-input-number v-model="chapterForm.sortOrder" :min="0" :step="1" />
-          </el-form-item>
-          <el-form-item>
-            <el-space wrap>
-              <el-button type="primary" native-type="submit" :disabled="!chapterForm.title.trim()">
-                {{ chapterForm.id ? '保存章节' : '创建章节' }}
-              </el-button>
-              <el-button
-                v-if="chapterForm.id"
-                type="danger"
-                plain
-                @click="() => { const chapter = chapters.find((entry) => entry.id === chapterForm.id); if (chapter) removeChapter(chapter); }"
+            <p class="excerpt-url-hint">{{ chapterOutlineHint }}</p>
+            <p class="chapter-from-resource__tip">点选节点将创建对应根章节；子树请用「导入全部」。</p>
+            <div v-loading="chapterOutlineLoading" class="chapter-outline-panel chapter-outline-panel--fill">
+              <el-tree
+                v-if="chapterOutlineNodes.length"
+                class="chapter-outline-panel__tree"
+                :data="chapterOutlineNodes"
+                node-key="id"
+                :props="{ label: 'title', children: 'children' }"
+                highlight-current
+                default-expand-all
+                @node-click="(data: PdfSidebarNode) => createChapterFromOutlineNode(data)"
               >
-                删除
-              </el-button>
-              <el-button @click="resetChapterForm">取消</el-button>
-            </el-space>
-          </el-form-item>
-        </el-form>
+                <template #default="{ data }">
+                  <span class="chapter-outline-panel__node">
+                    <span class="chapter-outline-panel__node-title">{{ data.title }}</span>
+                    <small v-if="data.pageNumber != null">p.{{ data.pageNumber }}</small>
+                  </span>
+                </template>
+              </el-tree>
+              <p v-else class="chapter-outline-panel__empty">
+                {{ chapterOutlineMessage || '读取后在此显示书签/目录，点选可创建章节' }}
+              </p>
+            </div>
+          </div>
+        </div>
       </div>
     </el-dialog>
 
@@ -4193,14 +4329,6 @@ watch(
   color: #52606d;
 }
 
-.chapter-resource-judge {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  width: 100%;
-  min-width: 0;
-}
-
 .chapter-outline-panel {
   height: 220px;
   min-height: 220px;
@@ -4212,6 +4340,13 @@ watch(
   display: flex;
   flex-direction: column;
   box-sizing: border-box;
+}
+
+.chapter-outline-panel--fill {
+  flex: 1 1 0;
+  height: auto;
+  min-height: 0;
+  margin-top: 0;
 }
 
 .chapter-outline-panel__tree {
@@ -4263,7 +4398,11 @@ watch(
 .chapter-panel-dialog :deep(.el-dialog__body) {
   display: flex;
   flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
   padding-top: 8px;
+  box-sizing: border-box;
 }
 
 .chapter-panel__header {
@@ -4284,26 +4423,130 @@ watch(
 
 .chapter-panel__body {
   flex: 1;
-  min-height: 0;
+  /* Fixed display region so both panes scroll inside the dialog. */
+  height: min(560px, calc(100dvh - 140px));
+  min-height: min(560px, calc(100dvh - 140px));
+  max-height: calc(100dvh - 120px);
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(320px, 380px);
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 380px);
+  grid-template-rows: minmax(0, 1fr);
   gap: 16px;
   align-items: stretch;
+  overflow: hidden;
+  box-sizing: border-box;
 }
 
 .chapter-panel__tree {
-  min-height: 320px;
-  max-height: min(60vh, 520px);
-  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
   border: 1px solid #e5e7eb;
   border-radius: 8px;
   padding: 8px;
+  box-sizing: border-box;
+}
+
+.chapter-panel__tree-toolbar {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid #eef2f6;
+}
+
+.chapter-panel__tree-hint {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #667085;
+  font-size: 12px;
+}
+
+.chapter-panel__tree :deep(.tree-list-panel) {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+.chapter-panel__right {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
+  gap: 10px;
+}
+
+.chapter-panel__mode-switch {
+  flex-shrink: 0;
+  width: 100%;
+}
+
+.chapter-panel__mode-switch :deep(.el-radio-button) {
+  flex: 1;
+}
+
+.chapter-panel__mode-switch :deep(.el-radio-button__inner) {
+  width: 100%;
 }
 
 .chapter-form {
+  flex: 1 1 0;
+  min-width: 0;
   min-height: 0;
+  overflow-x: hidden;
   overflow-y: auto;
   align-content: start;
+  padding-right: 4px;
+  box-sizing: border-box;
+}
+
+.chapter-form h3,
+.chapter-from-resource h3 {
+  flex-shrink: 0;
+  margin: 0 0 8px;
+  font-size: 16px;
+}
+
+.chapter-form :deep(.el-form-item:last-child) {
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+  margin: 2px 0 0;
+  padding: 12px 0 4px;
+  background: var(--el-bg-color, #fff);
+  box-shadow: 0 -8px 14px rgba(255, 255, 255, 0.9);
+}
+
+.chapter-from-resource {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  gap: 6px;
+}
+
+.chapter-from-resource__tip {
+  flex-shrink: 0;
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.45;
+  color: #667085;
+}
+
+.chapter-from-resource .excerpt-url-row,
+.chapter-from-resource .excerpt-url-hint {
+  flex-shrink: 0;
 }
 
 .reference-url {

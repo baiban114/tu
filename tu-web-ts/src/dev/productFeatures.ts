@@ -133,7 +133,7 @@ export const productFeatureCatalog: ProductFeature[] = [
     id: 'external-resource-excerpt-from-selection',
     module: '外部资源',
     name: '选中文本标记节选',
-    description: '在富文本编辑器中划选引用内容，可从选择浮条创建图书外部资源节选。成功后记为用户「学习进行中」目标（Item+Excerpt）；下次粘贴或一次性插入新正文时，划选工具栏上方可倒计时确认是否用该目标自动标记（结构改造旧文不触发）。',
+    description: '在富文本编辑器中划选引用内容，可从选择浮条创建图书外部资源节选。成功后记为用户「学习进行中」目标（Item+Excerpt）；下次粘贴或一次性插入新正文时，划选工具栏上方可倒计时确认是否用该目标自动标记（结构改造旧文、或粘贴进已有节选/依据元数据的段落不触发）。',
     status: 'testing',
     owner: 'Resource',
   },

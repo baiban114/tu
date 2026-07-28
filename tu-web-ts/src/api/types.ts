@@ -224,17 +224,21 @@ export interface ExternalResourceSnapshot {
 export interface ExternalResourceEmbedData {
   resourceItemId: string;
   resourceExcerptId?: string | null;
-  mode: 'resource' | 'excerpt';
+  /** Book chapter within the resource (basis / locator levels). */
+  resourceChapterId?: string | null;
+  mode: 'resource' | 'excerpt' | 'chapter';
   snapshot: ExternalResourceSnapshot;
 }
 
 /** 标题节点绑定的外部资源节选（持久化于 heading attrs + markdown 注释） */
 export interface HeadingSourceBinding {
   resourceItemId: string;
-  /** 标题来源必填；依据标注可仅挂靠资源实体 */
+  /** 标题来源必填；依据标注可仅挂靠资源实体或章节 */
   resourceExcerptId?: string | null;
+  /** 依据可挂靠图书章节（无节选时） */
+  resourceChapterId?: string | null;
   snapshot: Pick<ExternalResourceSnapshot,
-    'resourceTitle' | 'resourceTypeName' | 'workTitle' | 'excerptTitle' | 'excerptLocator'>;
+    'resourceTitle' | 'resourceTypeName' | 'workTitle' | 'excerptTitle' | 'excerptLocator' | 'chapterTitle'>;
   /** 标记来源；缺省视为 user */
   markerSource?: KnowledgeMarkerSource;
 }

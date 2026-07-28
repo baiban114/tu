@@ -1,39 +1,50 @@
 <script setup lang="ts">
-import type { TreeNode } from '@/utils/tree';
+import type { TreeNode } from '@/utils/tree'
 
 defineProps<{
-  node: TreeNode;
-  depth: number;
-  indentPx: number;
-  selectedId?: string | null;
-  expandedIds: Set<string>;
-  isSelectable: (node: TreeNode) => boolean;
-}>();
+  node: TreeNode
+  depth: number
+  indentPx: number
+  selectedId?: string | null
+  selectedIds?: ReadonlySet<string>
+  expandedIds: Set<string>
+  isSelectable: (node: TreeNode) => boolean
+}>()
 
 const emit = defineEmits<{
-  toggle: [event: MouseEvent, node: TreeNode];
-  select: [node: TreeNode];
-}>();
+  toggle: [event: MouseEvent, node: TreeNode]
+  select: [event: MouseEvent, node: TreeNode]
+}>()
 
 function hasChildren(node: TreeNode) {
-  return Boolean(node.children?.length);
+  return Boolean(node.children?.length)
 }
 
 function isExpanded(node: TreeNode, expandedIds: Set<string>) {
-  return expandedIds.has(node.id);
+  return expandedIds.has(node.id)
+}
+
+function isSelected(
+  node: TreeNode,
+  selectedId: string | null | undefined,
+  selectedIds: ReadonlySet<string> | undefined,
+) {
+  if (selectedIds && selectedIds.size > 0) return selectedIds.has(node.id)
+  return selectedId === node.id
 }
 </script>
 
 <template>
-  <li class="tree-list-node" role="treeitem">
+  <li class="tree-list-node" role="treeitem" :data-tree-node-id="node.id">
     <div
       class="tree-list-node__row"
       :class="{
-        'tree-list-node__row--selected': selectedId === node.id,
+        'tree-list-node__row--selected': isSelected(node, selectedId, selectedIds),
         'tree-list-node__row--disabled': !isSelectable(node),
       }"
       :style="{ paddingLeft: `${depth * indentPx + 8}px` }"
-      @click="isSelectable(node) && emit('select', node)"
+      :data-tree-node-id="node.id"
+      @click="isSelectable(node) && emit('select', $event, node)"
     >
       <button
         type="button"
@@ -59,10 +70,11 @@ function isExpanded(node: TreeNode, expandedIds: Set<string>) {
         :depth="depth + 1"
         :indent-px="indentPx"
         :selected-id="selectedId"
+        :selected-ids="selectedIds"
         :expanded-ids="expandedIds"
         :is-selectable="isSelectable"
         @toggle="(event, n) => emit('toggle', event, n)"
-        @select="(n) => emit('select', n)"
+        @select="(event, n) => emit('select', event, n)"
       />
     </ul>
   </li>

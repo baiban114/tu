@@ -2,9 +2,9 @@ import { Graph, Path, type ConnectorDefinition, type Edge, type PointLike } from
 
 export const MINDMAP_CONNECTOR_NAME = 'mindmap';
 
-/** Align with X6 official mindmap practice demo gaps. */
-export const MINDMAP_H_GAP = 40;
-export const MINDMAP_V_GAP = 20;
+/** Compact mindmap spacing: enough clearance to avoid overlap, tighter than X6 demo defaults. */
+export const MINDMAP_H_GAP = 24;
+export const MINDMAP_V_GAP = 8;
 
 let mindmapConnectorRegistered = false;
 

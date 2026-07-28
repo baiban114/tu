@@ -15,6 +15,8 @@ export { flattenTocTreeForMindmap } from '@/utils/toc/mindmapFromTocTree'
 export interface BuildMindmapGraphFromTocOptions {
   rootTitle: string
   toc: TocTreeItem[]
+  /** Page id for 定位系统 locators on nodes. */
+  pageId?: string
   /** Stable ids for tests; defaults to `createId`. */
   createNodeId?: (prefix: string) => string
 }
@@ -24,7 +26,9 @@ export interface BuildMindmapGraphFromTocOptions {
  */
 export function buildMindmapGraphFromToc(options: BuildMindmapGraphFromTocOptions): GraphData {
   const createNodeId = options.createNodeId ?? ((prefix: string) => createId(prefix))
-  const links = flattenTocTreeForMindmap(options.rootTitle, options.toc, createNodeId)
+  const links = flattenTocTreeForMindmap(options.rootTitle, options.toc, createNodeId, {
+    pageId: options.pageId,
+  })
 
   const nodes: CellData[] = []
   const edges: CellData[] = []
@@ -38,13 +42,17 @@ export function buildMindmapGraphFromToc(options: BuildMindmapGraphFromTocOption
       y: isRoot ? 220 : undefined,
       label: link.text,
       mindRole: isRoot ? 'root' : 'topic',
-      data: isRoot
-        ? undefined
-        : {
-            tocEntryId: link.tocEntryId,
-            tocBlockId: link.blockId,
-            tocSourceType: link.sourceType,
-          },
+      data: {
+        mindRole: isRoot ? 'root' : 'topic',
+        ...(link.sourceLocator ? { sourceLocator: link.sourceLocator } : {}),
+        ...(isRoot
+          ? {}
+          : {
+              tocEntryId: link.tocEntryId,
+              tocBlockId: link.blockId,
+              tocSourceType: link.sourceType,
+            }),
+      },
     }))
     if (link.parentId && idSet.has(link.parentId)) {
       edges.push(createMindmapEdgeMetadata(link.parentId, link.id))

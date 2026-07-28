@@ -7,18 +7,8 @@ import {
   type ResourceItem,
 } from '@/api/externalResource'
 import type { Block, ExternalResourceEmbedData } from '@/api/types'
-import { resourcePositionDisplay } from '@/utils/resourcePositionLocator'
+import { formatResourceMetaPath } from '@/utils/resourceMetaPath'
 import TuEditor from '@/components/TuEditor.vue'
-
-const META_DISPLAY_LIMITS = {
-  title: 56,
-  workTitle: 28,
-  identityValue: 20,
-  chapterTitle: 32,
-  locator: 40,
-  note: 48,
-  sourceUrl: 40,
-} as const
 
 const EXTERNAL_RESOURCE_EXCERPT_MAX_HEIGHT = 200
 
@@ -50,42 +40,40 @@ const latestExcerpt = ref<ResourceExcerpt | null>(null)
 const loading = ref(false)
 const loadError = ref('')
 
-function truncateDisplayText(value: string, max: number): string {
-  const text = value.trim()
-  if (!text) return ''
-  if (text.length <= max) return text
-  return `${text.slice(0, max)}…`
-}
+const snapshot = computed(() => props.externalResource.snapshot || { resourceTitle: '' })
+const isExcerpt = computed(() => props.externalResource.mode === 'excerpt' || Boolean(props.externalResource.resourceExcerptId))
+const isChapter = computed(() => (
+  !isExcerpt.value
+  && (props.externalResource.mode === 'chapter' || Boolean(props.externalResource.resourceChapterId))
+))
+const resourceTitle = computed(() => latestItem.value?.title || snapshot.value.resourceTitle || '')
+const resourceTypeName = computed(() => latestItem.value?.typeName || snapshot.value.resourceTypeName || '')
+const workTitle = computed(() => latestItem.value?.workTitle || snapshot.value.workTitle || '')
+const sourceUrl = computed(() => latestItem.value?.sourceUrl || snapshot.value.sourceUrl || '')
+const excerptTitle = computed(() => latestExcerpt.value?.title || snapshot.value.excerptTitle || '')
+const chapterTitle = computed(() => latestExcerpt.value?.chapterTitle || snapshot.value.chapterTitle || '')
+const excerptLocator = computed(() => latestExcerpt.value?.locator || snapshot.value.excerptLocator || '')
+const excerptText = computed(() => latestExcerpt.value?.excerptText || snapshot.value.excerptText || '')
+const usingSnapshot = computed(() => Boolean(loadError.value || (!latestItem.value && snapshot.value.resourceTitle)))
 
 function formatSourceUrlLabel(url: string): string {
   const trimmed = url.trim()
   if (!trimmed) return ''
   try {
-    return truncateDisplayText(new URL(trimmed).hostname, META_DISPLAY_LIMITS.sourceUrl)
+    const host = new URL(trimmed).hostname
+    return host.length > 40 ? `${host.slice(0, 40)}…` : host
   } catch {
-    return truncateDisplayText(trimmed, META_DISPLAY_LIMITS.sourceUrl)
+    return trimmed.length > 40 ? `${trimmed.slice(0, 40)}…` : trimmed
   }
 }
 
-const snapshot = computed(() => props.externalResource.snapshot || { resourceTitle: '' })
-const isExcerpt = computed(() => props.externalResource.mode === 'excerpt' || Boolean(props.externalResource.resourceExcerptId))
-const resourceTitle = computed(() => latestItem.value?.title || snapshot.value.resourceTitle || '外部资源')
-const resourceTypeName = computed(() => latestItem.value?.typeName || snapshot.value.resourceTypeName || '外部资源')
-const workTitle = computed(() => latestItem.value?.workTitle || snapshot.value.workTitle || '')
-const identityLabel = computed(() => latestItem.value?.identityFieldLabel || snapshot.value.identityFieldLabel || '标识')
-const identityValue = computed(() => latestItem.value?.identityValue || snapshot.value.identityValue || '')
-const sourceUrl = computed(() => latestItem.value?.sourceUrl || snapshot.value.sourceUrl || '')
-const excerptTitle = computed(() => latestExcerpt.value?.title || snapshot.value.excerptTitle || '')
-const chapterTitle = computed(() => latestExcerpt.value?.chapterTitle || snapshot.value.chapterTitle || '')
-const excerptLocator = computed(() => latestExcerpt.value?.locator || snapshot.value.excerptLocator || '')
-const excerptNote = computed(() => latestExcerpt.value?.note || snapshot.value.excerptNote || '')
-const excerptText = computed(() => latestExcerpt.value?.excerptText || snapshot.value.excerptText || '')
-const usingSnapshot = computed(() => Boolean(loadError.value || (!latestItem.value && snapshot.value.resourceTitle)))
 const sourceUrlLabel = computed(() => formatSourceUrlLabel(sourceUrl.value))
 
 const badgeText = computed(() => {
   if (props.badgeLabel.trim()) return props.badgeLabel.trim()
-  return isExcerpt.value ? '资源节选' : resourceTypeName.value
+  if (isExcerpt.value) return '资源节选'
+  if (isChapter.value) return '资源章节'
+  return resourceTypeName.value || '外部资源'
 })
 const badgeTone = computed(() => {
   const label = badgeText.value
@@ -94,68 +82,18 @@ const badgeTone = computed(() => {
   return 'excerpt'
 })
 
-/** Locator path layers only — role badge is separate, not joined with `>`. */
-const metaPathParts = computed(() => {
-  const parts: string[] = []
-  if (
-    resourceTypeName.value
-    && resourceTypeName.value !== badgeText.value
-    && resourceTypeName.value !== '外部资源'
-  ) {
-    parts.push(truncateDisplayText(resourceTypeName.value, META_DISPLAY_LIMITS.workTitle))
-  }
-  if (workTitle.value) {
-    parts.push(truncateDisplayText(workTitle.value, META_DISPLAY_LIMITS.workTitle))
-  } else if (
-    resourceTitle.value
-    && resourceTitle.value !== badgeText.value
-    && (!isExcerpt.value || !excerptTitle.value)
-  ) {
-    parts.push(truncateDisplayText(resourceTitle.value, META_DISPLAY_LIMITS.title))
-  }
-  if (identityValue.value) {
-    const value = truncateDisplayText(identityValue.value, META_DISPLAY_LIMITS.identityValue)
-    parts.push(`${identityLabel.value}: ${value}`)
-  }
-  if (isExcerpt.value && chapterTitle.value) {
-    parts.push(truncateDisplayText(chapterTitle.value, META_DISPLAY_LIMITS.chapterTitle))
-  }
-  if (isExcerpt.value && excerptLocator.value) {
-    const text = resourcePositionDisplay(excerptLocator.value)
-    if (text) parts.push(truncateDisplayText(text, META_DISPLAY_LIMITS.locator))
-  }
-  if (isExcerpt.value && excerptTitle.value) {
-    const title = truncateDisplayText(excerptTitle.value, META_DISPLAY_LIMITS.title)
-    const last = parts[parts.length - 1]
-    const workDisp = workTitle.value
-      ? truncateDisplayText(workTitle.value, META_DISPLAY_LIMITS.workTitle)
-      : ''
-    if (title && title !== last && title !== workDisp) {
-      parts.push(title)
-    }
-  }
-  if (isExcerpt.value && excerptNote.value) {
-    parts.push(truncateDisplayText(excerptNote.value, META_DISPLAY_LIMITS.note))
-  }
-  return parts.filter(Boolean)
-})
+/** Same hierarchy builder as inline meta bars (类型 > 归类 > 实体 > 章节 > 定位 > 节选). */
+const metaPathFields = computed(() => ({
+  resourceTypeName: resourceTypeName.value !== badgeText.value ? resourceTypeName.value : '',
+  workTitle: workTitle.value,
+  resourceTitle: resourceTitle.value !== badgeText.value ? resourceTitle.value : '',
+  chapterTitle: chapterTitle.value,
+  excerptLocator: excerptLocator.value,
+  excerptTitle: excerptTitle.value,
+}))
 
-const metaPath = computed(() => metaPathParts.value.join(' > '))
-const metaPathTitle = computed(() => {
-  const full: string[] = []
-  if (resourceTypeName.value && resourceTypeName.value !== badgeText.value) full.push(resourceTypeName.value)
-  if (workTitle.value) full.push(workTitle.value)
-  else if (resourceTitle.value && resourceTitle.value !== badgeText.value) full.push(resourceTitle.value)
-  if (identityValue.value) full.push(`${identityLabel.value}: ${identityValue.value}`)
-  if (isExcerpt.value && chapterTitle.value) full.push(chapterTitle.value)
-  if (isExcerpt.value && excerptLocator.value) {
-    const text = resourcePositionDisplay(excerptLocator.value)
-    if (text) full.push(text)
-  }
-  if (isExcerpt.value && excerptTitle.value) full.push(excerptTitle.value)
-  if (isExcerpt.value && excerptNote.value) full.push(excerptNote.value)
-  return full.filter(Boolean).join(' > ')
-})
+const metaPath = computed(() => formatResourceMetaPath(metaPathFields.value))
+const metaPathTitle = computed(() => metaPath.value)
 
 const excerptEditorBlocks = computed<Block[]>(() => [{
   id: props.bodyBlockId || 'external-resource-excerpt',

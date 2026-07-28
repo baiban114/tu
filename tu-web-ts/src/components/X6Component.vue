@@ -92,6 +92,14 @@ interface Props {
   blockActionsEnabled?: boolean;
   sourceLoadEnabled?: boolean;
   sourceWriteBackEnabled?: boolean;
+  /** Top editing toolbar (default true). */
+  toolbarEnabled?: boolean;
+  /** Right inspector panel (default true). */
+  inspectorEnabled?: boolean;
+  /** Initial inspector open state when inspectorEnabled (default true). */
+  inspectorDefaultVisible?: boolean;
+  /** Auto-open inspector when a node is selected (default false). */
+  openInspectorOnNodeSelect?: boolean;
 }
 
 type SelectedCellState =
@@ -110,6 +118,9 @@ type SelectedCellState =
       refBlockId: string;
       refType: 'block' | 'page';
       refSourceLabel: string;
+      /** 定位系统 locator（目录思维导图等） */
+      sourceLocator: string;
+      tocEntryId: string;
     }
   | {
       kind: 'edge';
@@ -130,6 +141,10 @@ const props = withDefaults(defineProps<Props>(), {
   blockActionsEnabled: true,
   sourceLoadEnabled: false,
   sourceWriteBackEnabled: false,
+  toolbarEnabled: true,
+  inspectorEnabled: true,
+  inspectorDefaultVisible: true,
+  openInspectorOnNodeSelect: false,
 });
 
 interface InsertRefRequestPayload {
@@ -143,6 +158,8 @@ const emit = defineEmits<{
   (e: 'sync-from-source'): void;
   (e: 'sync-to-source', graphData: GraphData): void;
   (e: 'active'): void;
+  (e: 'navigate-source-locator', payload: { locator: string; label: string; tocEntryId?: string }): void;
+  (e: 'preview-source-content', payload: { locator: string; label: string; tocEntryId?: string }): void;
 }>();
 
 const stageRef = ref<HTMLDivElement | null>(null);
@@ -191,8 +208,8 @@ const mindmapRefTocContext = createMindmapRefTocContext({
   onCollapseSettled: () => settleMindmapCollapseInteraction(),
 });
 const inspectorTab = ref<'inspector' | 'library'>('inspector');
-const toolbarVisible = ref(true);
-const inspectorVisible = ref(true);
+const toolbarVisible = ref(props.toolbarEnabled);
+const inspectorVisible = ref(props.inspectorEnabled && props.inspectorDefaultVisible);
 type CanvasInteractionMode = 'select' | 'pan';
 const canvasInteractionMode = ref<CanvasInteractionMode>('select');
 /** Hold Space to temporarily pan (grab cursor), without changing toolbar mode. */
@@ -241,6 +258,9 @@ const isMindmap = computed(() => isMindmapBlueprint(props.graphData));
 const hasGraphSourceActions = computed(() => props.sourceLoadEnabled || props.sourceWriteBackEnabled);
 const isFillLayout = computed(() => props.layoutMode === 'fill')
 const isNodeEditing = computed(() => editingNodeId.value != null)
+const chromeBare = computed(
+  () => !props.toolbarEnabled && (!props.inspectorEnabled || !inspectorVisible.value),
+)
 const hasExplicitSize = computed(() => props.width != null && props.height != null)
 const editorStyle = computed(() => {
   if (isFillLayout.value) {
@@ -892,7 +912,8 @@ async function ensureMindmapRefOutlineForNode(node: Node) {
 }
 
 async function onMindmapCollapseButtonClick(nodeId: string) {
-  if (!graph || !isEditable.value) return;
+  // Collapse/expand is a view interaction — allow in read-only mindmap previews.
+  if (!graph) return;
   const node = graph.getCellById(nodeId);
   if (!node || !graph.isNode(node)) return;
 
@@ -940,14 +961,17 @@ function settleMindmapCollapseInteraction() {
 }
 
 function handleMindmapNodeCollapse(node: Node) {
-  if (!graph || !isMindmap.value || !isEditable.value) return;
+  if (!graph || !isMindmap.value) return;
   toggleMindmapNodeCollapse(
     graph,
     node,
     readMindmapDirection(props.graphData),
     mindmapRefTocContext,
   );
-  scheduleSync();
+  // Persist collapse only when the canvas is editable; outline preview is ephemeral.
+  if (isEditable.value) {
+    scheduleSync();
+  }
 }
 
 function suspendCanvasInteractionForEdit() {
@@ -1175,6 +1199,8 @@ function refreshSelectedCellState() {
       const refBlockId = typeof nodeData.refBlockId === 'string' ? nodeData.refBlockId : '';
       const refType: 'block' | 'page' = nodeData.refType === 'page' ? 'page' : 'block';
       const isRefBlock = nodeData.refKind === 'block-ref' || Boolean(refBlockId);
+      const sourceLocator = typeof nodeData.sourceLocator === 'string' ? nodeData.sourceLocator.trim() : '';
+      const tocEntryId = typeof nodeData.tocEntryId === 'string' ? nodeData.tocEntryId : '';
       selectedCell.value = {
         kind: 'node',
         id: cell.id,
@@ -1190,6 +1216,8 @@ function refreshSelectedCellState() {
         refBlockId,
         refType,
         refSourceLabel: isRefBlock && refBlockId ? buildRefSourceLabel(refBlockId, refType) : '',
+        sourceLocator,
+        tocEntryId,
       };
     } else if (graph.isEdge(cell)) {
       const router = cell.getRouter();
@@ -1245,6 +1273,15 @@ function reconcileSelectionHighlight() {
  * call `clearTransformWidgets()`), so ctrl/⌘+click leaves corner handles on the
  * last node only. Re-clear when the selection is not exactly one node.
  */
+function openInspectorForNodeSelection() {
+  if (!props.inspectorEnabled || !props.openInspectorOnNodeSelect || !graph) return;
+  const cells = graph.getSelectedCells();
+  if (cells.some((cell) => graph!.isNode(cell))) {
+    inspectorVisible.value = true;
+    inspectorTab.value = 'inspector';
+  }
+}
+
 function finalizeSelectionVisualState() {
   if (!graph) return;
   reconcileSelectionHighlight();
@@ -1252,6 +1289,7 @@ function finalizeSelectionVisualState() {
   if (cells.length !== 1 || !graph.isNode(cells[0])) {
     graph.clearTransformWidgets();
   }
+  openInspectorForNodeSelection();
 }
 
 function scheduleSync() {
@@ -1964,6 +2002,30 @@ async function navigateToRefBlockSource() {
   }
 }
 
+function canNavigateSourceLocator(cell: SelectedCellState | null): boolean {
+  return Boolean(cell && cell.kind === 'node' && cell.sourceLocator);
+}
+
+function navigateToSourceLocator() {
+  const cell = selectedCell.value;
+  if (!canNavigateSourceLocator(cell) || cell?.kind !== 'node') return;
+  emit('navigate-source-locator', {
+    locator: cell.sourceLocator,
+    label: cell.label,
+    ...(cell.tocEntryId ? { tocEntryId: cell.tocEntryId } : {}),
+  });
+}
+
+function previewSourceContent() {
+  const cell = selectedCell.value;
+  if (!canNavigateSourceLocator(cell) || cell?.kind !== 'node') return;
+  emit('preview-source-content', {
+    locator: cell.sourceLocator,
+    label: cell.label,
+    ...(cell.tocEntryId ? { tocEntryId: cell.tocEntryId } : {}),
+  });
+}
+
 function insertRefBlock(
   refId: string,
   refType: 'block' | 'page',
@@ -2091,10 +2153,13 @@ function resetZoom() {
   updateUndoRedoState();
 }
 
-function fitGraph() {
+function fitGraph(options?: { padding?: number; maxScale?: number }) {
   if (!graph) return;
   if (graph.getCellCount() > 0) {
-    graph.zoomToFit({ padding: 24, maxScale: 1 });
+    graph.zoomToFit({
+      padding: options?.padding ?? 24,
+      maxScale: options?.maxScale ?? 1,
+    });
     graph.centerContent();
   } else {
     graph.zoomTo(1);
@@ -2407,6 +2472,7 @@ function bindGraphEvents() {
     reconcileSelectionHighlight();
     refreshSelectedCellState();
     updateMindmapCollapseOverlays();
+    openInspectorForNodeSelection();
   });
 
   graph.on('node:mousedown', ({ node }) => {
@@ -2589,14 +2655,17 @@ function bindGraphEvents() {
   });
 
   graph.on('edge:mouseenter', ({ view }) => {
-    view.addTools({
-      items: [
-        { name: 'vertices' },
-        { name: 'source-arrowhead' },
-        { name: 'target-arrowhead' },
-        { name: 'button-remove', args: { distance: -30 } },
-      ],
-    });
+    if (!isEditable.value) return;
+    const items: Array<{ name: string; args?: Record<string, unknown> }> = [
+      { name: 'vertices' },
+      { name: 'source-arrowhead' },
+      { name: 'target-arrowhead' },
+    ];
+    // Mindmap: delete via selection + Delete/toolbar, not an on-edge remove button.
+    if (!isMindmap.value) {
+      items.push({ name: 'button-remove', args: { distance: -30 } });
+    }
+    view.addTools({ items });
   });
 
   graph.on('edge:mouseleave', ({ view }) => {
@@ -2844,6 +2913,26 @@ watch(
 );
 
 watch(
+  () => props.toolbarEnabled,
+  (enabled) => {
+    toolbarVisible.value = enabled;
+  },
+);
+
+watch(
+  () => props.inspectorEnabled,
+  (enabled) => {
+    if (!enabled) {
+      inspectorVisible.value = false;
+      return;
+    }
+    if (props.inspectorDefaultVisible) {
+      inspectorVisible.value = true;
+    }
+  },
+);
+
+watch(
   () => [props.width, props.height] as const,
   ([w, h]) => {
     if (!graph || !stageRef.value || w == null || h == null) return;
@@ -2859,6 +2948,7 @@ defineExpose({
   updateInsertedLinkDisplay,
   updateInsertedImageWidth,
   insertRefBlock,
+  fitGraph,
 });
 </script>
 
@@ -2869,13 +2959,17 @@ defineExpose({
       'x6-editor--sized': hasExplicitSize,
       'x6-editor--fill': isFillLayout,
       'x6-editor--node-editing': isFillLayout && isNodeEditing,
+      'x6-editor--mindmap': isMindmap,
+      'x6-editor--chrome-compact': isMindmap && !chromeBare,
+      'x6-editor--chrome-bare': chromeBare,
+      'x6-editor--readonly': !isEditable,
     }"
     :style="editorStyle"
     @mousedown.stop="emit('active')"
     @click.stop
     @dblclick.stop
   >
-    <div v-if="toolbarVisible" class="x6-toolbar">
+    <div v-if="toolbarEnabled && toolbarVisible" class="x6-toolbar">
       <div class="toolbar-group">
         <button type="button" class="tool-button tool-button--icon" title="切换工具栏" @click="toolbarVisible = false">
           ⊖
@@ -2987,7 +3081,7 @@ defineExpose({
         <button type="button" class="tool-button" @click="zoomOut">缩小</button>
         <button type="button" class="tool-button" @click="zoomIn">放大</button>
         <button type="button" class="tool-button" @click="resetZoom">100%</button>
-        <button type="button" class="tool-button" @click="fitGraph">适配</button>
+        <button type="button" class="tool-button" @click="() => fitGraph()">适配</button>
         <button type="button" class="tool-button" @click="centerGraph">居中</button>
         <button type="button" class="tool-button" @click="toggleGrid">
           {{ gridVisible ? '隐藏网格' : '显示网格' }}
@@ -3019,16 +3113,20 @@ defineExpose({
         </button>
       </div>
     </div>
-    <div v-if="!toolbarVisible || !inspectorVisible" class="x6-restore-bar">
-      <button v-if="!toolbarVisible" type="button" class="x6-restore-button" title="显示工具栏" @click="toolbarVisible = true">
+    <div
+      v-if="(toolbarEnabled && !toolbarVisible) || (inspectorEnabled && !inspectorVisible)"
+      class="x6-restore-bar"
+      :class="{ 'x6-restore-bar--floating': !toolbarEnabled }"
+    >
+      <button v-if="toolbarEnabled && !toolbarVisible" type="button" class="x6-restore-button" title="显示工具栏" @click="toolbarVisible = true">
         ⊞ 工具栏
       </button>
-      <button v-if="!inspectorVisible" type="button" class="x6-restore-button" title="显示侧边栏" @click="inspectorVisible = true">
+      <button v-if="inspectorEnabled && !inspectorVisible" type="button" class="x6-restore-button" title="显示侧边栏" @click="inspectorVisible = true">
         ⊞ 侧边栏
       </button>
     </div>
 
-    <div class="x6-workspace" :class="{ 'x6-workspace--no-inspector': !inspectorVisible }">
+    <div class="x6-workspace" :class="{ 'x6-workspace--no-inspector': !inspectorEnabled || !inspectorVisible }">
       <div
         ref="stageRef"
         class="x6-stage"
@@ -3084,7 +3182,7 @@ defineExpose({
           :style="btn.style"
           :title="btn.collapsed ? '展开子节点' : '收起子节点'"
           :aria-label="btn.collapsed ? '展开子节点' : '收起子节点'"
-          :disabled="!isEditable || mindmapCollapseLoadingNodeId === btn.nodeId"
+          :disabled="mindmapCollapseLoadingNodeId === btn.nodeId"
           @mousedown.stop
           @click.stop="void onMindmapCollapseButtonClick(btn.nodeId)"
           @mouseenter="showMindmapCollapseForNode(btn.nodeId)"
@@ -3130,7 +3228,7 @@ defineExpose({
         </div>
       </div>
 
-      <aside v-if="inspectorVisible" class="x6-inspector">
+      <aside v-if="inspectorEnabled && inspectorVisible" class="x6-inspector">
         <!-- Tab navigation -->
         <div class="x6-inspector-tabs">
           <button
@@ -3150,6 +3248,7 @@ defineExpose({
             属性
           </button>
           <button
+            v-if="blockActionsEnabled"
             type="button"
             class="x6-inspector-tab"
             :class="{ active: inspectorTab === 'library' }"
@@ -3227,6 +3326,45 @@ defineExpose({
                 @click="void syncSelectedMindmapRefBlockTocFromSource()"
               >
                 从目录同步
+              </button>
+            </div>
+
+            <div v-else-if="selectedCell.sourceLocator" class="field">
+              <span>定位（链接）</span>
+              <div class="inspector-source-row">
+                <input
+                  type="text"
+                  class="inspector-source-row__input"
+                  :value="selectedCell.sourceLocator"
+                  readonly
+                  tabindex="-1"
+                  title="定位系统 locator"
+                />
+                <button
+                  type="button"
+                  class="inspector-source-row__jump"
+                  title="跳转到来源位置"
+                  @click="navigateToSourceLocator"
+                >
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path
+                      d="M14 5h5v5M10 14L19 5M19 10v9a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h9"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="1.8"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                    />
+                  </svg>
+                </button>
+              </div>
+              <button
+                type="button"
+                class="tool-button"
+                title="在思维导图中打开窗口查看来源内容"
+                @click="previewSourceContent"
+              >
+                查看内容
               </button>
             </div>
 
@@ -3368,6 +3506,7 @@ defineExpose({
 
 <style scoped>
 .x6-editor {
+  position: relative;
   width: 100%;
   border: 1px solid #e3e7ef;
   border-radius: 14px;
@@ -3411,6 +3550,55 @@ defineExpose({
   backdrop-filter: blur(8px);
 }
 
+.x6-editor--chrome-compact .x6-toolbar {
+  gap: 6px;
+  padding: 4px 8px;
+}
+
+.x6-editor--chrome-compact .toolbar-group {
+  gap: 4px;
+}
+
+.x6-editor--chrome-compact .tool-button {
+  padding: 3px 8px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.x6-editor--chrome-compact .tool-button--icon {
+  padding: 3px 4px;
+  min-width: 26px;
+  font-size: 13px;
+}
+
+.x6-editor--chrome-compact .tool-button--mode {
+  min-width: 28px;
+  padding: 3px;
+}
+
+.x6-editor--chrome-compact .tool-button__mode-icon {
+  width: 14px;
+  height: 14px;
+}
+
+.x6-editor--chrome-compact .toolbar-group--interaction {
+  padding: 1px;
+  border-radius: 8px;
+}
+
+.x6-editor--chrome-compact .toolbar-summary {
+  font-size: 11px;
+}
+
+.x6-editor--mindmap .x6-workspace {
+  grid-template-columns: minmax(0, 1fr) 200px;
+}
+
+.x6-editor--mindmap .x6-workspace--no-inspector {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .x6-toolbar-restore {
   display: block;
   width: 100%;
@@ -3435,6 +3623,20 @@ defineExpose({
   padding: 4px 14px;
   border-bottom: 1px solid #e3e7ef;
   background: rgba(255, 255, 255, 0.7);
+}
+
+.x6-restore-bar--floating {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 30;
+  padding: 0;
+  border: none;
+  background: transparent;
+}
+
+.x6-restore-bar--floating .x6-restore-button {
+  box-shadow: 0 1px 4px rgba(15, 23, 42, 0.12);
 }
 
 .x6-restore-button {
@@ -3616,6 +3818,31 @@ defineExpose({
 }
 .x6-workspace--no-inspector {
   grid-template-columns: minmax(0, 1fr);
+}
+
+.x6-editor--chrome-bare {
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  border: none;
+  background: transparent;
+  overflow: hidden;
+}
+
+.x6-editor--chrome-bare .x6-workspace,
+.x6-editor--chrome-bare .x6-workspace--no-inspector {
+  flex: 1;
+  min-height: 0;
+  height: 100%;
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.x6-editor--chrome-bare .x6-stage {
+  height: 100%;
+  min-height: 0;
+  border-right: none;
+  border-bottom: none;
 }
 
 .x6-stage--library .x6-canvas {
@@ -4052,6 +4279,20 @@ defineExpose({
 
 .x6-canvas :deep(.x6-node [magnet='true']:hover) {
   transform: scale(1.12);
+}
+
+/* Read-only preview: no connect magnets; avoid not-allowed cursor on non-movable nodes. */
+.x6-editor--readonly .x6-canvas :deep(.x6-node [magnet='true']),
+.x6-editor--readonly .x6-canvas :deep(.x6-node:hover [magnet='true']),
+.x6-editor--readonly .x6-canvas :deep(.x6-node.x6-node-selected [magnet='true']) {
+  visibility: hidden !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
+
+.x6-editor--readonly .x6-stage--interaction-select :deep(.x6-node),
+.x6-editor--readonly .x6-stage--interaction-select :deep(.x6-edge) {
+  cursor: default !important;
 }
 
 .x6-editor--sized {

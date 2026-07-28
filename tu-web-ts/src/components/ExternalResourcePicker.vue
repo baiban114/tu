@@ -95,9 +95,11 @@ const types = ref<ResourceType[]>([])
 const items = ref<ResourceItem[]>([])
 const excerpts = ref<ResourceExcerpt[]>([])
 const excerptIndex = ref<Record<string, ResourceExcerpt[]>>({})
+const chapterIndex = ref<Record<string, ResourceChapter[]>>({})
 const chapters = ref<ResourceChapter[]>([])
 const selectedItemId = ref('')
 const selectedExcerptId = ref('')
+const selectedChapterId = ref('')
 const selectedAccessUrl = ref('')
 const insertingWholeResource = ref(false)
 const createResourceVisible = ref(false)
@@ -257,14 +259,28 @@ function itemSupportsExcerpts(item: ResourceItem) {
   return supportsResourceExcerpts(typeById.value.get(item.typeId)?.code)
 }
 
+function itemSupportsChapters(item: ResourceItem) {
+  return supportsBookChapters(typeById.value.get(item.typeId)?.code)
+}
+
 function listExcerptsForItem(itemId: string): ResourceExcerpt[] {
   return excerptIndex.value[itemId] ?? []
+}
+
+function listChaptersForItem(itemId: string): ResourceChapter[] {
+  return chapterIndex.value[itemId] ?? []
 }
 
 const selectedExcerpt = computed(() => {
   if (!selectedExcerptId.value) return null
   const list = listExcerptsForItem(selectedItemId.value)
   return (list.length ? list : excerpts.value).find((item) => item.id === selectedExcerptId.value) || null
+})
+
+const selectedChapter = computed(() => {
+  if (!selectedChapterId.value) return null
+  const list = listChaptersForItem(selectedItemId.value)
+  return (list.length ? list : chapters.value).find((item) => item.id === selectedChapterId.value) || null
 })
 
 const bindLikeConfirmLabel = computed(() => (
@@ -281,6 +297,19 @@ async function ensureItemExcerptsLoaded(itemId: string) {
     }
   } catch {
     excerptIndex.value = { ...excerptIndex.value, [itemId]: [] }
+  }
+}
+
+async function ensureItemChaptersLoaded(itemId: string) {
+  if (itemId in chapterIndex.value) return
+  try {
+    const list = await listResourceChapters(itemId)
+    chapterIndex.value = { ...chapterIndex.value, [itemId]: list }
+    if (selectedItemId.value === itemId) {
+      chapters.value = list
+    }
+  } catch {
+    chapterIndex.value = { ...chapterIndex.value, [itemId]: [] }
   }
 }
 
@@ -313,20 +342,39 @@ const loadExcerptIndex = async () => {
   })
   if (excerptItems.length === 0) {
     excerptIndex.value = {}
-    return
+  } else {
+    const entries = await Promise.all(
+      excerptItems.map(async (item) => {
+        try {
+          const result = await listResourceExcerpts(item.id, { page: 0, pageSize: MAX_PAGE_SIZE })
+          return [item.id, result.items] as const
+        } catch {
+          return [item.id, []] as const
+        }
+      }),
+    )
+    excerptIndex.value = Object.fromEntries(entries)
   }
 
-  const entries = await Promise.all(
-    excerptItems.map(async (item) => {
+  const bookItems = items.value.filter((item) => {
+    const type = typeById.value.get(item.typeId)
+    return supportsBookChapters(type?.code)
+  })
+  if (bookItems.length === 0) {
+    chapterIndex.value = {}
+    return
+  }
+  const chapterEntries = await Promise.all(
+    bookItems.map(async (item) => {
       try {
-        const result = await listResourceExcerpts(item.id, { page: 0, pageSize: MAX_PAGE_SIZE })
-        return [item.id, result.items] as const
+        const list = await listResourceChapters(item.id)
+        return [item.id, list] as const
       } catch {
         return [item.id, []] as const
       }
     }),
   )
-  excerptIndex.value = Object.fromEntries(entries)
+  chapterIndex.value = Object.fromEntries(chapterEntries)
 }
 
 const loadResources = async () => {
@@ -427,6 +475,12 @@ const loadExcerpts = async () => {
       ...excerptIndex.value,
       [selectedItem.value.id]: result.items,
     }
+    if (selectedSupportsBookChapters.value) {
+      chapterIndex.value = {
+        ...chapterIndex.value,
+        [selectedItem.value.id]: chapterList,
+      }
+    }
   } catch (err) {
     error.value = err instanceof Error ? err.message : '加载节选失败'
   } finally {
@@ -434,7 +488,7 @@ const loadExcerpts = async () => {
   }
 }
 
-const snapshotFor = (item: ResourceItem, excerpt?: ResourceExcerpt) => ({
+const snapshotFor = (item: ResourceItem, excerpt?: ResourceExcerpt, chapter?: ResourceChapter) => ({
   resourceTitle: item.title,
   resourceTypeName: item.typeName,
   workTitle: item.workTitle || undefined,
@@ -443,9 +497,9 @@ const snapshotFor = (item: ResourceItem, excerpt?: ResourceExcerpt) => ({
   sourceUrl: item.sourceUrl,
   edition: item.edition,
   note: item.note,
-  excerptTitle: excerpt?.title,
-  chapterTitle: excerpt?.chapterTitle || undefined,
-  excerptLocator: excerpt?.locator,
+  excerptTitle: excerpt?.title || undefined,
+  chapterTitle: excerpt?.chapterTitle || chapter?.title || undefined,
+  excerptLocator: excerpt?.locator || chapter?.locator || undefined,
   excerptText: excerpt?.excerptText,
   excerptNote: excerpt?.note,
 })
@@ -541,37 +595,74 @@ const emitBindLike = (externalResource: ExternalResourceEmbedData) => {
   emit('update:visible', false)
 }
 
+function onBrowseItemSelect(item: ResourceItem) {
+  selectedItemId.value = item.id
+  selectedExcerptId.value = ''
+  selectedChapterId.value = ''
+}
+
 /** Left tree click only selects; association happens via the right-pane confirm button. */
 function onBrowseExcerptSelect(item: ResourceItem, excerpt: ResourceExcerpt) {
   const itemChanged = selectedItemId.value !== item.id
   selectedItemId.value = item.id
+  selectedChapterId.value = ''
   if (itemChanged) {
-    // selectedItemId watch clears excerpt id; restore after that flush.
+    // selectedItemId watch clears excerpt/chapter ids; restore after that flush.
     void nextTick(() => {
       selectedExcerptId.value = excerpt.id
+      selectedChapterId.value = ''
     })
     return
   }
   selectedExcerptId.value = excerpt.id
 }
 
+function onBrowseChapterSelect(item: ResourceItem, chapter: ResourceChapter) {
+  const itemChanged = selectedItemId.value !== item.id
+  selectedItemId.value = item.id
+  selectedExcerptId.value = ''
+  if (itemChanged) {
+    void nextTick(() => {
+      selectedChapterId.value = chapter.id
+      selectedExcerptId.value = ''
+    })
+    return
+  }
+  selectedChapterId.value = chapter.id
+}
+
 const selectResourceForBasis = (item: ResourceItem) => {
   emitBindLike({
     resourceItemId: item.id,
     resourceExcerptId: null,
+    resourceChapterId: null,
     mode: 'resource',
     snapshot: snapshotFor(item),
+  })
+}
+
+const selectChapterForBasis = (item: ResourceItem, chapter: ResourceChapter) => {
+  emitBindLike({
+    resourceItemId: item.id,
+    resourceExcerptId: null,
+    resourceChapterId: chapter.id,
+    mode: 'chapter',
+    snapshot: snapshotFor(item, undefined, chapter),
   })
 }
 
 const selectExcerpt = (excerpt: ResourceExcerpt) => {
   const item = selectedItem.value
   if (!item) return
+  const chapter = excerpt.chapterId
+    ? listChaptersForItem(item.id).find((entry) => entry.id === excerpt.chapterId)
+    : undefined
   const externalResource: ExternalResourceEmbedData = {
     resourceItemId: item.id,
     resourceExcerptId: excerpt.id,
+    resourceChapterId: excerpt.chapterId ?? null,
     mode: 'excerpt',
-    snapshot: snapshotFor(item, excerpt),
+    snapshot: snapshotFor(item, excerpt, chapter),
   }
   if (isBindLikeMode.value) {
     emitBindLike(externalResource)
@@ -603,6 +694,34 @@ const confirmSelectedExcerpt = () => {
   if (!excerpt) return
   selectExcerpt(excerpt)
 }
+
+const confirmSelectedChapter = () => {
+  const item = selectedItem.value
+  const chapter = selectedChapter.value
+  if (!item || !chapter || !isSetBasisMode.value) return
+  selectChapterForBasis(item, chapter)
+}
+
+/** Confirm whatever locator level is currently selected (setBasis / bindSource / markExcerpt). */
+const confirmSelectedLocator = () => {
+  if (selectedExcerpt.value) {
+    confirmSelectedExcerpt()
+    return
+  }
+  if (isSetBasisMode.value && selectedChapter.value && selectedItem.value) {
+    confirmSelectedChapter()
+    return
+  }
+  if (isSetBasisMode.value && selectedItem.value && !selectedExcerptId.value && !selectedChapterId.value) {
+    selectResourceForBasis(selectedItem.value)
+  }
+}
+
+const setBasisConfirmLabel = computed(() => {
+  if (selectedExcerpt.value) return '确认设为依据（节选）'
+  if (selectedChapter.value) return '确认设为依据（章节）'
+  return '确认设为依据（资源实体）'
+})
 
 const createAndInsertExcerpt = async () => {
   const item = selectedItem.value
@@ -649,6 +768,7 @@ watch(() => props.visible, (visible) => {
   listPage.value = 0
   createResourceVisible.value = false
   selectedExcerptId.value = ''
+  selectedChapterId.value = ''
   // Fresh session for locator modes so the first row is not left highlighted.
   if (isExcerptOnlyMode.value) selectedItemId.value = ''
   resetExcerptForm()
@@ -678,6 +798,7 @@ watch(() => [props.initialExcerptText, props.initialExcerptTitle, props.mode], (
 
 watch(selectedItemId, () => {
   selectedExcerptId.value = ''
+  selectedChapterId.value = ''
   selectedAccessUrl.value = defaultAccessUrl(selectedItem.value?.accessUrls)
   void loadExcerpts()
 })
@@ -725,39 +846,44 @@ watch(selectedAccessUrls, (urls) => {
           <div class="resource-picker__list-scroll">
             <ResourceLocatorBrowse
               v-if="isExcerptOnlyMode"
+              class="resource-picker__locator-browse"
               :items="filteredItems"
               :excerpt-index="excerptIndex"
+              :chapter-index="chapterIndex"
               :selected-item-id="selectedItemId"
               :selected-excerpt-id="selectedExcerptId"
+              :selected-chapter-id="selectedChapterId"
               :keyword="keyword"
               :loading="loading"
               :item-supports-excerpts="itemSupportsExcerpts"
+              :item-supports-chapters="itemSupportsChapters"
               empty-description="没有找到外部资源"
               @update:selected-item-id="selectedItemId = $event"
+              @select-item="onBrowseItemSelect"
               @select-excerpt="onBrowseExcerptSelect"
+              @select-chapter="onBrowseChapterSelect"
               @ensure-excerpts="ensureItemExcerptsLoaded"
+              @ensure-chapters="ensureItemChaptersLoaded"
             />
-            <template v-else>
-              <el-scrollbar>
-                <button
-                  v-for="item in pagedFilteredItems"
-                  :key="item.id"
-                  type="button"
-                  class="resource-picker__item"
-                  :class="{ 'resource-picker__item--active': selectedItemId === item.id }"
-                  @click="selectedItemId = item.id"
-                >
-                  <span class="resource-picker__item-title">{{ item.title }}</span>
-                  <small>{{ item.typeName }} · {{ item.workTitle || '未归类' }} · {{ item.identityFieldLabel }}: {{ item.identityValue || '未填写' }}</small>
-                </button>
-                <div v-if="!loading && pagedFilteredItems.length === 0" class="resource-picker__empty-slot">
-                  <el-empty
-                    :description="isLinkDocumentMode ? '没有找到文档资源' : '没有找到外部资源'"
-                    :image-size="64"
-                  />
-                </div>
-              </el-scrollbar>
-            </template>
+            <el-scrollbar v-else class="resource-picker__list-scrollbar">
+              <button
+                v-for="item in pagedFilteredItems"
+                :key="item.id"
+                type="button"
+                class="resource-picker__item"
+                :class="{ 'resource-picker__item--active': selectedItemId === item.id }"
+                @click="selectedItemId = item.id"
+              >
+                <span class="resource-picker__item-title">{{ item.title }}</span>
+                <small>{{ item.typeName }} · {{ item.workTitle || '未归类' }} · {{ item.identityFieldLabel }}: {{ item.identityValue || '未填写' }}</small>
+              </button>
+              <div v-if="!loading && pagedFilteredItems.length === 0" class="resource-picker__empty-slot">
+                <el-empty
+                  :description="isLinkDocumentMode ? '没有找到文档资源' : '没有找到外部资源'"
+                  :image-size="64"
+                />
+              </div>
+            </el-scrollbar>
           </div>
           <div v-if="isLinkDocumentMode && listTotal > 0" class="resource-picker__list-footer">
             <el-pagination
@@ -823,7 +949,10 @@ watch(selectedAccessUrls, (urls) => {
             </div>
           </form>
           <template v-else-if="selectedItem">
-            <div class="resource-picker__detail-body">
+            <div
+              class="resource-picker__detail-body"
+              :class="{ 'resource-picker__detail-body--locator': isExcerptOnlyMode }"
+            >
               <div class="resource-picker__detail-meta">
                 <div class="resource-picker__section-title">{{ isLinkDocumentMode ? linkSectionTitle : isSetBasisMode ? '选择依据资料' : isBindSourceMode ? '绑定来源' : '插入' }}</div>
                 <h3 class="resource-picker__detail-title">{{ selectedItem.title }}</h3>
@@ -831,15 +960,7 @@ watch(selectedAccessUrls, (urls) => {
                 <p>{{ selectedItem.identityFieldLabel }}: {{ selectedItem.identityValue || '未填写' }}</p>
                 <a v-if="selectedItem.sourceUrl" :href="selectedItem.sourceUrl" target="_blank" rel="noreferrer">{{ selectedItem.sourceUrl }}</a>
               </div>
-              <button
-                v-if="isSetBasisMode"
-                type="button"
-                class="resource-picker__primary"
-                @click="selectResourceForBasis(selectedItem)"
-              >
-                挂靠此资源实体
-              </button>
-              <template v-else-if="!isLinkDocumentMode && !isExcerptOnlyMode">
+              <template v-if="!isLinkDocumentMode && !isExcerptOnlyMode">
                 <label class="resource-picker__access-url">
                   <span class="resource-picker__access-url-label">访问地址</span>
                   <select
@@ -871,35 +992,67 @@ watch(selectedAccessUrls, (urls) => {
                 </button>
               </template>
 
-              <div v-if="!isLinkDocumentMode && selectedSupportsExcerpts" class="resource-picker__excerpts">
+              <div
+                v-if="!isLinkDocumentMode && (selectedSupportsExcerpts || isSetBasisMode)"
+                class="resource-picker__excerpts"
+                :class="{ 'resource-picker__excerpts--locator': isExcerptOnlyMode }"
+              >
                 <template v-if="isMarkExcerptMode || isBindLikeMode">
-                  <div class="resource-picker__section-title">
-                    {{ isMarkExcerptMode ? '已选节选' : (isSetBasisMode ? '已选依据' : '已选来源') }}
-                  </div>
-                  <template v-if="selectedExcerpt">
-                    <div class="resource-picker__selected-excerpt">
-                      <strong class="resource-picker__selected-excerpt-title">{{ selectedExcerpt.title }}</strong>
-                      <small v-if="selectedExcerpt.chapterTitle">章节：{{ selectedExcerpt.chapterTitle }}</small>
-                      <small v-if="selectedExcerpt.locator">
-                        {{ resourcePositionDisplay(selectedExcerpt.locator) || selectedExcerpt.locator }}
-                      </small>
-                      <em v-if="selectedExcerpt.excerptText" class="resource-picker__selected-excerpt-body">
-                        {{ selectedExcerpt.excerptText }}
-                      </em>
-                      <small v-else-if="selectedExcerpt.note">{{ selectedExcerpt.note }}</small>
+                  <div class="resource-picker__locator-pane">
+                    <div class="resource-picker__section-title">
+                      {{ isMarkExcerptMode ? '已选节选' : (isSetBasisMode ? '已选依据' : '已选来源') }}
                     </div>
-                    <button
-                      type="button"
-                      class="resource-picker__primary"
-                      @click="confirmSelectedExcerpt"
-                    >
-                      {{ isMarkExcerptMode ? '添加' : bindLikeConfirmLabel }}
-                    </button>
-                  </template>
-                  <p v-else class="resource-picker__empty">
-                    在左侧展开资源并点击节选，右侧将显示其信息；确认后再{{ isMarkExcerptMode ? '添加标记' : (isSetBasisMode ? '设为依据' : '绑定来源') }}。
-                    <template v-if="isSetBasisMode">也可直接「挂靠此资源实体」。</template>
-                  </p>
+                    <template v-if="selectedSupportsExcerpts || selectedExcerpt || selectedChapter || isSetBasisMode">
+                      <div v-if="selectedExcerpt" class="resource-picker__selected-excerpt">
+                        <strong class="resource-picker__selected-excerpt-title">{{ selectedExcerpt.title }}</strong>
+                        <small v-if="selectedExcerpt.chapterTitle">章节：{{ selectedExcerpt.chapterTitle }}</small>
+                        <small v-if="selectedExcerpt.locator">
+                          {{ resourcePositionDisplay(selectedExcerpt.locator) || selectedExcerpt.locator }}
+                        </small>
+                        <em v-if="selectedExcerpt.excerptText" class="resource-picker__selected-excerpt-body">
+                          {{ selectedExcerpt.excerptText }}
+                        </em>
+                        <small v-else-if="selectedExcerpt.note">{{ selectedExcerpt.note }}</small>
+                      </div>
+                      <div v-else-if="selectedChapter" class="resource-picker__selected-excerpt">
+                        <strong class="resource-picker__selected-excerpt-title">{{ selectedChapter.title }}</strong>
+                        <small>图书章节</small>
+                        <small v-if="selectedChapter.locator">
+                          {{ resourcePositionDisplay(selectedChapter.locator) || selectedChapter.locator }}
+                        </small>
+                        <small v-else-if="selectedChapter.note">{{ selectedChapter.note }}</small>
+                      </div>
+                      <div v-else class="resource-picker__locator-hint">
+                        <p class="resource-picker__empty">
+                          <template v-if="isSetBasisMode">
+                            在左侧选择任意层级：资源实体、章节或节选，右侧确认后设为依据。
+                          </template>
+                          <template v-else>
+                            在左侧展开资源并点击节选，右侧将显示其信息；确认后再{{ isMarkExcerptMode ? '添加标记' : '绑定来源' }}。
+                          </template>
+                        </p>
+                      </div>
+                      <button
+                        v-if="selectedExcerpt || (isSetBasisMode && selectedItem)"
+                        type="button"
+                        class="resource-picker__primary resource-picker__primary--confirm"
+                        @click="confirmSelectedLocator"
+                      >
+                        {{
+                          isMarkExcerptMode
+                            ? '添加'
+                            : isSetBasisMode
+                              ? setBasisConfirmLabel
+                              : bindLikeConfirmLabel
+                        }}
+                      </button>
+                    </template>
+                    <div v-else class="resource-picker__locator-hint">
+                      <p class="resource-picker__empty">
+                        当前资源类型不支持节选。
+                      </p>
+                    </div>
+                  </div>
                   <div v-if="isMarkExcerptMode || isBindSourceMode" class="resource-picker__section-title">
                     {{ isMarkExcerptMode ? '或新建节选' : '或新建并绑定' }}
                   </div>
@@ -923,7 +1076,7 @@ watch(selectedAccessUrls, (urls) => {
                   </p>
                 </template>
 
-                <form v-if="!isSetBasisMode" class="resource-picker__form" @submit.prevent="createAndInsertExcerpt">
+                <form v-if="!isSetBasisMode && selectedSupportsExcerpts" class="resource-picker__form" @submit.prevent="createAndInsertExcerpt">
                   <div class="resource-picker__form-fields">
                     <input v-model.trim="excerptForm.title" placeholder="节选标题" required maxlength="255" />
                     <el-tree-select
@@ -996,22 +1149,31 @@ watch(selectedAccessUrls, (urls) => {
 </template>
 
 <style scoped>
+/* Fixed dialog shell height; body + .resource-picker stretch to fill (no dead gap under content). */
+.resource-picker-dialog.tu-dialog-viewport {
+  height: min(640px, calc(100dvh - 32px));
+  max-height: calc(100dvh - 32px);
+}
+
 .resource-picker-dialog :deep(.el-dialog__body) {
   display: flex;
   flex-direction: column;
+  flex: 1 1 0;
   min-height: 0;
-  padding-top: 8px;
+  height: 100%;
+  overflow: hidden;
+  padding: 8px 16px 16px;
+  box-sizing: border-box;
 }
 
 .resource-picker {
   display: flex;
   flex-direction: column;
   gap: 12px;
-  flex: 1;
-  /* Fixed display region: do not grow/shrink with list or detail content length. */
-  height: min(560px, calc(100dvh - 140px));
-  min-height: min(560px, calc(100dvh - 140px));
-  max-height: calc(100dvh - 120px);
+  flex: 1 1 0;
+  min-height: 0;
+  height: 100%;
+  width: 100%;
   box-sizing: border-box;
 }
 
@@ -1020,7 +1182,7 @@ watch(selectedAccessUrls, (urls) => {
 }
 
 .resource-picker__layout {
-  flex: 1;
+  flex: 1 1 0;
   min-height: 0;
   display: grid;
   grid-template-columns: minmax(240px, 1fr) minmax(280px, 1.1fr);
@@ -1045,12 +1207,37 @@ watch(selectedAccessUrls, (urls) => {
 
 .resource-picker__list-scroll,
 .resource-picker__detail-scroll {
-  flex: 1;
+  position: relative;
+  flex: 1 1 0;
   min-height: 0;
   overflow: hidden;
+  display: flex;
+  flex-direction: column;
 }
 
-.resource-picker__list-scroll :deep(.el-scrollbar) {
+/* Locator browse fills the list scroll slot (absolute so short lists cannot shrink the pane). */
+.resource-picker__locator-browse {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  width: 100% !important;
+  height: 100% !important;
+  flex: none;
+  min-height: 0;
+}
+
+.resource-picker__list-scrollbar {
+  flex: 1 1 0;
+  min-height: 0;
+  width: 100%;
+  height: 100%;
+  align-self: stretch;
+}
+
+.resource-picker__list-scrollbar :deep(.el-scrollbar),
+.resource-picker__list-scrollbar :deep(.el-scrollbar__wrap) {
   height: 100%;
 }
 
@@ -1068,12 +1255,6 @@ watch(selectedAccessUrls, (urls) => {
   border-top: 1px solid #e5e7eb;
 }
 
-.resource-picker__detail-scroll {
-  overflow-y: auto;
-  display: flex;
-  flex-direction: column;
-}
-
 .resource-picker__detail-body {
   display: flex;
   flex-direction: column;
@@ -1082,8 +1263,47 @@ watch(selectedAccessUrls, (urls) => {
   box-sizing: border-box;
 }
 
+/* Pin locator detail to the scroll slot; 1fr middle row forces info pane to eat leftover space. */
+.resource-picker__detail-body--locator {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  grid-auto-rows: auto;
+  grid-template-columns: minmax(0, 1fr);
+  align-content: stretch;
+  row-gap: 12px;
+  flex: none;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.resource-picker__detail-scroll:has(.resource-picker__detail-body--locator),
+.resource-picker__detail-scroll:has(> .resource-picker__empty-slot) {
+  overflow: hidden;
+}
+
+.resource-picker__detail-scroll:not(:has(.resource-picker__detail-body--locator)):not(:has(> .resource-picker__empty-slot)) {
+  overflow-y: auto;
+}
+
 .resource-picker__detail-meta {
   flex-shrink: 0;
+}
+
+.resource-picker__detail-body--locator > .resource-picker__detail-meta,
+.resource-picker__detail-body--locator > .resource-picker__detail-footer {
+  flex-shrink: 0;
+}
+
+.resource-picker__detail-body--locator > .resource-picker__excerpts--locator {
+  min-height: 0;
+  height: 100%;
+  margin-top: 0;
 }
 
 .resource-picker__access-url {
@@ -1141,18 +1361,29 @@ watch(selectedAccessUrls, (urls) => {
 
 .resource-picker__detail-footer {
   flex-shrink: 0;
-  margin-top: 10px;
+  margin-top: 0;
   padding-top: 10px;
   border-top: 1px solid #e5e7eb;
 }
 
 .resource-picker__empty-slot {
+  position: absolute;
+  inset: 0;
   display: flex;
   align-items: center;
   justify-content: center;
-  min-height: 100%;
-  height: 100%;
+  min-height: 0;
+  height: auto;
   box-sizing: border-box;
+}
+
+/* List empty state stays in-flow inside scrollbar view. */
+.resource-picker__list-scrollbar .resource-picker__empty-slot,
+.resource-locator-browse__empty-slot {
+  position: static;
+  flex: 1;
+  min-height: 160px;
+  height: 100%;
 }
 
 .resource-picker__section-title {
@@ -1218,15 +1449,34 @@ watch(selectedAccessUrls, (urls) => {
 .resource-picker__selected-excerpt {
   display: grid;
   gap: 4px;
-  min-height: 72px;
-  max-height: 160px;
+  align-content: start;
+  flex: 1 1 0;
+  min-height: 0;
   overflow: auto;
-  margin-bottom: 8px;
+  margin-bottom: 0;
   padding: 10px 12px;
   border: 1px solid #e5e7eb;
   border-radius: 8px;
   background: #f8fafc;
   box-sizing: border-box;
+}
+
+.resource-picker__locator-hint {
+  display: flex;
+  flex: 1 1 0;
+  align-items: center;
+  justify-content: center;
+  min-height: 0;
+  padding: 16px;
+  border: 1px dashed #e2e8f0;
+  border-radius: 8px;
+  background: #f8fafc;
+  box-sizing: border-box;
+}
+
+.resource-picker__locator-hint .resource-picker__empty {
+  text-align: center;
+  line-height: 1.55;
 }
 
 .resource-picker__selected-excerpt-title {
@@ -1248,7 +1498,7 @@ watch(selectedAccessUrls, (urls) => {
 .resource-picker__selected-excerpt-body {
   display: -webkit-box;
   -webkit-box-orient: vertical;
-  -webkit-line-clamp: 4;
+  -webkit-line-clamp: 8;
   overflow: hidden;
   color: #475569;
   font-size: 12px;
@@ -1360,10 +1610,43 @@ watch(selectedAccessUrls, (urls) => {
   margin-top: 12px;
 }
 
+.resource-picker__primary--confirm {
+  flex-shrink: 0;
+  width: 100%;
+  margin-top: 8px;
+}
+
 .resource-picker__excerpts {
   display: grid;
   gap: 8px;
   margin-top: 16px;
+}
+
+.resource-picker__excerpts--locator {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 0;
+  min-height: 0;
+  margin-top: 12px;
+  overflow: hidden;
+}
+
+.resource-picker__locator-pane {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 0;
+  min-height: 0;
+  gap: 8px;
+  overflow: hidden;
+}
+
+.resource-picker__locator-pane > .resource-picker__section-title {
+  flex-shrink: 0;
+  margin-bottom: 0;
+}
+
+.resource-picker__excerpts--locator > .resource-picker__section-title {
+  flex-shrink: 0;
 }
 
 .resource-picker__excerpt em {
@@ -1386,6 +1669,7 @@ watch(selectedAccessUrls, (urls) => {
   flex-direction: column;
   gap: 0;
   margin-top: 8px;
+  flex-shrink: 0;
   min-height: 0;
 }
 

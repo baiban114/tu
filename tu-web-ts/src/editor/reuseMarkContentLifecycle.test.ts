@@ -4,17 +4,31 @@
 import { describe, expect, it, afterEach } from 'vitest'
 import { Editor } from '@tiptap/core'
 import StarterKit from '@tiptap/starter-kit'
+import type { TextAnnotation, HeadingSourceBinding } from '@/api/types'
+import { ParagraphNode } from '@/editor/extensions/ParagraphNode'
+import { BlockquoteNode } from '@/editor/extensions/BlockquoteNode'
 import {
   extractInsertedPlainText,
   resolveInsertedContentDelta,
   shouldOfferReuseMarkForContentAddition,
+  rangeTouchesExistingResourceMeta,
 } from '@/editor/reuseMarkContentLifecycle'
 
-const extensions = [StarterKit]
+const extensions = [
+  StarterKit.configure({ paragraph: false, blockquote: false }),
+  ParagraphNode,
+  BlockquoteNode,
+]
 
 function insertPlainText(editor: Editor, pos: number, text: string) {
   editor.view.dispatch(editor.state.tr.insertText(text, pos))
 }
+
+const sampleBinding = (): HeadingSourceBinding => ({
+  resourceItemId: 'ri-1',
+  resourceExcerptId: 're-1',
+  snapshot: { resourceTitle: '书名', resourceTypeName: '图书' },
+})
 
 describe('extractInsertedPlainText', () => {
   it('returns empty when texts are equal', () => {
@@ -165,5 +179,106 @@ describe('resolveInsertedContentDelta', () => {
     insertPlainText(editor, 1, bulk)
     const delta = resolveInsertedContentDelta(before, editor.state.doc)
     expect(shouldOfferReuseMarkForContentAddition(delta, { isPaste: false })).toBe(true)
+  })
+})
+
+describe('rangeTouchesExistingResourceMeta', () => {
+  let editor: Editor | null = null
+
+  afterEach(() => {
+    editor?.destroy()
+    editor = null
+  })
+
+  it('detects paste into a blockquote that already has excerptBinding', () => {
+    const el = document.createElement('div')
+    document.body.appendChild(el)
+    editor = new Editor({
+      element: el,
+      extensions,
+      content: {
+        type: 'doc',
+        content: [
+          {
+            type: 'blockquote',
+            attrs: { blockId: 'bq-1', excerptBinding: sampleBinding() },
+            content: [
+              { type: 'paragraph', content: [{ type: 'text', text: '已标记' }] },
+            ],
+          },
+        ],
+      },
+    })
+    const before = editor.state.doc
+    insertPlainText(editor, 2, '再贴一段')
+    const delta = resolveInsertedContentDelta(before, editor.state.doc)
+    expect(delta).not.toBeNull()
+    expect(
+      rangeTouchesExistingResourceMeta(editor.state.doc, delta!.from, delta!.to, []),
+    ).toBe(true)
+  })
+
+  it('detects paste into a paragraph with excerpt annotation by blockId', () => {
+    const el = document.createElement('div')
+    document.body.appendChild(el)
+    editor = new Editor({
+      element: el,
+      extensions,
+      content: {
+        type: 'doc',
+        content: [
+          {
+            type: 'paragraph',
+            attrs: { blockId: 'p-meta' },
+            content: [{ type: 'text', text: '已有元数据' }],
+          },
+        ],
+      },
+    })
+    const annotations: TextAnnotation[] = [{
+      id: 'ex-1',
+      kind: 'excerpt',
+      basisBinding: sampleBinding(),
+      selectedText: '已有元数据',
+      contextBefore: '',
+      contextAfter: '',
+      note: '',
+      color: '#90CAF9',
+      createdAt: 1,
+      updatedAt: 1,
+      blockId: '',
+      unresolved: false,
+      scope: 'block',
+      spannedBlockIds: ['p-meta'],
+    }]
+    const before = editor.state.doc
+    insertPlainText(editor, 1, '追加粘贴')
+    const delta = resolveInsertedContentDelta(before, editor.state.doc)
+    expect(delta).not.toBeNull()
+    expect(
+      rangeTouchesExistingResourceMeta(editor.state.doc, delta!.from, delta!.to, annotations),
+    ).toBe(true)
+  })
+
+  it('allows paste into an unmarked paragraph', () => {
+    const el = document.createElement('div')
+    document.body.appendChild(el)
+    editor = new Editor({
+      element: el,
+      extensions,
+      content: {
+        type: 'doc',
+        content: [
+          { type: 'paragraph', attrs: { blockId: 'p-plain' }, content: [{ type: 'text', text: '普通段' }] },
+        ],
+      },
+    })
+    const before = editor.state.doc
+    insertPlainText(editor, 1, '新内容粘贴进来')
+    const delta = resolveInsertedContentDelta(before, editor.state.doc)
+    expect(delta).not.toBeNull()
+    expect(
+      rangeTouchesExistingResourceMeta(editor.state.doc, delta!.from, delta!.to, []),
+    ).toBe(false)
   })
 })

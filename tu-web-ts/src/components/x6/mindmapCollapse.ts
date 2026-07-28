@@ -339,16 +339,16 @@ export function getMindmapCollapseButtonStyle(
   const gap = 8;
 
   let left = nodeLeft + nodeWidth + gap;
-  let top = nodeTop + nodeHeight * 0.28 - btnSize / 2;
+  let top = nodeTop + nodeHeight / 2 - btnSize / 2;
 
   if (direction === 'RL') {
     left = nodeLeft - gap - btnSize;
-    top = nodeTop + nodeHeight * 0.28 - btnSize / 2;
+    top = nodeTop + nodeHeight / 2 - btnSize / 2;
   } else if (direction === 'TB') {
-    left = nodeLeft + nodeWidth * 0.72 - btnSize / 2;
+    left = nodeLeft + nodeWidth / 2 - btnSize / 2;
     top = nodeTop + nodeHeight + gap;
   } else if (direction === 'BT') {
-    left = nodeLeft + nodeWidth * 0.72 - btnSize / 2;
+    left = nodeLeft + nodeWidth / 2 - btnSize / 2;
     top = nodeTop - gap - btnSize;
   }
 

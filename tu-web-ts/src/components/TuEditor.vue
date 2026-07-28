@@ -3031,6 +3031,22 @@ defineExpose({
     }).run()
     return true
   },
+  /** Plain text for a TOC section (heading + body until next same/higher level). */
+  getSectionPlainText: (entryId: string) => {
+    const ed = editor.value
+    if (!ed || !entryId) return null
+    const range = getSectionRange(entryId)
+    if (!range) return null
+    const text = ed.state.doc.textBetween(range.from, range.to, '\n\n', '\n')
+    return text.trim() || null
+  },
+  /** Full document plain text (page root preview). */
+  getDocumentPlainText: () => {
+    const ed = editor.value
+    if (!ed) return null
+    const text = ed.state.doc.textBetween(0, ed.state.doc.content.size, '\n\n', '\n')
+    return text.trim() || null
+  },
   applyUrlDisplayMode,
   applyUrlEmbedHeight,
   insertPdfExcerptBlock,

@@ -1,4 +1,8 @@
 import type { TocTreeItem } from '@/utils/toc/headings'
+import {
+  buildTocEntrySourceLocator,
+  buildTocRootSourceLocator,
+} from '@/utils/toc/tocMindmapLocator'
 
 export interface MindmapTocLink {
   id: string
@@ -8,6 +12,12 @@ export interface MindmapTocLink {
   tocEntryId: string
   blockId: string
   sourceType: TocTreeItem['sourceType']
+  /** Locator for 定位系统 (page / heading / block / resource). */
+  sourceLocator: string
+}
+
+export interface FlattenTocTreeForMindmapOptions {
+  pageId?: string
 }
 
 /**
@@ -17,15 +27,19 @@ export function flattenTocTreeForMindmap(
   rootTitle: string,
   toc: TocTreeItem[],
   createNodeId: (prefix: string) => string,
+  options: FlattenTocTreeForMindmapOptions = {},
 ): MindmapTocLink[] {
+  const pageId = options.pageId?.trim() ?? ''
+  const rootTitleText = rootTitle.trim() || '文档'
   const rootId = createNodeId('mindmap-root')
   const rows: MindmapTocLink[] = [{
     id: rootId,
     parentId: null,
-    text: rootTitle.trim() || '文档',
+    text: rootTitleText,
     tocEntryId: '',
     blockId: '',
     sourceType: 'local',
+    sourceLocator: buildTocRootSourceLocator(pageId, rootTitleText),
   }]
 
   const walk = (entries: TocTreeItem[], parentId: string) => {
@@ -38,6 +52,7 @@ export function flattenTocTreeForMindmap(
         tocEntryId: entry.id,
         blockId: entry.blockId,
         sourceType: entry.sourceType,
+        sourceLocator: buildTocEntrySourceLocator(pageId, entry),
       })
       if (entry.children?.length) {
         walk(entry.children, id)
