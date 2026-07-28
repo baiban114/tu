@@ -28,6 +28,15 @@ export const PdfExcerptBlockNode = Node.create({
       clipTop: { default: 0 },
       clipBottom: { default: 1 },
       notesVisible: { default: false },
+      /** Chrome header title (resource / PDF display name). */
+      title: {
+        default: '',
+        parseHTML: (element) => element.getAttribute('data-title') || '',
+        renderHTML: (attributes) => {
+          const value = String(attributes.title || '').trim()
+          return value ? { 'data-title': value } : {}
+        },
+      },
       sourceHref: {
         default: '',
         parseHTML: (element) => element.getAttribute('data-source-href') || '',
@@ -72,11 +81,14 @@ export function createPdfExcerptNodeAttrs(input: {
   clipTop?: number
   clipBottom?: number
   blockId?: string
+  title?: string
   sourceHref?: string
   sourceLabel?: string
   notesVisible?: boolean
 }) {
   const clip = normalizePdfClipRatio(input.clipTop ?? 0, input.clipBottom ?? 1)
+  const title = (input.title || input.sourceLabel || '').trim()
+  const sourceLabel = (input.sourceLabel || input.title || '').trim()
   return {
     blockId: input.blockId || createPdfExcerptBlockId(),
     fileId: input.fileId,
@@ -88,7 +100,8 @@ export function createPdfExcerptNodeAttrs(input: {
     clipTop: clip.clipTop,
     clipBottom: clip.clipBottom,
     notesVisible: Boolean(input.notesVisible),
+    title,
     sourceHref: input.sourceHref || '',
-    sourceLabel: input.sourceLabel || '',
+    sourceLabel,
   }
 }

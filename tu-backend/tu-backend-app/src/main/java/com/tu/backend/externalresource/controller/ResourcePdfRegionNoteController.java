@@ -28,8 +28,13 @@ public class ResourcePdfRegionNoteController {
     }
 
     @GetMapping("/resource-items/{id}/pdf-region-notes")
-    public ApiResponse<List<ResourcePdfRegionNoteDto>> list(@PathVariable String id) {
+    public ApiResponse<List<ResourcePdfRegionNoteDto>> listByItem(@PathVariable String id) {
         return ApiResponse.success(noteService.listByResourceItem(id));
+    }
+
+    @GetMapping("/resource-excerpts/{excerptId}/pdf-region-notes")
+    public ApiResponse<List<ResourcePdfRegionNoteDto>> listByExcerpt(@PathVariable String excerptId) {
+        return ApiResponse.success(noteService.listByExcerpt(excerptId));
     }
 
     @PostMapping("/resource-items/{id}/pdf-region-notes")

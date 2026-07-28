@@ -307,6 +307,6 @@ onBeforeUnmount(() => {
 
 .heading-section-fold-gutter__btn--visible:hover {
   background: rgba(22, 119, 255, 0.08);
-  border-radius: 6px;
+  border-radius: 3px;
 }
 </style>

@@ -6,7 +6,28 @@ import {
   type LinkIrSourceState,
 } from '@/editor/extensions/linkIrSource'
 import type { LinkLabelEditContext } from '@/editor/linkLabelSuggestRanges'
-import type { LinkSuggestItem } from '@/editor/linkLabelSuggestQuery'
+import {
+  extractLinkLabelPageRange,
+  HEADING_SEP,
+  type LinkSuggestItem,
+} from '@/editor/linkLabelSuggestQuery'
+
+/**
+ * Visible `[]` title after select: resource/PDF name for resource locators;
+ * otherwise the suggest list label (page / heading).
+ */
+export function suggestDisplayTitle(item: LinkSuggestItem): string {
+  if (
+    item.kind === 'resourceItem'
+    || item.kind === 'resourceChapter'
+    || item.kind === 'resourceExcerpt'
+  ) {
+    const path = item.applyLabel ?? item.label
+    const first = path.split(HEADING_SEP)[0]?.trim() || item.label
+    return extractLinkLabelPageRange(first).text || item.label
+  }
+  return item.label
+}
 
 /** Replace the markdown link span with selected suggestion; keep IR source mode. */
 export function applyLinkSuggest(
@@ -14,15 +35,16 @@ export function applyLinkSuggest(
   context: LinkLabelEditContext,
   item: LinkSuggestItem,
 ): void {
-  const writtenLabel = item.applyLabel ?? item.label
+  const writtenLabel = suggestDisplayTitle(item)
   const source = formatMarkdownLinkSource(writtenLabel, item.href)
   const { state, view } = editor
   const tr = state.tr
   tr.replaceWith(context.replaceFrom, context.replaceTo, state.schema.text(source))
   const from = context.replaceFrom
   const to = from + source.length
-  const labelEnd = from + 1 + writtenLabel.length
-  tr.setSelection(TextSelection.create(tr.doc, Math.min(labelEnd, to)))
+  // Leave caret in `()` so the user can continue `>` browse by editing the href draft.
+  const hrefCaret = from + 1 + writtenLabel.length + 2 + item.href.length
+  tr.setSelection(TextSelection.create(tr.doc, Math.min(hrefCaret, to)))
   tr.setMeta(LINK_IR_META, {
     from,
     to,

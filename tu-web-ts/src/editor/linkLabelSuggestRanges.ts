@@ -1,14 +1,19 @@
 import type { EditorState } from '@tiptap/pm/state'
-import { findLinkAtSelection, linkIrSourceKey } from '@/editor/extensions/linkIrSource'
+import { linkIrSourceKey } from '@/editor/extensions/linkIrSource'
 
 export interface LinkLabelEditContext {
   /** Inclusive markdown span to replace (starts at `[`). */
   replaceFrom: number
   replaceTo: number
-  /** Label content range (exclusive of `[` / `]` for markdown; full mark span when collapsed). */
+  /** Label content range (exclusive of `[` / `]`). */
   labelFrom: number
   labelTo: number
   labelText: string
+  /** Href draft range (exclusive of `(` / `)`); null when `](` not started. */
+  hrefFrom: number | null
+  hrefTo: number | null
+  /** Raw text inside `()` used as the search query. */
+  hrefText: string
   href: string | null
   title: string | null
   complete: boolean
@@ -27,6 +32,7 @@ export function splitMarkdownLinkSourceRanges(
   hrefFrom: number | null
   hrefTo: number | null
   labelText: string
+  hrefText: string
   href: string | null
   title: string | null
   complete: boolean
@@ -43,6 +49,7 @@ export function splitMarkdownLinkSourceRanges(
       hrefFrom: null,
       hrefTo: null,
       labelText,
+      hrefText: '',
       href: null,
       title: null,
       complete: false,
@@ -61,6 +68,7 @@ export function splitMarkdownLinkSourceRanges(
       hrefFrom: null,
       hrefTo: null,
       labelText,
+      hrefText: '',
       href: null,
       title: null,
       complete: false,
@@ -71,13 +79,15 @@ export function splitMarkdownLinkSourceRanges(
   const afterParen = sourceText.slice(closeBracket + 2)
   const closeParen = afterParen.indexOf(')')
   if (closeParen < 0) {
+    const hrefText = afterParen
     return {
       labelFrom,
       labelTo,
       hrefFrom: sourceFrom + closeBracket + 2,
       hrefTo: sourceFrom + sourceText.length,
       labelText,
-      href: afterParen.trim() || null,
+      hrefText,
+      href: hrefText.trim() || null,
       title: null,
       complete: false,
       replaceTo: sourceFrom + sourceText.length,
@@ -95,6 +105,7 @@ export function splitMarkdownLinkSourceRanges(
     hrefFrom: sourceFrom + closeBracket + 2,
     hrefTo: sourceFrom + closeBracket + 2 + closeParen,
     labelText,
+    hrefText: hrefChunk,
     href: href || null,
     title,
     complete: Boolean(labelText.trim() && href),
@@ -110,8 +121,36 @@ export function isCaretInLinkLabel(
   return caret >= labelFrom && caret <= labelTo
 }
 
+export function isCaretInLinkHref(
+  caret: number,
+  hrefFrom: number | null,
+  hrefTo: number | null,
+): boolean {
+  return hrefFrom != null && hrefTo != null && caret >= hrefFrom && caret <= hrefTo
+}
+
+function toEditContext(
+  replaceFrom: number,
+  parts: NonNullable<ReturnType<typeof splitMarkdownLinkSourceRanges>>,
+): LinkLabelEditContext {
+  return {
+    replaceFrom,
+    replaceTo: parts.replaceTo,
+    labelFrom: parts.labelFrom,
+    labelTo: parts.labelTo,
+    labelText: parts.labelText,
+    hrefFrom: parts.hrefFrom,
+    hrefTo: parts.hrefTo,
+    hrefText: parts.hrefText,
+    href: parts.href,
+    title: parts.title,
+    complete: parts.complete,
+  }
+}
+
 /**
- * Resolve the markdown-link label edit context under caret (IR active, incomplete `[query`, or collapsed link mark).
+ * Resolve markdown-link **href** edit context under caret (resource/page search lives in `()`).
+ * Label-only incomplete `[query` and collapsed link marks do not arm search.
  */
 export function findLinkLabelEditContext(
   state: EditorState,
@@ -121,17 +160,8 @@ export function findLinkLabelEditContext(
   if (active && active.to > active.from) {
     const text = state.doc.textBetween(active.from, active.to, '')
     const parts = splitMarkdownLinkSourceRanges(text, active.from)
-    if (parts && isCaretInLinkLabel(caret, parts.labelFrom, parts.labelTo)) {
-      return {
-        replaceFrom: active.from,
-        replaceTo: parts.replaceTo,
-        labelFrom: parts.labelFrom,
-        labelTo: parts.labelTo,
-        labelText: parts.labelText,
-        href: parts.href,
-        title: parts.title,
-        complete: parts.complete,
-      }
+    if (parts && isCaretInLinkHref(caret, parts.hrefFrom, parts.hrefTo)) {
+      return toEditContext(active.from, parts)
     }
   }
 
@@ -146,39 +176,14 @@ export function findLinkLabelEditContext(
 
   const before = blockText.slice(0, offset)
   const openIdx = before.lastIndexOf('[')
-  if (openIdx >= 0 && !before.slice(openIdx + 1).includes(']')) {
+  if (openIdx >= 0) {
     const fromOpen = blockText.slice(openIdx)
     const parts = splitMarkdownLinkSourceRanges(fromOpen, blockStart + openIdx)
-    if (parts && isCaretInLinkLabel(caret, parts.labelFrom, parts.labelTo)) {
-      return {
-        replaceFrom: blockStart + openIdx,
-        replaceTo: parts.replaceTo,
-        labelFrom: parts.labelFrom,
-        labelTo: parts.labelTo,
-        labelText: parts.labelText,
-        href: parts.href,
-        title: parts.title,
-        complete: parts.complete,
-      }
+    if (parts && isCaretInLinkHref(caret, parts.hrefFrom, parts.hrefTo)) {
+      return toEditContext(blockStart + openIdx, parts)
     }
   }
 
-  const linkType = state.schema.marks.link
-  if (!linkType) return null
-  const linkAt = findLinkAtSelection(state, linkType)
-  if (!linkAt) return null
-  if (!isCaretInLinkLabel(caret, linkAt.from, linkAt.to)) return null
-  const href = typeof linkAt.mark.attrs.href === 'string' ? linkAt.mark.attrs.href : null
-  const titleRaw = linkAt.mark.attrs.title
-  const title = typeof titleRaw === 'string' && titleRaw.trim() ? titleRaw : null
-  return {
-    replaceFrom: linkAt.from,
-    replaceTo: linkAt.to,
-    labelFrom: linkAt.from,
-    labelTo: linkAt.to,
-    labelText: linkAt.label,
-    href,
-    title,
-    complete: Boolean(linkAt.label.trim() && href),
-  }
+  // Collapsed link marks: search only after IR expands to `[…](…)`.
+  return null
 }

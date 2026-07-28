@@ -146,6 +146,8 @@ export interface PdfExcerptAttrs {
   clipTop: number
   /** Vertical end ratio on the last page (0–1). Default 1. */
   clipBottom: number
+  /** Chrome / link display title (resource / PDF name). */
+  title?: string
   /** Original link href (`resource:…` / http) for presentation round-trip. */
   sourceHref?: string
   /** Original link label for restoring inline link text. */
@@ -178,8 +180,9 @@ export function parsePdfExcerptComment(attrsStr: string): PdfExcerptAttrs | null
     height: Number.isFinite(height) && height > 0 ? height : PDF_EXCERPT_DEFAULT_HEIGHT,
     clipTop: clip.clipTop,
     clipBottom: clip.clipBottom,
+    title: attrs.title || attrs.sourceLabel || undefined,
     sourceHref: attrs.sourceHref || undefined,
-    sourceLabel: attrs.sourceLabel || undefined,
+    sourceLabel: attrs.sourceLabel || attrs.title || undefined,
     ...(notesVisible ? { notesVisible: true } : {}),
   }
 }
@@ -193,11 +196,14 @@ export function serializePdfExcerptComment(attrs: PdfExcerptAttrs): string {
   const sourceHrefAttr = attrs.sourceHref
     ? ` sourceHref="${escapeAttr(attrs.sourceHref)}"`
     : ''
-  const sourceLabelAttr = attrs.sourceLabel
-    ? ` sourceLabel="${escapeAttr(attrs.sourceLabel)}"`
+  const title = (attrs.title || attrs.sourceLabel || '').trim()
+  const sourceLabel = (attrs.sourceLabel || attrs.title || '').trim()
+  const titleAttr = title ? ` title="${escapeAttr(title)}"` : ''
+  const sourceLabelAttr = sourceLabel
+    ? ` sourceLabel="${escapeAttr(sourceLabel)}"`
     : ''
   const notesVisibleAttr = attrs.notesVisible ? ' notesVisible="true"' : ''
-  return `<!--tu:pdf-excerpt id="${escapeAttr(attrs.blockId)}" fileId="${escapeAttr(attrs.fileId)}" fileName="${escapeAttr(attrs.fileName)}" start="${attrs.startPage}" end="${attrs.endPage}" height="${attrs.height}"${modeAttr}${clipAttr}${sourceHrefAttr}${sourceLabelAttr}${notesVisibleAttr}-->`
+  return `<!--tu:pdf-excerpt id="${escapeAttr(attrs.blockId)}" fileId="${escapeAttr(attrs.fileId)}" fileName="${escapeAttr(attrs.fileName)}" start="${attrs.startPage}" end="${attrs.endPage}" height="${attrs.height}"${modeAttr}${clipAttr}${titleAttr}${sourceHrefAttr}${sourceLabelAttr}${notesVisibleAttr}-->`
 }
 
 export function normalizePdfPageRange(

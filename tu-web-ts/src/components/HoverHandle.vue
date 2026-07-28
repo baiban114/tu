@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch, Teleport } from 'vue';
 import type { CSSProperties } from 'vue';
+import { resolvePreferBottomLeftPanelPosition } from '@/utils/viewportPanel';
 
 interface HoverHandleItem {
   key: string;
@@ -20,6 +21,11 @@ interface Props {
   menuMaxWidth?: string;
   menuGap?: number;
   viewportPadding?: number;
+  /**
+   * `block-top`: purple grip for tall markdown shells (blockquote…),
+   * distinct color from blue paragraph/section handles (Yuque-style top-left).
+   */
+  variant?: 'default' | 'block-top';
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -31,7 +37,11 @@ const props = withDefaults(defineProps<Props>(), {
   menuMaxWidth: 'min(260px, calc(100vw - 24px))',
   menuGap: 8,
   viewportPadding: 12,
+  variant: 'default',
 });
+
+/** Match slash-command menu max height (closest editor floating action panel). */
+const MENU_MAX_HEIGHT_PX = 360
 
 const emit = defineEmits<{
   (e: 'select', key: string): void;
@@ -64,18 +74,26 @@ const cancelScheduledSync = () => {
 const syncMenuPosition = () => {
   if (!props.autoPosition || !rootRef.value || !menuRef.value) return;
 
-  const handleRect = rootRef.value.getBoundingClientRect();
+  // Use the grip dot — not the wide gutter trigger strip — as the anchor.
+  const dotEl = rootRef.value.querySelector('.hover-handle__dot');
+  const handleRect = (dotEl instanceof HTMLElement ? dotEl : rootRef.value).getBoundingClientRect();
   const menuRect = menuRef.value.getBoundingClientRect();
   const viewportWidth = window.innerWidth;
   const viewportHeight = window.innerHeight;
-  const openToLeft = handleRect.right + props.menuGap + menuRect.width > viewportWidth - props.viewportPadding;
-  const left = openToLeft
-    ? handleRect.left - menuRect.width - props.menuGap
-    : handleRect.right + props.menuGap;
-  const centeredTop = handleRect.top + (handleRect.height - menuRect.height) / 2;
-  const minTop = props.viewportPadding;
-  const maxTop = viewportHeight - props.viewportPadding - menuRect.height;
-  const top = Math.max(minTop, Math.min(centeredTop, maxTop));
+  const maxHeight = Math.min(MENU_MAX_HEIGHT_PX, viewportHeight - props.viewportPadding * 2);
+  const menuHeight = Math.min(menuRect.height, Math.max(140, maxHeight));
+  const menuWidth = menuRect.width;
+  const contentLeft = resolveDocumentContentLeft(rootRef.value);
+  const { left, top } = resolvePreferBottomLeftPanelPosition(
+    handleRect,
+    menuWidth,
+    menuHeight,
+    props.menuGap,
+    props.viewportPadding,
+    viewportWidth,
+    viewportHeight,
+    contentLeft ?? undefined,
+  );
 
   autoMenuStyle.value = {
     left: `${left}px`,
@@ -83,12 +101,23 @@ const syncMenuPosition = () => {
     right: 'auto',
     transform: 'none',
     marginLeft: '0',
-    maxHeight: `${Math.max(140, viewportHeight - props.viewportPadding * 2)}px`,
+    maxHeight: `${Math.max(140, maxHeight)}px`,
     overflowY: 'auto',
   };
 
   menuPositioned.value = true;
 };
+
+/** Left edge of the editor text column — not the full page / gutter. */
+function resolveDocumentContentLeft(handleEl: HTMLElement): number | null {
+  const wrapper = handleEl.closest('.tu-editor-wrapper');
+  const content = wrapper?.querySelector('.tu-editor-content');
+  if (content instanceof HTMLElement) return content.getBoundingClientRect().left;
+  if (wrapper instanceof HTMLElement) return wrapper.getBoundingClientRect().left;
+  const nested = handleEl.closest('.tu-editor-content');
+  if (nested instanceof HTMLElement) return nested.getBoundingClientRect().left;
+  return null;
+}
 
 const scheduleMenuPosition = () => {
   cancelScheduledSync();
@@ -189,6 +218,7 @@ onBeforeUnmount(() => {
   <div
     ref="rootRef"
     class="hover-handle"
+    :class="{ 'hover-handle--block-top': variant === 'block-top' }"
     @click.stop
     @mousedown="handleMouseDown"
     @mouseenter="handleMouseEnter"
@@ -271,9 +301,9 @@ onBeforeUnmount(() => {
   width: 14px;
   height: 14px;
   border-radius: 50%;
-  background: #1890ff;
-  box-shadow: 0 2px 4px rgba(24, 144, 255, 0.3);
-  transition: transform 0.15s ease, background-color 0.15s ease;
+  background: var(--hover-handle-dot-bg, #1890ff);
+  box-shadow: var(--hover-handle-dot-shadow, 0 2px 4px rgba(24, 144, 255, 0.3));
+  transition: transform 0.15s ease, background-color 0.15s ease, box-shadow 0.15s ease;
 }
 
 .hover-handle__dot--drag {
@@ -287,7 +317,14 @@ onBeforeUnmount(() => {
 .hover-handle:hover .hover-handle__dot::after,
 .hover-handle__dot:hover::after {
   transform: scale(1.08);
-  background: #40a9ff;
+  background: var(--hover-handle-dot-hover-bg, #40a9ff);
+}
+
+/* Markdown block shells (blockquote etc.): purple grip; position is top-left for all handles */
+.hover-handle--block-top {
+  --hover-handle-dot-bg: #9333ea;
+  --hover-handle-dot-hover-bg: #a855f7;
+  --hover-handle-dot-shadow: 0 2px 4px rgba(147, 51, 234, 0.32);
 }
 
 .hover-handle__menu {
@@ -295,16 +332,19 @@ onBeforeUnmount(() => {
   top: 0;
   left: 0;
   background: #fff;
-  border: 1px solid #e8e8e8;
-  border-radius: 4px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
-  padding: 6px 0;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  box-shadow: 0 16px 36px rgba(15, 23, 42, 0.14);
+  padding: 6px;
+  /* Align with slash-command-menu (closest editor floating action panel). */
+  max-height: min(360px, calc(100vh - 24px));
   opacity: 0;
   visibility: hidden;
   transition: opacity 0.15s ease, visibility 0.15s ease;
   z-index: 1000002;
   overflow-y: auto;
   overscroll-behavior: contain;
+  box-sizing: border-box;
 }
 
 .hover-handle__menu--visible {
@@ -316,9 +356,10 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 8px 14px;
+  padding: 8px 10px;
+  border-radius: 6px;
   font-size: 14px;
-  color: #333;
+  color: #1f2937;
   cursor: pointer;
   white-space: nowrap;
   transition: background-color 0.12s ease, color 0.12s ease;
@@ -337,7 +378,7 @@ onBeforeUnmount(() => {
 .hover-handle__divider {
   height: auto;
   min-height: 1px;
-  margin: 6px 0;
+  margin: 4px 0;
   background: linear-gradient(#e8e8e8, #e8e8e8) center / 100% 1px no-repeat;
 }
 

@@ -656,8 +656,9 @@ function parseMarkdownBlocks(markdown: string): JSONContent[] {
               clipTop: parsedPdf.clipTop,
               clipBottom: parsedPdf.clipBottom,
               notesVisible: Boolean(parsedPdf.notesVisible),
+              title: parsedPdf.title || parsedPdf.sourceLabel || '',
               sourceHref: parsedPdf.sourceHref || '',
-              sourceLabel: parsedPdf.sourceLabel || '',
+              sourceLabel: parsedPdf.sourceLabel || parsedPdf.title || '',
             },
           })
         }
@@ -1022,8 +1023,9 @@ function nodeToMarkdown(node: JSONContent): string {
         height: Number(node.attrs?.height) || 480,
         clipTop: Number(node.attrs?.clipTop) || 0,
         clipBottom: node.attrs?.clipBottom == null ? 1 : Number(node.attrs.clipBottom),
+        title: String(node.attrs?.title || node.attrs?.sourceLabel || '') || undefined,
         sourceHref: String(node.attrs?.sourceHref || '') || undefined,
-        sourceLabel: String(node.attrs?.sourceLabel || '') || undefined,
+        sourceLabel: String(node.attrs?.sourceLabel || node.attrs?.title || '') || undefined,
         notesVisible: Boolean(node.attrs?.notesVisible) || undefined,
       })
     }

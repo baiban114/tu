@@ -146,6 +146,7 @@ import {
   deleteResourcePdfRegionNote,
   updateResourcePdfRegionNote,
 } from '@/api/externalResource'
+import { ensurePdfClipExcerptEntity, resolveResourceItemIdForPdf } from '@/utils/pdfClipExcerpt'
 import {
   REF_GUTTER_DELEGATE_KEY,
   type RefGutterDelegate,
@@ -157,9 +158,12 @@ import {
 } from '@/utils/refInnerGutter'
 import type { Editor } from '@tiptap/vue-3'
 import {
-  collectDocDiffRange,
   resolveSelectionAfterPasteRules,
 } from '@/editor/reuseMarkSelection'
+import {
+  resolveInsertedContentDelta,
+  shouldOfferReuseMarkForContentAddition,
+} from '@/editor/reuseMarkContentLifecycle'
 
 type TocItem = TocTreeItem
 const NODEVIEW_TYPES = ['x6Block', 'tableBlock', 'multiTableBlock', 'timelineBlock', 'spacerBlock', 'refBlock', 'externalResourceBlock', 'pdfExcerptBlock', 'compareBlock']
@@ -514,10 +518,16 @@ function handlePdfClipSelectFromToolbar() {
 function handlePdfFitHeightFromToolbar() {
   const blockId = nodeViewToolbar.blockId
   if (!blockId || nodeViewToolbar.sourceType !== 'pdfExcerptBlock') return
+  dispatchPdfExcerptFitHeight(blockId)
+}
+
+function dispatchPdfExcerptFitHeight(blockId: string) {
+  const id = String(blockId || '').trim()
+  if (!id) return
   const editorDom = tuEditorRef.value?.editor?.view.dom
   const root = editorDom?.querySelector<HTMLElement>(
-    `.pdf-excerpt-block-nv[data-block-id="${CSS.escape(blockId)}"]`,
-  ) ?? editorDom?.querySelector<HTMLElement>(`[data-block-id="${CSS.escape(blockId)}"]`)
+    `.pdf-excerpt-block-nv[data-block-id="${CSS.escape(id)}"]`,
+  ) ?? editorDom?.querySelector<HTMLElement>(`[data-block-id="${CSS.escape(id)}"]`)
   root?.dispatchEvent(new CustomEvent(PDF_EXCERPT_FIT_HEIGHT_EVENT, { bubbles: false }))
 }
 const resourcePickerMode = ref<'insert' | 'markExcerpt' | 'bindSource' | 'setBasis'>('insert')
@@ -683,11 +693,7 @@ const REUSE_MARK_DURATION_MS = 6000
 const reuseMarkOffer = ref<ReuseMarkOffer | null>(null)
 const reuseMarkBinding = ref<HeadingSourceBinding | null>(null)
 let reuseMarkToken = 0
-/** True after user creates an unbound blockquote (e.g. `>`) until paste/content offers reuse. */
-let armedReuseForNextQuoteContent = false
 let detachReuseMarkListener: (() => void) | null = null
-/** Legacy id-based arming when blockId is already assigned. */
-const armedReuseBlockquoteIds = new Set<string>()
 const learningInProgressTarget = ref<LearningInProgress | null>(null)
 
 function refreshLearningInProgressTarget() {
@@ -877,6 +883,7 @@ const notePopoverAnnotation = ref<TextAnnotation | null>(null)
 const notePopoverAnnotations = ref<TextAnnotation[]>([])
 const notePopoverAnchor = ref<FloatingAnchorRect | null>(null)
 const notePopoverSourceBinding = ref<HeadingSourceBinding | null>(null)
+const notePopoverSourceBadgeLabel = ref('来源')
 const notePopoverHeadingTitle = ref('')
 const notePopoverRelationAnchor = ref<KnowledgeAnchor | null>(null)
 
@@ -1542,45 +1549,6 @@ function presentReuseMarkOffer(binding: HeadingSourceBinding, markAsLabel: strin
   }
 }
 
-function collectChangedRange(tr: Transaction): { from: number; to: number } | null {
-  let from = Number.POSITIVE_INFINITY
-  let to = Number.NEGATIVE_INFINITY
-  tr.mapping.maps.forEach((map) => {
-    map.forEach((_oldStart, _oldEnd, newStart, newEnd) => {
-      from = Math.min(from, newStart)
-      to = Math.max(to, newEnd)
-    })
-  })
-  if (!Number.isFinite(from) || !Number.isFinite(to) || from >= to) return null
-  const max = tr.doc.content.size
-  return {
-    from: Math.max(1, Math.min(from, max)),
-    to: Math.max(1, Math.min(to, max)),
-  }
-}
-
-function collectBlockquoteIds(doc: ProseMirrorNode): Set<string> {
-  const ids = new Set<string>()
-  doc.descendants((node) => {
-    if (node.type.name !== 'blockquote') return
-    const id = typeof node.attrs.blockId === 'string' ? node.attrs.blockId : ''
-    if (id) ids.add(id)
-  })
-  return ids
-}
-
-function findBlockquoteTextRange(doc: ProseMirrorNode, blockId: string): { from: number; to: number } | null {
-  let range: { from: number; to: number } | null = null
-  doc.descendants((node, pos) => {
-    if (node.type.name !== 'blockquote' || node.attrs.blockId !== blockId) return true
-    if (node.attrs.excerptBinding) return false
-    if (!node.textContent.trim()) return false
-    range = { from: pos + 1, to: pos + node.nodeSize - 1 }
-    return false
-  })
-  return range
-}
-
 function isPasteTransaction(tr: Transaction): boolean {
   if (tr.getMeta('paste') != null) return true
   if (tr.getMeta('uiEvent') === 'paste') return true
@@ -1609,100 +1577,23 @@ function scheduleReuseMarkOfferForRange(
   })
 }
 
+/**
+ * Offer reuse-mark only when the transaction added new plain text (paste / bulk insert).
+ * Structural edits (split quote, empty `>`, wrap existing text) produce no inserted text.
+ */
 function tryOfferReuseMarkAfterTransaction(editor: Editor, tr: Transaction) {
   if (!props.editable || !tr.docChanged) return
   const inProgress = loadLearningInProgress(authStore.user?.id)
   if (!canAutoMarkFromInProgress(inProgress)) return
   const binding = learningInProgressToBinding(inProgress!)
 
-  // Root paste/input-rule appendTransactions are already applied when TipTap emits
-  // `transaction`; always read structure/ranges from the live doc.
-  const liveDoc = editor.state.doc
-
-  const beforeIds = collectBlockquoteIds(tr.before)
-  const afterIds = collectBlockquoteIds(liveDoc)
-  const newlyCreatedIds = new Set<string>()
-  afterIds.forEach((id) => {
-    if (!beforeIds.has(id)) {
-      armedReuseBlockquoteIds.add(id)
-      newlyCreatedIds.add(id)
-    }
-  })
-  Array.from(armedReuseBlockquoteIds).forEach((id) => {
-    if (!afterIds.has(id)) armedReuseBlockquoteIds.delete(id)
-  })
-
-  let createdUnboundQuote = newlyCreatedIds.size > 0
-  if (!createdUnboundQuote) {
-    let beforeCount = 0
-    let afterCount = 0
-    tr.before.descendants((node) => {
-      if (node.type.name === 'blockquote') beforeCount += 1
-    })
-    liveDoc.descendants((node) => {
-      if (node.type.name === 'blockquote') afterCount += 1
-    })
-    createdUnboundQuote = afterCount > beforeCount
-  }
-  if (createdUnboundQuote) {
-    armedReuseForNextQuoteContent = true
-  }
-
-  const isPaste = isPasteTransaction(tr)
-
-  // New unbound quote already containing text
-  for (const blockId of newlyCreatedIds) {
-    const range = findBlockquoteTextRange(liveDoc, blockId)
-    if (!range) continue
-    armedReuseBlockquoteIds.delete(blockId)
-    armedReuseForNextQuoteContent = false
-    scheduleReuseMarkOfferForRange(editor, range, binding)
+  // Compare pre-transaction doc to live doc (paste/input rules already applied).
+  const delta = resolveInsertedContentDelta(tr.before, editor.state.doc)
+  if (!shouldOfferReuseMarkForContentAddition(delta, { isPaste: isPasteTransaction(tr) })) {
     return
   }
-  if (createdUnboundQuote) {
-    let offered = false
-    liveDoc.descendants((node, pos) => {
-      if (offered || node.type.name !== 'blockquote' || node.attrs.excerptBinding) return true
-      if (!node.textContent.trim()) return true
-      const id = typeof node.attrs.blockId === 'string' ? node.attrs.blockId : ''
-      if (id && beforeIds.has(id)) return true
-      offered = true
-      armedReuseForNextQuoteContent = false
-      scheduleReuseMarkOfferForRange(editor, { from: pos + 1, to: pos + node.nodeSize - 1 }, binding)
-      return false
-    })
-    if (offered) return
-  }
 
-  // Paste into armed quote / plain paste
-  if (isPaste) {
-    for (const blockId of armedReuseBlockquoteIds) {
-      const range = findBlockquoteTextRange(liveDoc, blockId)
-      if (!range) continue
-      armedReuseBlockquoteIds.delete(blockId)
-      armedReuseForNextQuoteContent = false
-      scheduleReuseMarkOfferForRange(editor, range, binding)
-      return
-    }
-    if (armedReuseForNextQuoteContent) {
-      let offered = false
-      liveDoc.descendants((node, pos) => {
-        if (offered || node.type.name !== 'blockquote' || node.attrs.excerptBinding) return true
-        if (!node.textContent.trim()) return true
-        offered = true
-        armedReuseForNextQuoteContent = false
-        scheduleReuseMarkOfferForRange(editor, { from: pos + 1, to: pos + node.nodeSize - 1 }, binding)
-        return false
-      })
-      if (offered) return
-    }
-    // Diff against live doc so markdown-link paste rules are already reflected.
-    const changed = collectDocDiffRange(tr.before, liveDoc) ?? collectChangedRange(tr)
-    if (changed) {
-      armedReuseForNextQuoteContent = false
-      scheduleReuseMarkOfferForRange(editor, changed, binding)
-    }
-  }
+  scheduleReuseMarkOfferForRange(editor, { from: delta.from, to: delta.to }, binding)
 }
 
 function findEnclosingBlockquote(
@@ -1864,8 +1755,6 @@ watch(
   (editor, _prev, onCleanup) => {
     detachReuseMarkListener?.()
     detachReuseMarkListener = null
-    armedReuseBlockquoteIds.clear()
-    armedReuseForNextQuoteContent = false
     if (!editor || editor.isDestroyed) return
 
     const onTransaction = ({ transaction }: { transaction: Transaction }) => {
@@ -1930,6 +1819,7 @@ const closeNotePopover = () => {
   notePopoverAnnotations.value = []
   notePopoverAnchor.value = null
   notePopoverSourceBinding.value = null
+  notePopoverSourceBadgeLabel.value = '来源'
   notePopoverHeadingTitle.value = ''
   notePopoverRelationAnchor.value = null
 }
@@ -1946,6 +1836,7 @@ const handleHeadingSourceClick = (
   notePopoverAnnotation.value = null
   notePopoverAnnotations.value = []
   notePopoverSourceBinding.value = binding
+  notePopoverSourceBadgeLabel.value = '来源'
   notePopoverHeadingTitle.value = context.title
   notePopoverRelationAnchor.value = headingAnchor(pageId, context.blockId, context.title)
   notePopoverAnchor.value = rectFromPoint(context.clientX, context.clientY)
@@ -1956,7 +1847,7 @@ const handleHeadingSourceClick = (
 
 const handleBlockquoteExcerptClick = (
   binding: HeadingSourceBinding,
-  context: { blockId: string; title: string; clientX: number; clientY: number },
+  context: { blockId: string; title: string; clientX: number; clientY: number; role?: 'excerpt' | 'basis' },
 ) => {
   const pageId = workspaceStore.currentPageId
   if (!pageId) {
@@ -1966,6 +1857,11 @@ const handleBlockquoteExcerptClick = (
   notePopoverAnnotation.value = null
   notePopoverAnnotations.value = []
   notePopoverSourceBinding.value = binding
+  notePopoverSourceBadgeLabel.value = context.role === 'basis'
+    ? '依据'
+    : context.role === 'excerpt'
+      ? '资源节选'
+      : '资源节选'
   notePopoverHeadingTitle.value = context.title
   notePopoverRelationAnchor.value = blockAnchor(pageId, context.blockId, context.title)
   notePopoverAnchor.value = rectFromPoint(context.clientX, context.clientY)
@@ -1997,7 +1893,8 @@ const handleNavigateSourceFromPopover = () => {
 }
 
 const sameExcerptBasis = (a: HeadingSourceBinding, b: HeadingSourceBinding) =>
-  a.resourceItemId === b.resourceItemId && a.resourceExcerptId === b.resourceExcerptId
+  a.resourceItemId === b.resourceItemId
+  && (a.resourceExcerptId ?? null) === (b.resourceExcerptId ?? null)
 
 const findBlockquoteRangeByBlockId = (blockId: string): { from: number; to: number } | null => {
   const editor = tuEditorRef.value?.editor
@@ -2013,31 +1910,64 @@ const findBlockquoteRangeByBlockId = (blockId: string): { from: number; to: numb
   return range
 }
 
-const excerptAnnotationBelongsToBlockquote = (
+const findBlockRangeByBlockId = (blockId: string): { from: number; to: number } | null => {
+  const editor = tuEditorRef.value?.editor
+  if (!editor || !blockId) return null
+  let range: { from: number; to: number } | null = null
+  editor.state.doc.descendants((node, pos) => {
+    if (node.attrs?.blockId === blockId) {
+      range = { from: pos, to: pos + node.nodeSize }
+      return false
+    }
+    return true
+  })
+  return range
+}
+
+const annotationBelongsToBlock = (
   annotation: TextAnnotation,
   blockId: string,
   range: { from: number; to: number } | null,
 ) => {
-  if (annotation.kind !== 'excerpt') return false
-  if (annotation.spannedBlockIds?.includes(blockId)) return true
+  if (blockId && annotation.spannedBlockIds?.includes(blockId)) return true
   if (
     range
     && typeof annotation.from === 'number'
     && typeof annotation.to === 'number'
-    && annotation.from >= range.from
-    && annotation.to <= range.to
+    && annotation.from < range.to
+    && annotation.to > range.from
   ) {
     return true
   }
   return false
 }
 
+const excerptAnnotationBelongsToBlockquote = (
+  annotation: TextAnnotation,
+  blockId: string,
+  range: { from: number; to: number } | null,
+) => {
+  if (annotation.kind !== 'excerpt') return false
+  return annotationBelongsToBlock(annotation, blockId, range)
+}
+
 const removeExcerptAnnotationsForBlockquote = (blockId: string, binding: HeadingSourceBinding) => {
-  const range = findBlockquoteRangeByBlockId(blockId)
+  const range = findBlockquoteRangeByBlockId(blockId) ?? findBlockRangeByBlockId(blockId)
   localAnnotations.value = localAnnotations.value.filter((item) => {
     if (item.kind !== 'excerpt' || !item.basisBinding) return true
     if (!sameExcerptBasis(item.basisBinding, binding)) return true
     return !excerptAnnotationBelongsToBlockquote(item, blockId, range)
+  })
+}
+
+const removeBasisAnnotationsForBlock = (blockId: string, binding: HeadingSourceBinding) => {
+  const range = findBlockRangeByBlockId(blockId)
+  localAnnotations.value = localAnnotations.value.filter((item) => {
+    if (item.kind !== 'basis' || !item.basisBinding) return true
+    if (!sameExcerptBasis(item.basisBinding, binding)) return true
+    // No block scope: drop all matching basis bindings opened from this meta bar.
+    if (!blockId) return false
+    return !annotationBelongsToBlock(item, blockId, range)
   })
 }
 
@@ -2090,6 +2020,7 @@ const handleClearSourceFromPopover = () => {
     tuEditorRef.value?.flushContentChange?.()
     emitLocalContentChange()
     notePopoverSourceBinding.value = null
+    notePopoverSourceBadgeLabel.value = '来源'
     notePopoverHeadingTitle.value = ''
     if (notePopoverAnnotations.value.length > 0) {
       notePopoverVisible.value = true
@@ -2103,16 +2034,42 @@ const handleClearSourceFromPopover = () => {
   if (anchor.kind === 'block') {
     const blockId = String(anchor.snapshot?.blockId || anchor.locator.match(/:block:([^:]+)/)?.[1] || '')
     if (!blockId) return
-    if (!tuEditorRef.value?.clearBlockquoteExcerptBindingByBlockId?.(blockId)) return
+    const clearingBasis = notePopoverSourceBadgeLabel.value === '依据'
+
+    if (clearingBasis) {
+      removeBasisAnnotationsForBlock(blockId, binding)
+      tuEditorRef.value?.flushContentChange?.()
+      emitLocalContentChange()
+      notePopoverSourceBinding.value = null
+      notePopoverSourceBadgeLabel.value = '来源'
+      notePopoverHeadingTitle.value = ''
+      notePopoverAnnotations.value = notePopoverAnnotations.value.filter((item) => {
+        if (item.kind !== 'basis' || !item.basisBinding) return true
+        if (!sameExcerptBasis(item.basisBinding, binding)) return true
+        return !annotationBelongsToBlock(item, blockId, findBlockRangeByBlockId(blockId))
+      })
+      notePopoverAnnotation.value = notePopoverAnnotations.value[0] ?? null
+      if (notePopoverAnnotations.value.length > 0) {
+        notePopoverVisible.value = true
+      } else {
+        closeNotePopover()
+      }
+      showToast('已解除依据')
+      return
+    }
+
+    // 节选：尽量清节点 attrs；没有 attrs 时仍按 annotation 解除
+    tuEditorRef.value?.clearBlockquoteExcerptBindingByBlockId?.(blockId)
     removeExcerptAnnotationsForBlockquote(blockId, binding)
     tuEditorRef.value?.flushContentChange?.()
     emitLocalContentChange()
     notePopoverSourceBinding.value = null
+    notePopoverSourceBadgeLabel.value = '来源'
     notePopoverHeadingTitle.value = ''
     notePopoverAnnotations.value = notePopoverAnnotations.value.filter((item) => {
       if (item.kind !== 'excerpt' || !item.basisBinding) return true
       if (!sameExcerptBasis(item.basisBinding, binding)) return true
-      return !excerptAnnotationBelongsToBlockquote(item, blockId, findBlockquoteRangeByBlockId(blockId))
+      return !excerptAnnotationBelongsToBlockquote(item, blockId, findBlockquoteRangeByBlockId(blockId) ?? findBlockRangeByBlockId(blockId))
     })
     notePopoverAnnotation.value = notePopoverAnnotations.value[0] ?? null
     if (notePopoverAnnotations.value.length > 0) {
@@ -2449,7 +2406,13 @@ function scrollTocItemIntoView(itemId: string) {
   const listRect = list.getBoundingClientRect()
   const elRect = el.getBoundingClientRect()
   if (elRect.top >= listRect.top && elRect.bottom <= listRect.bottom) return
-  el.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+  // Scroll only the TOC list — never use Element.scrollIntoView here.
+  // TOC is sticky inside `.content-scroll`; native scrollIntoView would also
+  // scroll the document and wipe restored browse position after refresh.
+  const delta = elRect.top < listRect.top
+    ? elRect.top - listRect.top - 8
+    : elRect.bottom - listRect.bottom + 8
+  list.scrollTop += delta
 }
 
 function syncTocFocusFollow() {
@@ -3777,6 +3740,33 @@ const handlePdfRegionAnnotationClick = (payload: {
   updateNotePopoverPosition()
 }
 
+const handleBindPdfLinkToRegion = async (annotation?: TextAnnotation) => {
+  const target = annotation ?? notePopoverAnnotation.value
+  const region = target?.pdfRegion
+  if (!region) return
+  const result = await tuEditorRef.value?.applyPdfExcerptLinkToRegion?.(region)
+  if (!result?.ok) {
+    ElMessage.warning(result?.message || '链接改为当前节选失败')
+    return
+  }
+  bumpResourcePdfNotesReload()
+  showToast(`已将链接改为当前节选：${formatPdfExcerptRangeLabel(
+    region.startPage,
+    region.endPage,
+    region.clipTop,
+    region.clipBottom,
+  )}`)
+  closeNotePopover()
+  const fitBlockId = result.blockId || region.blockId
+  // Clip viewport changed — fit block height after layout settles.
+  void nextTick().then(() => {
+    window.requestAnimationFrame(() => {
+      dispatchPdfExcerptFitHeight(fitBlockId)
+      window.setTimeout(() => dispatchPdfExcerptFitHeight(fitBlockId), 160)
+    })
+  })
+}
+
 const handleSaveAnnotation = async (payload: { note: string; tags: BlockTag[] }) => {
   const note = payload.note.trim()
   const now = Date.now()
@@ -3803,15 +3793,31 @@ const handleSaveAnnotation = async (payload: { note: string; tags: BlockTag[] })
     return
   }
 
-  if (!existing && note && pendingNotePdfRegion.value?.resourceItemId) {
+  if (!existing && note && pendingNotePdfRegion.value) {
     const pdfRegion = pendingNotePdfRegion.value
+    const resolvedItemId = await resolveResourceItemIdForPdf({
+      resourceItemId: pdfRegion.resourceItemId,
+      fileId: pdfRegion.fileId,
+    })
+    if (resolvedItemId) {
     try {
-      await createResourcePdfRegionNote(pdfRegion.resourceItemId!, {
+      let excerptId = String(pdfRegion.resourceExcerptId || '').trim()
+      if (!excerptId) {
+        const excerpt = await ensurePdfClipExcerptEntity(resolvedItemId, {
+          startPage: pdfRegion.startPage,
+          endPage: pdfRegion.endPage,
+          clipTop: pdfRegion.clipTop,
+          clipBottom: pdfRegion.clipBottom,
+        }, { fileId: pdfRegion.fileId })
+        excerptId = excerpt.id
+      }
+      await createResourcePdfRegionNote(resolvedItemId, {
         startPage: pdfRegion.startPage,
         endPage: pdfRegion.endPage,
         clipTop: pdfRegion.clipTop,
         clipBottom: pdfRegion.clipBottom,
         note,
+        excerptId,
         fileId: pdfRegion.fileId,
         color: '#FFE082',
       })
@@ -3823,6 +3829,7 @@ const handleSaveAnnotation = async (payload: { note: string; tags: BlockTag[] })
     applyTextTagSpanFromMarking(payload.tags)
     resetTextMarkingPending()
     return
+    }
   }
 
   let annotations = [...localAnnotations.value]
@@ -4189,8 +4196,6 @@ onBeforeUnmount(() => {
   dismissReuseMarkOffer()
   detachReuseMarkListener?.()
   detachReuseMarkListener = null
-  armedReuseBlockquoteIds.clear()
-  armedReuseForNextQuoteContent = false
   if (annotationPersistTimer) {
     clearTimeout(annotationPersistTimer)
     annotationPersistTimer = null
@@ -4732,6 +4737,7 @@ onBeforeUnmount(() => {
       :annotation="notePopoverAnnotation"
       :annotations="notePopoverAnnotations"
       :source-binding="notePopoverSourceBinding"
+      :source-badge-label="notePopoverSourceBadgeLabel"
       :heading-title="notePopoverHeadingTitle"
       :relation-anchor="notePopoverRelationAnchor"
       :anchor-rect="notePopoverAnchor"
@@ -4744,6 +4750,7 @@ onBeforeUnmount(() => {
       :relation-refresh-key="knowledgeRelationRefreshKey"
       @edit="handleEditAnnotation"
       @delete="handleDeleteAnnotation"
+      @bind-link-to-region="handleBindPdfLinkToRegion"
       @navigate-basis="handleNavigateBasisFromPopover"
       @navigate-source="handleNavigateSourceFromPopover"
       @clear-source="handleClearSourceFromPopover"

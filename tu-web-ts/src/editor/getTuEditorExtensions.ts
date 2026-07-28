@@ -70,7 +70,7 @@ export interface TuEditorExtensionsConfig {
   ) => void
   onBlockquoteExcerptClick: (
     binding: HeadingSourceBinding,
-    context: { blockId: string; title: string; clientX: number; clientY: number },
+    context: { blockId: string; title: string; clientX: number; clientY: number; role?: 'excerpt' | 'basis' },
   ) => void
   getAnnotations: () => TextAnnotation[]
   getAnnotationSideMarkersEnabled?: () => boolean

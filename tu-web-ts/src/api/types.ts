@@ -99,8 +99,10 @@ export interface PdfRegionAnchor {
   blockId: string;
   /** Stable PDF file id — survives PDF↔link conversion when blockId is recreated. */
   fileId?: string;
-  /** Resource entity id — notes bound here appear on any embed of this resource. */
+  /** Resource entity id (parent of clip excerpt). */
   resourceItemId?: string;
+  /** Clip-level excerpt this note/region is bound to. */
+  resourceExcerptId?: string;
   startPage: number;
   endPage: number;
   clipTop: number;

@@ -35,13 +35,14 @@ import {
   formatExcerptLocator,
   parseExternalUrl,
 } from '@/utils/externalUrlResource';
-import { normalizeResourcePositionLocator, normalizeResourcePositionLocatorKey } from '@/utils/resourcePositionLocator';
+import { normalizeResourcePositionLocator, normalizeResourcePositionLocatorKey, formatPdfClipLocator, formatPdfClipRangeLabel } from '@/utils/resourcePositionLocator';
 import { BUILTIN_URL_CLUSTER_RULES, findWorkByClusterKey, matchUrlCluster } from '@/utils/urlCluster';
 import { HEADING_SOURCE_COMMENT_RE, parseHeadingSourceComment } from '@/utils/headingSource';
 import { createInitialPageContent } from '@/utils/boardPageContent';
 import type {
   CreateResourceExcerptPayload,
   CreateResourcePdfRegionNotePayload,
+  CreatePdfClipExcerptPayload,
   CreateResourceChapterPayload,
   CreateResourceItemPayload,
   CreateResourceTypePayload,
@@ -1495,20 +1496,84 @@ export function deleteResourceExcerptMock(id: string): void {
     }
   });
   state.resourceExcerpts = state.resourceExcerpts.filter((entry) => entry.id !== id);
+  state.resourcePdfRegionNotes = state.resourcePdfRegionNotes.filter((note) => note.excerptId !== id);
   persistState();
 }
 
 function clampClipRatio(value: number): number {
   if (!Number.isFinite(value)) return 0;
-  return Math.min(1, Math.max(0, value));
+  return Math.min(1, Math.max(0, Math.round(value * 1000) / 1000));
+}
+
+export function ensurePdfClipExcerptMock(
+  resourceItemId: string,
+  payload: CreatePdfClipExcerptPayload,
+): ResourceExcerpt {
+  const item = getResourceItemOrThrow(resourceItemId);
+  const startPage = Math.max(1, Math.floor(payload.startPage) || 1);
+  const endPage = Math.max(startPage, Math.floor(payload.endPage) || startPage);
+  const clipTop = clampClipRatio(payload.clipTop);
+  const clipBottom = clampClipRatio(payload.clipBottom);
+  if (startPage === endPage && clipBottom < clipTop) {
+    throw new Error('clipBottom must be >= clipTop on the same page');
+  }
+  const locator = formatPdfClipLocator({ startPage, endPage, clipTop, clipBottom });
+  const key = normalizeResourcePositionLocatorKey(locator);
+  const existing = state.resourceExcerpts.find(
+    (excerpt) => excerpt.resourceItemId === resourceItemId
+      && normalizeResourcePositionLocatorKey(excerpt.locator) === key,
+  );
+  if (existing) return cloneState(hydrateResourceExcerpt(existing));
+
+  const title = payload.title?.trim()
+    || formatPdfClipRangeLabel({ startPage, endPage, clipTop, clipBottom });
+  const excerpt: ResourceExcerpt = {
+    id: nextId('re'),
+    resourceItemId,
+    resourceItemTitle: item.title,
+    title,
+    chapterId: null,
+    chapterTitle: null,
+    parentId: null,
+    locator,
+    excerptText: '',
+    note: '',
+    sortOrder: state.resourceExcerpts.filter((entry) => entry.resourceItemId === resourceItemId).length,
+  };
+  state.resourceExcerpts.push(excerpt);
+  persistState();
+  return cloneState(hydrateResourceExcerpt(excerpt));
+}
+
+function migrateNoteExcerptIfNeeded(note: ResourcePdfRegionNote): ResourcePdfRegionNote {
+  if (note.excerptId) return note;
+  const excerpt = ensurePdfClipExcerptMock(note.resourceItemId, {
+    startPage: note.startPage,
+    endPage: note.endPage,
+    clipTop: note.clipTop,
+    clipBottom: note.clipBottom,
+    fileId: note.fileId || undefined,
+  });
+  note.excerptId = excerpt.id;
+  persistState();
+  return note;
 }
 
 export function listResourcePdfRegionNotesMock(resourceItemId: string): ResourcePdfRegionNote[] {
   getResourceItemOrThrow(resourceItemId);
+  const notes = state.resourcePdfRegionNotes
+    .filter((note) => note.resourceItemId === resourceItemId)
+    .map(migrateNoteExcerptIfNeeded)
+    .sort((a, b) => a.startPage - b.startPage || String(a.createdAt).localeCompare(String(b.createdAt)));
+  return cloneState(notes);
+}
+
+export function listResourceExcerptPdfRegionNotesMock(excerptId: string): ResourcePdfRegionNote[] {
+  getResourceExcerptOrThrow(excerptId);
   return cloneState(
     state.resourcePdfRegionNotes
-      .filter((note) => note.resourceItemId === resourceItemId)
-      .sort((a, b) => a.startPage - b.startPage || String(a.createdAt).localeCompare(String(b.createdAt))),
+      .filter((note) => note.excerptId === excerptId)
+      .sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt))),
   );
 }
 
@@ -1517,6 +1582,10 @@ export function createResourcePdfRegionNoteMock(
   payload: CreateResourcePdfRegionNotePayload,
 ): ResourcePdfRegionNote {
   getResourceItemOrThrow(resourceItemId);
+  const excerpt = getResourceExcerptOrThrow(payload.excerptId);
+  if (excerpt.resourceItemId !== resourceItemId) {
+    throw new Error('excerpt does not belong to resource item');
+  }
   const startPage = Math.max(1, Math.floor(payload.startPage) || 1);
   const endPage = Math.max(startPage, Math.floor(payload.endPage) || startPage);
   const clipTop = clampClipRatio(payload.clipTop);
@@ -1528,6 +1597,7 @@ export function createResourcePdfRegionNoteMock(
   const note: ResourcePdfRegionNote = {
     id: nextId('rpn'),
     resourceItemId,
+    excerptId: excerpt.id,
     fileId: payload.fileId?.trim() || null,
     startPage,
     endPage,

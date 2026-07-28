@@ -11,14 +11,15 @@ import jakarta.persistence.Index;
 import java.time.LocalDateTime;
 
 /**
- * PDF vertical region note bound to a resource item (not a page block).
- * Survives PDF↔link conversion and appears on any embed of the same resource.
+ * PDF vertical region note bound to a resource excerpt (clip-level entity).
+ * {@code resourceItemId} is redundant for listing whole-resource embeds.
  */
 @Entity
 @Table(
     name = "external_resource_pdf_region_note",
     indexes = {
-        @Index(name = "idx_resource_pdf_region_note_item", columnList = "resource_item_id")
+        @Index(name = "idx_resource_pdf_region_note_item", columnList = "resource_item_id"),
+        @Index(name = "idx_resource_pdf_region_note_excerpt", columnList = "excerpt_id")
     }
 )
 public class ResourcePdfRegionNoteEntity {
@@ -30,7 +31,11 @@ public class ResourcePdfRegionNoteEntity {
     @Column(name = "resource_item_id", length = 64, nullable = false)
     private String resourceItemId;
 
-    /** Optional stored file id for helpers; identity is resource_item_id + geometry. */
+    /** Clip-level excerpt this note belongs to. */
+    @Column(name = "excerpt_id", length = 64)
+    private String excerptId;
+
+    /** Optional stored file id for helpers; identity is excerpt_id (+ geometry). */
     @Column(name = "file_id", length = 64)
     private String fileId;
 
@@ -93,6 +98,14 @@ public class ResourcePdfRegionNoteEntity {
 
     public void setResourceItemId(String resourceItemId) {
         this.resourceItemId = resourceItemId;
+    }
+
+    public String getExcerptId() {
+        return excerptId;
+    }
+
+    public void setExcerptId(String excerptId) {
+        this.excerptId = excerptId;
     }
 
     public String getFileId() {

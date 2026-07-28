@@ -2,6 +2,7 @@ package com.tu.backend.externalresource.controller;
 
 import com.tu.backend.common.ApiResponse;
 import com.tu.backend.common.PageResponse;
+import com.tu.backend.externalresource.dto.CreatePdfClipExcerptRequest;
 import com.tu.backend.externalresource.dto.CreateResourceChapterRequest;
 import com.tu.backend.externalresource.dto.CreateResourceExcerptRequest;
 import com.tu.backend.externalresource.dto.CreateResourceItemRequest;
@@ -102,6 +103,14 @@ public class ResourceItemController {
         @Valid @RequestBody CreateResourceExcerptRequest request
     ) {
         return ApiResponse.success(externalResourceService.createExcerpt(id, request));
+    }
+
+    @PostMapping("/{id}/pdf-clip-excerpts")
+    public ApiResponse<ResourceExcerptDto> ensurePdfClipExcerpt(
+        @PathVariable String id,
+        @Valid @RequestBody CreatePdfClipExcerptRequest request
+    ) {
+        return ApiResponse.success(externalResourceService.ensurePdfClipExcerpt(id, request));
     }
 
     @PatchMapping("/{id}")

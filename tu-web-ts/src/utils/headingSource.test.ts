@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { headingSourceMetaChips, serializeHeadingSourceComment, parseHeadingSourceComment } from './headingSource'
+import { headingSourceMetaChips, headingSourceInfoPrimaryTitle, headingSourceInfoRows, serializeHeadingSourceComment, parseHeadingSourceComment } from './headingSource'
 import type { HeadingSourceBinding } from '@/api/types'
 
 describe('headingSourceMetaChips', () => {
@@ -34,6 +34,30 @@ describe('headingSourceMetaChips', () => {
       },
     }
     expect(headingSourceMetaChips(binding)).toEqual(['来源', '示例之书', '节选 A'])
+  })
+})
+
+describe('headingSourceInfoRows', () => {
+  it('lists source fields for popover detail', () => {
+    const binding: HeadingSourceBinding = {
+      resourceItemId: 'ri-1',
+      resourceExcerptId: 're-1',
+      snapshot: {
+        resourceTitle: '示例之书',
+        resourceTypeName: '图书',
+        workTitle: '结构化笔记',
+        excerptTitle: '关于结构化笔记',
+        excerptLocator: 'page:18',
+      },
+    }
+    expect(headingSourceInfoRows(binding)).toEqual([
+      { label: '资源', value: '示例之书' },
+      { label: '类型', value: '图书' },
+      { label: '归类', value: '结构化笔记' },
+      { label: '节选', value: '关于结构化笔记' },
+      { label: '定位', value: '第 18 页' },
+    ])
+    expect(headingSourceInfoPrimaryTitle(binding)).toBe('关于结构化笔记')
   })
 })
 

@@ -118,6 +118,21 @@ description: >-
 - 将「按标签查看」放在页面标题下方 → 滚动正文后筛选条不可见。
 - 把仅对当前 embed 有效的按钮放到 page 顶栏。
 
+## 5.1 NodeView 拖拽不得抢占控件交互
+
+块级 NodeView（`ResizableBlockWrapper` / `TuBlockChromeHeader`）可用顶栏作拖拽手柄，但**输入框划选文字、按钮点击**等不得变成拖动整个块。
+
+### 实现要点
+
+- 交互控件：`input` / `textarea` / `button` / `a` / `contenteditable`，或显式 `data-node-view-no-drag`。
+- 手柄根：`data-node-view-drag-handle`；Node 扩展用 `stopNonHandleNodeViewDragEvent`。
+- **仅 `@mousedown.stop` 不够**：父级 `draggable="true"` 仍会在输入框拖选时触发 HTML5 `dragstart`。须在手柄根 `@dragstart` 调用 `preventNodeViewDragFromInteractive`；标题 input `draggable="false"`，`focus` 期间关闭手柄行 `draggable`。
+- 参考：`nodeViewDragHandle.ts`、`TuBlockChromeHeader.vue`；规则 `.cursor/rules/tu-editor-nodeview-drag.mdc`。
+
+### 反例
+
+- 整行 chrome `draggable` + 标题 input 只 `@mousedown.stop` → 编辑态划选标题变成拖 NodeView。
+
 ## 6. 弹窗内无上限列表
 
 弹窗、气泡面板中，**长度不受固定上限约束**的列表（标签候选、搜索结果、节选列表等）不得一次性撑开整个面板，以免把底部「取消 / 保存」等操作挤出视口。
@@ -189,5 +204,6 @@ description: >-
 - [ ] 可能无限增长的侧栏列表/树是否在内部滚动容器内（`min-height: 0` + `el-scrollbar`）？
 - [ ] PDF 摘页是否只存 `fileId` + 页码、用 PDF.js + Range 渲染（非 iframe `file://` / 物理切分）？
 - [ ] 新的区域级能力是否放在 sticky 顶栏 / Header / 右键菜单，而非仅正文顶部？
+- [ ] NodeView 拖拽手柄内的 input/按钮是否不会在划选/点击时拖走整块（`preventNodeViewDragFromInteractive` + focus 时关 `draggable`）？
 - [ ] 弹窗内无上限列表是否分页或按需加载，且 footer 操作固定可见？
 - [ ] 跨锚点知识关联是否走 `knowledge_relation` API，而非写死 `source_kind`？（见 `docs/knowledge-relations.md`）

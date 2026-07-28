@@ -54,7 +54,7 @@ describe('pdfExcerpt serialization', () => {
     expect(parsed?.endPage).toBe(120)
   })
 
-  it('roundtrips sourceHref/sourceLabel for link presentation', () => {
+  it('roundtrips sourceHref/sourceLabel/title for link presentation', () => {
     const attrs = {
       blockId: 'pe-src',
       fileId: 'file-abc',
@@ -65,10 +65,12 @@ describe('pdfExcerpt serialization', () => {
       height: 480,
       clipTop: 0,
       clipBottom: 1,
+      title: '王道网络',
       sourceHref: 'resource:ri-1',
       sourceLabel: '王道网络',
     }
     const comment = serializePdfExcerptComment(attrs)
+    expect(comment).toContain('title="王道网络"')
     expect(comment).toContain('sourceHref="resource:ri-1"')
     expect(comment).toContain('sourceLabel="王道网络"')
     const match = comment.match(/<!--tu:pdf-excerpt\s+([^>]+)-->/)

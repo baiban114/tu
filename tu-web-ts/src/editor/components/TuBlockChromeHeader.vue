@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
+import { preventNodeViewDragFromInteractive } from '@/editor/extensions/nodeViewDragHandle'
 
 interface CompoundBadge {
   annotationId: string
@@ -24,6 +25,8 @@ const emit = defineEmits<{
 }>()
 
 const titleDraft = ref(props.title)
+/** While the title input is focused, disable HTML5 drag so text selection works. */
+const titleInputFocused = ref(false)
 
 watch(
   () => props.title,
@@ -32,11 +35,29 @@ watch(
   },
 )
 
+const headerDraggable = computed(() => (
+  props.dragHandle && !titleInputFocused.value ? 'true' : undefined
+))
+
 function commitTitle() {
   if (!props.titleEditable) return
   const next = titleDraft.value.trim()
   if (next === props.title.trim()) return
   emit('title-change', next)
+}
+
+function onTitleFocus() {
+  titleInputFocused.value = true
+}
+
+function onTitleBlur() {
+  titleInputFocused.value = false
+  commitTitle()
+}
+
+/** Native drag on the chrome row must not steal input text selection. */
+function onHeaderDragStart(event: DragEvent) {
+  preventNodeViewDragFromInteractive(event)
 }
 </script>
 
@@ -47,7 +68,8 @@ function commitTitle() {
     :class="{ 'tu-block-chrome-header--drag-handle': dragHandle }"
     :data-drag-handle="dragHandle ? '' : undefined"
     :data-node-view-drag-handle="dragHandle ? '' : undefined"
-    :draggable="dragHandle ? 'true' : undefined"
+    :draggable="headerDraggable"
+    @dragstart="onHeaderDragStart"
   >
     <div class="tu-block-chrome-header__start">
       <span v-if="typeLabel" class="tu-block-chrome-header__type-badge">{{ typeLabel }}</span>
@@ -57,10 +79,13 @@ function commitTitle() {
         class="tu-block-chrome-header__title-input"
         type="text"
         data-node-view-no-drag
+        draggable="false"
         :placeholder="titlePlaceholder"
         @mousedown.stop
         @click.stop
-        @blur="commitTitle"
+        @dragstart.stop.prevent
+        @focus="onTitleFocus"
+        @blur="onTitleBlur"
         @keydown.enter.prevent="($event.target as HTMLInputElement).blur()"
       >
       <span

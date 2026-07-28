@@ -1,4 +1,8 @@
+/** Hover-handle grip hit size (blue / purple dot). */
 export const EDITOR_GUTTER_BTN_SIZE = 28
+
+/** Section fold chevron hit size — tight around the 12px icon. */
+export const EDITOR_FOLD_BTN_SIZE = 14
 
 export interface ContentScrollGutterAnchor {
   rect: DOMRect
@@ -23,10 +27,12 @@ export function getContentScrollGutterAnchor(el: HTMLElement | null | undefined)
 
   const rect = scrollEl.getBoundingClientRect()
   const paddingLeft = Number.parseFloat(getComputedStyle(scrollEl).paddingLeft) || 0
-  const half = EDITOR_GUTTER_BTN_SIZE / 2
+  const handleHalf = EDITOR_GUTTER_BTN_SIZE / 2
+  const foldHalf = EDITOR_FOLD_BTN_SIZE / 2
 
-  const outerLeft = rect.left + half
-  const innerLeft = rect.left + Math.max(half, paddingLeft - half)
+  const outerLeft = rect.left + handleHalf
+  // Fold sits just inside the content edge so the chevron barely eats gutter width.
+  const innerLeft = rect.left + Math.max(foldHalf, paddingLeft - foldHalf)
 
   return {
     rect,
@@ -40,12 +46,13 @@ export function getHandleTriggerBounds(
   gutter: ContentScrollGutterAnchor,
   options?: { contentLeft?: number },
 ): HandleTriggerBounds {
-  const half = EDITOR_GUTTER_BTN_SIZE / 2
+  const handleHalf = EDITOR_GUTTER_BTN_SIZE / 2
+  const foldHalf = EDITOR_FOLD_BTN_SIZE / 2
   // 左缘：覆盖手柄圆点整宽，再略向外扩半钮，避免移入圆点时出界
-  const hoverLeftEdge = gutter.hoverLeft - half
-  const left = Math.min(gutter.rect.left, hoverLeftEdge) - half
+  const hoverLeftEdge = gutter.hoverLeft - handleHalf
+  const left = Math.min(gutter.rect.left, hoverLeftEdge) - handleHalf
   // 右缘：折叠钮左缘，且至少贴到正文左缘，消除「正文 → 手柄」死区
-  const foldRight = gutter.foldLeft + half
+  const foldRight = gutter.foldLeft + foldHalf
   const contentLeft = options?.contentLeft
   const right = contentLeft != null
     ? Math.max(foldRight, contentLeft)

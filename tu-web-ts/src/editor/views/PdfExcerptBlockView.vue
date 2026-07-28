@@ -2,13 +2,14 @@
 import { computed, inject, markRaw, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch, type ComputedRef, type Ref } from 'vue'
 import { nodeViewProps, NodeViewWrapper } from '@tiptap/vue-3'
 import { buildFileUrl } from '@/api/fileStorage'
-import { listResourcePdfRegionNotes } from '@/api/externalResource'
+import { listResourceExcerptPdfRegionNotes, listResourcePdfRegionNotes } from '@/api/externalResource'
 import type { PdfRegionAnchor, TextAnnotation } from '@/api/types'
 import {
   collectPdfRegionNotesForBlock,
   filterNotesOverlappingViewport,
   resourcePdfNoteToAnnotation,
 } from '@/utils/pdfRegionNotes'
+import { buildPdfClipExcerptSourceHref, ensurePdfClipExcerptEntity, resolveResourceItemIdForPdf } from '@/utils/pdfClipExcerpt'
 import ResizableBlockWrapper from '../components/ResizableBlockWrapper.vue'
 import {
   PDF_EXCERPT_DEFAULT_HEIGHT,
@@ -63,8 +64,14 @@ const resourcePdfNotesReloadToken = inject<Ref<number>>('resourcePdfNotesReloadT
 const blockId = computed(() => props.node.attrs.blockId || '')
 const fileId = computed(() => String(props.node.attrs.fileId || ''))
 const sourceHref = computed(() => String(props.node.attrs.sourceHref || '').trim())
-const resourceItemId = computed(() => parseResourceLocator(sourceHref.value)?.itemId || '')
+const resourceLocator = computed(() => parseResourceLocator(sourceHref.value))
+const resourceItemId = computed(() => resourceLocator.value?.itemId || '')
+const resourceExcerptId = computed(() => resourceLocator.value?.excerptId || '')
 const fileName = computed(() => String(props.node.attrs.fileName || 'PDF'))
+const chromeTitle = computed(() => {
+  const title = String(props.node.attrs.title || props.node.attrs.sourceLabel || '').trim()
+  return title || fileName.value
+})
 const viewMode = computed(() => parsePdfExcerptViewMode(String(props.node.attrs.viewMode || 'excerpt')))
 const startPage = computed(() => Number(props.node.attrs.startPage) || 1)
 const endPage = computed(() => Number(props.node.attrs.endPage) || 1)
@@ -79,14 +86,17 @@ let resourceNotesLoadSeq = 0
 
 async function loadResourcePdfNotes() {
   const itemId = resourceItemId.value
+  const excerptId = resourceExcerptId.value
   const bid = blockId.value
-  if (!itemId || !bid) {
+  if ((!itemId && !excerptId) || !bid) {
     resourcePdfNotes.value = []
     return
   }
   const seq = ++resourceNotesLoadSeq
   try {
-    const notes = await listResourcePdfRegionNotes(itemId)
+    const notes = excerptId
+      ? await listResourceExcerptPdfRegionNotes(excerptId)
+      : await listResourcePdfRegionNotes(itemId)
     if (seq !== resourceNotesLoadSeq) return
     resourcePdfNotes.value = notes.map((note) => resourcePdfNoteToAnnotation(note, bid))
   } catch {
@@ -99,15 +109,17 @@ const blockPdfRegionAnnotations = computed(() => {
   const pageLocal = collectPdfRegionNotesForBlock(pagePdfRegionAnnotations.value, {
     blockId: blockId.value,
     fileId: fileId.value,
-  }).filter((ann) => !ann.pdfRegion?.resourceItemId)
+  }).filter((ann) => !ann.pdfRegion?.resourceItemId && !ann.pdfRegion?.resourceExcerptId)
 
-  const fromResource = filterNotesOverlappingViewport(resourcePdfNotes.value, {
-    viewMode: viewMode.value,
-    startPage: startPage.value,
-    endPage: endPage.value,
-    clipTop: clipRatio.value.clipTop,
-    clipBottom: clipRatio.value.clipBottom,
-  })
+  const fromResource = resourceExcerptId.value
+    ? resourcePdfNotes.value
+    : filterNotesOverlappingViewport(resourcePdfNotes.value, {
+      viewMode: viewMode.value,
+      startPage: startPage.value,
+      endPage: endPage.value,
+      clipTop: clipRatio.value.clipTop,
+      clipBottom: clipRatio.value.clipBottom,
+    })
 
   const byId = new Map<string, TextAnnotation>()
   for (const ann of pageLocal) byId.set(ann.id, ann)
@@ -123,7 +135,7 @@ const pageCanvases = ref<Array<{ pageNumber: number; placeholderHeight: number }
 const docRef = shallowRef<PdfDocumentProxy | null>(null)
 const sidebarNodes = ref<PdfSidebarNode[]>([])
 const sidebarSource = ref<PdfSidebarSource>('pages')
-const sidebarOpen = ref(true)
+const sidebarOpen = ref(false)
 const sidebarWidth = ref(PDF_EXCERPT_SIDEBAR_DEFAULT_WIDTH)
 const savedSidebarWidth = ref(PDF_EXCERPT_SIDEBAR_DEFAULT_WIDTH)
 const activeNodeId = ref<string | null>(null)
@@ -505,6 +517,11 @@ function handleEditSource() {
   onEditPdfExcerptSource(blockId.value)
 }
 
+function onChromeTitleChange(title: string) {
+  const next = title.trim()
+  props.updateAttributes({ title: next, sourceLabel: next })
+}
+
 function hitTestPageVertical(clientY: number): PdfPageVerticalHit | null {
   const pages = [...pageCanvases.value].sort((a, b) => a.pageNumber - b.pageNumber)
   if (pages.length === 0) return null
@@ -719,41 +736,76 @@ function onClipSelectMouseUp(event: MouseEvent) {
   overlayLayoutTick.value += 1
 }
 
-function confirmClipSelect() {
+async function confirmClipSelect() {
   const pending = clipPending.value
   if (!pending) return
   const next = clipAttrsFromVerticalHits(pending.topHit, pending.bottomHit)
   const prevHref = String(props.node.attrs.sourceHref || '')
-  props.updateAttributes({
-    viewMode: 'excerpt',
-    startPage: next.startPage,
-    endPage: next.endPage,
-    clipTop: next.clipTop,
-    clipBottom: next.clipBottom,
-    ...(isResourceLocatorHref(prevHref)
-      ? {
-        sourceHref: syncResourceHrefWithPdfPages(
+  const itemId = await resolveResourceItemIdForPdf({
+    resourceItemId: resourceItemId.value,
+    sourceHref: prevHref,
+    fileId: fileId.value,
+  })
+  let nextSourceHref = ''
+  if (itemId) {
+    try {
+      const excerpt = await ensurePdfClipExcerptEntity(itemId, next, { fileId: fileId.value })
+      nextSourceHref = buildPdfClipExcerptSourceHref(itemId, excerpt.id, next)
+    } catch {
+      nextSourceHref = isResourceLocatorHref(prevHref)
+        ? syncResourceHrefWithPdfPages(
           prevHref,
           'excerpt',
           next.startPage,
           next.endPage,
           next.clipTop,
           next.clipBottom,
-        ),
-      }
-      : {}),
+        )
+        : ''
+    }
+  } else if (isResourceLocatorHref(prevHref)) {
+    nextSourceHref = syncResourceHrefWithPdfPages(
+      prevHref,
+      'excerpt',
+      next.startPage,
+      next.endPage,
+      next.clipTop,
+      next.clipBottom,
+    )
+  }
+  props.updateAttributes({
+    viewMode: 'excerpt',
+    startPage: next.startPage,
+    endPage: next.endPage,
+    clipTop: next.clipTop,
+    clipBottom: next.clipBottom,
+    ...(nextSourceHref ? { sourceHref: nextSourceHref } : {}),
   })
   cancelClipSelect()
+  void loadResourcePdfNotes()
+  // Match「链接改为当前节选」: fit height to the new clip viewport.
+  void nextTick().then(() => {
+    requestAnimationFrame(() => {
+      fitHeightToContent()
+      window.setTimeout(() => fitHeightToContent(), 160)
+    })
+  })
 }
 
-function publishClipNote() {
+async function publishClipNote() {
   const pending = clipPending.value
   if (!pending || !blockId.value || !fileId.value) return
   const next = clipAttrsFromVerticalHits(pending.topHit, pending.bottomHit)
+  const itemId = await resolveResourceItemIdForPdf({
+    resourceItemId: resourceItemId.value,
+    sourceHref: sourceHref.value,
+    fileId: fileId.value,
+  })
   onPublishPdfRegionNote({
     blockId: blockId.value,
     fileId: fileId.value,
-    resourceItemId: resourceItemId.value || undefined,
+    resourceItemId: itemId || undefined,
+    resourceExcerptId: resourceExcerptId.value || undefined,
     startPage: next.startPage,
     endPage: next.endPage,
     clipTop: next.clipTop,
@@ -1191,7 +1243,7 @@ watch(
 )
 
 watch(
-  [resourceItemId, blockId, resourcePdfNotesReloadToken],
+  [resourceItemId, resourceExcerptId, blockId, resourcePdfNotesReloadToken],
   () => {
     void loadResourcePdfNotes()
   },
@@ -1281,9 +1333,13 @@ onBeforeUnmount(() => {
       :min-height="PDF_EXCERPT_MIN_HEIGHT"
       :max-height="PDF_EXCERPT_MAX_HEIGHT"
       block-type-label="PDF"
+      :title="chromeTitle"
+      title-editable
+      title-placeholder="PDF 标题"
       :block-id="blockId"
       block-type="pdfExcerpt"
       @resize="onResize"
+      @title-change="onChromeTitleChange"
     >
       <template #header-meta>
         <span class="pdf-excerpt-block__meta" :title="metaLabel">

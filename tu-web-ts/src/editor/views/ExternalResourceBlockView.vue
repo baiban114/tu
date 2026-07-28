@@ -82,21 +82,63 @@ const isExcerpt = computed(() => data.value.mode === 'excerpt' || Boolean(data.v
 const usingSnapshot = computed(() => Boolean(loadError.value || (!latestItem.value && snapshot.value.resourceTitle)))
 const headingText = computed(() => props.node.attrs.title || (isExcerpt.value ? excerptTitle.value : resourceTitle.value))
 const showInlineTitle = computed(() => headingLevel.value <= 0)
-const cardTitle = computed(() => (isExcerpt.value ? (excerptTitle.value || resourceTitle.value) : resourceTitle.value))
-const cardTitleDisplay = computed(() => truncateDisplayText(cardTitle.value, META_DISPLAY_LIMITS.title))
-const workTitleDisplay = computed(() => truncateDisplayText(workTitle.value, META_DISPLAY_LIMITS.workTitle))
-const identityDisplay = computed(() => {
-  if (!identityValue.value) return ''
-  const value = truncateDisplayText(identityValue.value, META_DISPLAY_LIMITS.identityValue)
-  return `${identityLabel.value}: ${value}`
-})
-const chapterTitleDisplay = computed(() => truncateDisplayText(chapterTitle.value, META_DISPLAY_LIMITS.chapterTitle))
-const excerptLocatorDisplay = computed(() => {
-  const text = resourcePositionDisplay(excerptLocator.value)
-  return truncateDisplayText(text, META_DISPLAY_LIMITS.locator)
-})
-const excerptNoteDisplay = computed(() => truncateDisplayText(excerptNote.value, META_DISPLAY_LIMITS.note))
 const sourceUrlLabel = computed(() => formatSourceUrlLabel(sourceUrl.value))
+
+const metaBadge = computed(() => (isExcerpt.value ? '资源节选' : resourceTypeName.value))
+
+const metaPathParts = computed(() => {
+  const parts: string[] = []
+  if (
+    isExcerpt.value
+    && resourceTypeName.value
+    && resourceTypeName.value !== metaBadge.value
+    && resourceTypeName.value !== '外部资源'
+  ) {
+    parts.push(truncateDisplayText(resourceTypeName.value, META_DISPLAY_LIMITS.workTitle))
+  }
+  if (workTitle.value) {
+    parts.push(truncateDisplayText(workTitle.value, META_DISPLAY_LIMITS.workTitle))
+  } else if (
+    showInlineTitle.value
+    && resourceTitle.value
+    && resourceTitle.value !== metaBadge.value
+    && (!isExcerpt.value || !excerptTitle.value)
+  ) {
+    parts.push(truncateDisplayText(resourceTitle.value, META_DISPLAY_LIMITS.title))
+  } else if (
+    !isExcerpt.value
+    && resourceTitle.value
+    && resourceTitle.value !== metaBadge.value
+  ) {
+    parts.push(truncateDisplayText(resourceTitle.value, META_DISPLAY_LIMITS.title))
+  }
+  if (identityValue.value) {
+    const value = truncateDisplayText(identityValue.value, META_DISPLAY_LIMITS.identityValue)
+    parts.push(`${identityLabel.value}: ${value}`)
+  }
+  if (isExcerpt.value && chapterTitle.value) {
+    parts.push(truncateDisplayText(chapterTitle.value, META_DISPLAY_LIMITS.chapterTitle))
+  }
+  if (isExcerpt.value && excerptLocator.value) {
+    const text = resourcePositionDisplay(excerptLocator.value)
+    if (text) parts.push(truncateDisplayText(text, META_DISPLAY_LIMITS.locator))
+  }
+  if (showInlineTitle.value && isExcerpt.value && excerptTitle.value) {
+    const title = truncateDisplayText(excerptTitle.value, META_DISPLAY_LIMITS.title)
+    const last = parts[parts.length - 1]
+    const workDisp = workTitle.value
+      ? truncateDisplayText(workTitle.value, META_DISPLAY_LIMITS.workTitle)
+      : ''
+    if (title && title !== last && title !== workDisp) parts.push(title)
+  }
+  if (isExcerpt.value && excerptNote.value) {
+    parts.push(truncateDisplayText(excerptNote.value, META_DISPLAY_LIMITS.note))
+  }
+  return parts.filter(Boolean)
+})
+
+const metaPath = computed(() => metaPathParts.value.join(' > '))
+const metaPathTitle = computed(() => metaPathParts.value.join(' > '))
 
 const excerptEditorBlocks = computed<Block[]>(() => [{
   id: blockId.value || 'external-resource-excerpt',
@@ -155,38 +197,13 @@ onMounted(() => {
       @compound-badge-click="handleBadgeClick"
     >
       <template #header-meta>
-        <span class="external-resource-meta__badge">{{ isExcerpt ? '资源节选' : resourceTypeName }}</span>
+        <span class="external-resource-meta__role">{{ metaBadge }}</span>
+        <span
+          v-if="metaPath"
+          class="external-resource-meta__path"
+          :title="metaPathTitle"
+        >{{ metaPath }}</span>
         <span v-if="usingSnapshot" class="external-resource-meta__snapshot">快照</span>
-        <span
-          v-if="showInlineTitle && cardTitleDisplay"
-          class="external-resource-meta__title"
-          :title="cardTitle"
-        >{{ cardTitleDisplay }}</span>
-        <span
-          v-if="workTitleDisplay"
-          class="external-resource-meta__chip"
-          :title="workTitle"
-        >{{ workTitleDisplay }}</span>
-        <span
-          v-if="identityDisplay"
-          class="external-resource-meta__chip"
-          :title="`${identityLabel}: ${identityValue}`"
-        >{{ identityDisplay }}</span>
-        <span
-          v-if="isExcerpt && chapterTitleDisplay"
-          class="external-resource-meta__chip"
-          :title="`章节：${chapterTitle}`"
-        >章节：{{ chapterTitleDisplay }}</span>
-        <span
-          v-if="isExcerpt && excerptLocatorDisplay"
-          class="external-resource-meta__chip"
-          :title="excerptLocator"
-        >{{ excerptLocatorDisplay }}</span>
-        <span
-          v-if="isExcerpt && excerptNoteDisplay"
-          class="external-resource-meta__chip external-resource-meta__chip--note"
-          :title="excerptNote"
-        >{{ excerptNoteDisplay }}</span>
         <a
           v-if="sourceUrl"
           class="external-resource-meta__link"
@@ -238,43 +255,31 @@ onMounted(() => {
   padding: 10px 12px;
 }
 
-.external-resource-meta__badge,
+.external-resource-meta__role {
+  flex-shrink: 0;
+  font-weight: 700;
+  color: #075985;
+  font-size: 12px;
+}
+
+.external-resource-meta__path {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+  color: #1f2937;
+  font-size: 12px;
+}
+
 .external-resource-meta__snapshot {
   border-radius: 999px;
   padding: 1px 8px;
   font-size: 11px;
   flex-shrink: 0;
-}
-
-.external-resource-meta__badge {
-  color: #075985;
-  background: #e0f2fe;
-}
-
-.external-resource-meta__snapshot {
   color: #92400e;
   background: #fef3c7;
-}
-
-.external-resource-meta__title {
-  max-width: min(100%, 360px);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-weight: 600;
-  color: #1f2937;
-}
-
-.external-resource-meta__chip {
-  max-width: min(100%, 240px);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.external-resource-meta__chip--note {
-  max-width: min(100%, 280px);
-  font-style: italic;
 }
 
 .external-resource-meta__link {
@@ -283,6 +288,7 @@ onMounted(() => {
   text-overflow: ellipsis;
   white-space: nowrap;
   color: #1677ff;
+  font-size: 12px;
 }
 
 .external-resource-meta__status {

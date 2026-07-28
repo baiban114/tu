@@ -5,6 +5,7 @@ import java.time.LocalDateTime;
 public record ResourcePdfRegionNoteDto(
     String id,
     String resourceItemId,
+    String excerptId,
     String fileId,
     int startPage,
     int endPage,

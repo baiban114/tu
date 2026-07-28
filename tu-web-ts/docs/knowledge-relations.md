@@ -63,6 +63,8 @@ flowchart LR
 
 工具：`tu-web-ts/src/utils/resourcePositionLocator.ts`；UI：`ResourcePositionLocatorField.vue`（标记节选、资源管理节选表单）。粘贴带 `#` 的链接时自动写入 `anchor:…`；历史 `#…` / `p. 18` 等形式读入时自动规范化。
 
+**浏览定位（选资源 / 已标记节选）**：`ResourceLocatorBrowse`（`src/components/resourceLocator/`）以资源实体 → 已标记节选树为统一入口，供「设置依据 / 标记节选 / 绑定来源」等复用；左侧点击仅选中并在右侧展示信息，须点确认按钮后才关联。与上方 `ResourcePositionLocatorField`（编辑节选内 `page:`/`anchor:` 位置串）职责不同。
+
 ## 4. 关系类型注册表
 
 - 系统预置（`kbId = null`）：`source`、`basis`、`case`、`cites`、`related`、`association`（联想）、`prerequisite`
@@ -173,7 +175,7 @@ flowchart LR
 - 查看：正文内点击标注/依据高亮或**标题节元数据条**（来源 chips + 节标签），均打开同一 `NotePopover`（来源、笔记/依据、关联知识点）；资源管理「知识关联」Tab 为全库视图
 - **AI 标记**：文档页工具栏「AI 分析标记」；来源/依据徽章与关系列表显示 `AI` chip；可「转为手动标记」（`markerSource` → `user`）
 - **标记来源（标题节）**：节手柄「标记来源」后，标题下方显示浅蓝元信息条（`来源` / 类型 / 归类 / 定位 / 节选名）；同条可并排显示节标签 chips；点击打开 `NotePopover`
-- **标记节选**：创建资源库节选后，在文档对应位置写入 `kind=excerpt` 标注，并在 Markdown `>` 引用块（blockquote）上方显示浅蓝元信息条（资源节选 / 类型 / 归类 / 定位）；点击打开 `NotePopover`。绑定持久化为 `<!--tu:blockquote-excerpt ...-->` 注释 + 节点 `excerptBinding`。成功后写入用户「学习进行中」目标（`localStorage`，按用户分键；有 `resourceExcerptId` 优先节选，否则仅为 Item）。下次**粘贴正文**或**新建未绑定引用块并填入内容**时，若进行中目标含节选，划选工具栏上方出现倒计时确认条，确认后复用同一 `HeadingSourceBinding` 并刷新进行中时间戳；文档页顶栏展示「进行中」芯片可跳转资源页或清除
+- **标记节选**：创建资源库节选后，在文档对应位置写入 `kind=excerpt` 标注，并在 Markdown `>` 引用块（blockquote）上方显示浅蓝元信息条（资源节选 / 类型 / 归类 / 定位）；点击打开 `NotePopover`。绑定持久化为 `<!--tu:blockquote-excerpt ...-->` 注释 + 节点 `excerptBinding`。成功后写入用户「学习进行中」目标（`localStorage`，按用户分键；有 `resourceExcerptId` 优先节选，否则仅为 Item）。下次**粘贴（或一次性插入）新正文**时，若进行中目标含节选，划选工具栏上方出现倒计时确认条，确认后复用同一 `HeadingSourceBinding` 并刷新进行中时间戳；仅结构改造（回车拆分引用、空 `>`、包裹旧文）不触发。文档页顶栏展示「进行中」芯片可跳转资源页或清除
 - 跳转：`navigateKnowledgePoint(pointId)` → 取 `is_primary` 证据 → `navigateKnowledgeAnchor(locator)`
 
 ## 9. Phase 2/3

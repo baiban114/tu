@@ -73,7 +73,10 @@ export function blockquoteExcerptBadgeLabel(binding: HeadingSourceBinding): stri
   return label.length > 22 ? `${label.slice(0, 22)}…` : label
 }
 
-export function blockquoteExcerptBadgeTitle(binding: HeadingSourceBinding): string {
+export function blockquoteExcerptBadgeTitle(
+  binding: HeadingSourceBinding,
+  role: BlockResourceBindingRole = 'excerpt',
+): string {
   const snapshot = binding.snapshot
   const parts = [
     snapshot.resourceTypeName,
@@ -82,27 +85,82 @@ export function blockquoteExcerptBadgeTitle(binding: HeadingSourceBinding): stri
     snapshot.excerptLocator ? resourcePositionDisplay(snapshot.excerptLocator) : '',
     snapshot.excerptTitle,
   ].filter(Boolean)
-  return parts.join(' · ') || '外部资源节选'
+  if (parts.length) return parts.join(' > ')
+  return role === 'basis'
+    ? (binding.resourceExcerptId ? '外部资源依据' : '外部资源')
+    : '外部资源节选'
 }
 
-export function blockquoteExcerptMetaChips(binding: HeadingSourceBinding): string[] {
+export function blockquoteExcerptMetaChips(
+  binding: HeadingSourceBinding,
+  role: BlockResourceBindingRole = 'excerpt',
+): string[] {
   const snapshot = binding.snapshot
-  const chips = ['资源节选']
+  const chips = [role === 'basis' ? '依据' : '资源节选']
   if (snapshot.resourceTypeName) chips.push(snapshot.resourceTypeName)
   if (snapshot.workTitle) chips.push(snapshot.workTitle)
   else if (snapshot.resourceTitle) chips.push(snapshot.resourceTitle)
   if (snapshot.excerptLocator) chips.push(resourcePositionDisplay(snapshot.excerptLocator))
+  if (role === 'basis' && snapshot.excerptTitle) {
+    const last = chips[chips.length - 1]
+    if (snapshot.excerptTitle !== last && snapshot.excerptTitle !== snapshot.workTitle) {
+      chips.push(snapshot.excerptTitle)
+    }
+  }
   return chips
 }
 
-export function resolveBlockquoteExcerptBinding(
+/** Role label (依据 / 资源节选) — not part of the locator path. */
+export function blockquoteExcerptMetaRole(
+  role: BlockResourceBindingRole = 'excerpt',
+): string {
+  return role === 'basis' ? '依据' : '资源节选'
+}
+
+/** Resource locator layers only (joined with ` > ` in UI). */
+export function blockquoteExcerptMetaPathParts(
+  binding: HeadingSourceBinding,
+  role: BlockResourceBindingRole = 'excerpt',
+): string[] {
+  return blockquoteExcerptMetaChips(binding, role).slice(1)
+}
+
+export type BlockResourceBindingRole = 'excerpt' | 'basis'
+
+export interface ResolvedBlockResourceBinding {
+  binding: HeadingSourceBinding
+  role: BlockResourceBindingRole
+}
+
+function annotationMatchesBlock(
+  ann: TextAnnotation,
+  blockId: string,
+  innerFrom: number,
+  innerTo: number,
+): boolean {
+  if (ann.scope === 'block' && blockId && ann.spannedBlockIds?.includes(blockId)) return true
+  if (ann.scope === 'compound' && blockId && ann.spannedBlockIds?.includes(blockId)) return true
+  if (typeof ann.from === 'number' && typeof ann.to === 'number') {
+    if (ann.from >= innerFrom && ann.to <= innerTo) return true
+    if (ann.from < innerTo && ann.to > innerFrom) return true
+  }
+  return false
+}
+
+/**
+ * Resolve resource meta for a blockquote (or similar shell):
+ * prefer stored excerptBinding / excerpt annotations, then basis annotations.
+ */
+export function resolveBlockResourceBinding(
   node: { attrs: Record<string, unknown>; textContent?: string },
   pos: number,
   nodeSize: number,
   annotations: TextAnnotation[],
-): HeadingSourceBinding | null {
+): ResolvedBlockResourceBinding | null {
   const stored = node.attrs.excerptBinding as HeadingSourceBinding | null | undefined
-  if (stored?.resourceItemId && stored.resourceExcerptId) return stored
+  if (stored?.resourceItemId && stored.resourceExcerptId) {
+    return { binding: stored, role: 'excerpt' }
+  }
 
   const blockId = String(node.attrs.blockId || '')
   const innerFrom = pos + 1
@@ -110,14 +168,33 @@ export function resolveBlockquoteExcerptBinding(
 
   for (const ann of annotations) {
     if (ann.kind !== 'excerpt' || !ann.basisBinding?.resourceItemId || !ann.basisBinding.resourceExcerptId) continue
-    if (ann.scope === 'block' && blockId && ann.spannedBlockIds?.includes(blockId)) {
-      return ann.basisBinding
-    }
-    if (typeof ann.from === 'number' && typeof ann.to === 'number') {
-      if (ann.from >= innerFrom && ann.to <= innerTo) return ann.basisBinding
-      if (ann.from < innerTo && ann.to > innerFrom) return ann.basisBinding
+    if (annotationMatchesBlock(ann, blockId, innerFrom, innerTo)) {
+      return { binding: ann.basisBinding, role: 'excerpt' }
     }
   }
+
+  for (const ann of annotations) {
+    if (ann.kind !== 'basis' || !ann.basisBinding?.resourceItemId) continue
+    if (annotationMatchesBlock(ann, blockId, innerFrom, innerTo)) {
+      return { binding: ann.basisBinding, role: 'basis' }
+    }
+  }
+
+  return null
+}
+
+/** @deprecated Prefer resolveBlockResourceBinding */
+export function resolveBlockquoteExcerptBinding(
+  node: { attrs: Record<string, unknown>; textContent?: string },
+  pos: number,
+  nodeSize: number,
+  annotations: TextAnnotation[],
+): HeadingSourceBinding | null {
+  const resolved = resolveBlockResourceBinding(node, pos, nodeSize, annotations)
+  if (!resolved) return null
+  if (resolved.role === 'excerpt') return resolved.binding
+  // Legacy callers only rendered excerpt meta (required excerpt id).
+  if (resolved.binding.resourceExcerptId) return resolved.binding
   return null
 }
 

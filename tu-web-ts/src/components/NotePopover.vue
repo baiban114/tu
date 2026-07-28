@@ -2,9 +2,10 @@
 import { computed, nextTick, ref, watch } from 'vue'
 import type { HeadingSourceBinding, KnowledgeAnchor, TextAnnotation } from '@/api/types'
 import type { FloatingAnchorRect } from '@/composables/useAnchoredFloating'
-import { effectiveMarkerSource, headingSourceBadgeLabel, headingSourceBadgeTitle } from '@/utils/headingSource'
+import { effectiveMarkerSource, externalResourceFromBinding } from '@/utils/headingSource'
 import KnowledgeRelationList from './KnowledgeRelationList.vue'
 import CommentThreadPanel from './CommentThreadPanel.vue'
+import ExternalResourceExcerptMeta from './ExternalResourceExcerptMeta.vue'
 import { annotationToAnchor } from '@/utils/knowledgeAnchor'
 import type { KnowledgeAnchorNavigateHandlers } from '@/utils/knowledgeAnchor'
 
@@ -27,6 +28,8 @@ interface Props {
   annotation: TextAnnotation | null
   annotations?: TextAnnotation[]
   sourceBinding?: HeadingSourceBinding | null
+  /** Badge on the shared resource meta panel for sourceBinding (来源 / 依据 / 资源节选). */
+  sourceBadgeLabel?: string
   headingTitle?: string
   relationAnchor?: KnowledgeAnchor | null
   kbId?: string
@@ -39,6 +42,7 @@ const props = withDefaults(defineProps<Props>(), {
   annotations: () => [],
   anchorRect: null,
   sourceBinding: null,
+  sourceBadgeLabel: '来源',
   headingTitle: '',
   relationAnchor: null,
   zIndex: 20,
@@ -52,6 +56,7 @@ const emit = defineEmits<{
   (e: 'clear-source'): void
   (e: 'promote-to-user', annotation?: TextAnnotation): void
   (e: 'promote-source-to-user'): void
+  (e: 'bind-link-to-region', annotation: TextAnnotation): void
   (e: 'close'): void
 }>()
 
@@ -69,13 +74,17 @@ const displayedAnnotations = computed(() => {
   return [...source].sort((a, b) => (b.updatedAt || b.createdAt || 0) - (a.updatedAt || a.createdAt || 0))
 })
 
-const hasSourceBinding = computed(() => !!props.sourceBinding?.resourceItemId && !!props.sourceBinding?.resourceExcerptId)
+const hasSourceBinding = computed(() => !!props.sourceBinding?.resourceItemId)
 
 const hasAnnotations = computed(() => displayedAnnotations.value.length > 0)
 
-const sourceClearLabel = computed(() =>
-  props.relationAnchor?.kind === 'heading' ? '解除来源' : '取消节选标记',
-)
+const sourceMetaBadge = computed(() => props.sourceBadgeLabel?.trim() || '来源')
+
+const sourceClearLabel = computed(() => {
+  if (props.sourceBadgeLabel === '依据') return '解除依据'
+  if (props.relationAnchor?.kind === 'heading') return '解除来源'
+  return '取消节选标记'
+})
 
 const title = computed(() => {
   if (hasSourceBinding.value && !hasAnnotations.value) return '来源'
@@ -211,20 +220,11 @@ watch(
             v-if="hasSourceBinding && sourceBinding"
             class="note-popover__item note-popover__item--source"
           >
-            <div v-if="headingTitle" class="note-popover__quote">
-              「{{ headingTitle }}」
-            </div>
-            <div class="note-popover__basis">
-              <div class="note-popover__basis-label">来源资料</div>
-              <button
-                type="button"
-                class="note-popover__basis-link"
-                :title="headingSourceBadgeTitle(sourceBinding)"
-                @click="emit('navigate-source')"
-              >
-                {{ headingSourceBadgeLabel(sourceBinding) }}
-              </button>
-            </div>
+            <ExternalResourceExcerptMeta
+              compact
+              :badge-label="sourceMetaBadge"
+              :external-resource="externalResourceFromBinding(sourceBinding)"
+            />
             <div class="note-popover__actions">
               <button type="button" class="note-popover__edit-btn" @click="emit('navigate-source')">
                 查看资料
@@ -269,16 +269,11 @@ watch(
             </div>
 
             <div v-if="(item.kind === 'basis' || item.kind === 'excerpt') && item.basisBinding" class="note-popover__basis">
-              <div class="note-popover__basis-label">{{ item.kind === 'excerpt' ? '已标记节选' : '依据资料' }}</div>
-              <button
-                type="button"
-                class="note-popover__basis-link"
-                :class="{ 'note-popover__basis-link--excerpt': item.kind === 'excerpt' }"
-                :title="headingSourceBadgeTitle(item.basisBinding)"
-                @click="emit('navigate-basis', item)"
-              >
-                {{ headingSourceBadgeLabel(item.basisBinding) }}
-              </button>
+              <ExternalResourceExcerptMeta
+                compact
+                :badge-label="item.kind === 'excerpt' ? '资源节选' : '依据'"
+                :external-resource="externalResourceFromBinding(item.basisBinding)"
+              />
             </div>
 
             <div v-if="item.kind !== 'basis' && item.kind !== 'excerpt'" class="note-popover__body">
@@ -301,6 +296,15 @@ watch(
                 @click="emit('edit', item)"
               >
                 编辑
+              </button>
+              <button
+                v-if="item.scope === 'pdfRegion' && item.pdfRegion"
+                type="button"
+                class="note-popover__edit-btn"
+                title="将 PDF 链接从整本资源改为该划选节选（page+clip）"
+                @click="emit('bind-link-to-region', item)"
+              >
+                链接改为当前节选
               </button>
               <button
                 v-if="item.markerSource === 'ai'"
@@ -419,6 +423,46 @@ watch(
   color: var(--el-text-color-secondary);
   margin-bottom: 8px;
   line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.note-popover__source-info {
+  margin-bottom: 8px;
+}
+
+.note-popover__source-info-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--el-text-color-primary);
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.note-popover__source-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 8px 0 0;
+}
+
+.note-popover__source-meta-row {
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.note-popover__source-meta-row dt {
+  margin: 0;
+  color: var(--el-text-color-secondary);
+  flex-shrink: 0;
+}
+
+.note-popover__source-meta-row dd {
+  margin: 0;
+  color: var(--el-text-color-primary);
   overflow-wrap: anywhere;
 }
 

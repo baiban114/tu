@@ -2,6 +2,7 @@ package com.tu.backend.externalresource.service;
 
 import com.tu.backend.common.BusinessException;
 import com.tu.backend.common.PageResponse;
+import com.tu.backend.externalresource.dto.CreatePdfClipExcerptRequest;
 import com.tu.backend.externalresource.dto.CreateResourceItemRelationRequest;
 import com.tu.backend.externalresource.dto.CreateResourceItemRequest;
 import com.tu.backend.externalresource.dto.CreateResourceChapterRequest;
@@ -37,6 +38,7 @@ import com.tu.backend.externalresource.repository.ResourcePdfRegionNoteRepositor
 import com.tu.backend.externalresource.repository.ResourceTypeRepository;
 import com.tu.backend.externalresource.repository.ResourceWorkRepository;
 import com.tu.backend.externalresource.util.ExternalUrlNormalizer;
+import com.tu.backend.externalresource.util.PdfClipLocator;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -530,6 +532,53 @@ public class ExternalResourceService {
         return toExcerptDto(excerptRepository.save(entity), item, loadChapterTitleMap(item.getId()));
     }
 
+    /**
+     * Idempotent upsert of a PDF clip excerpt keyed by canonical page+clip locator.
+     */
+    @Transactional
+    public ResourceExcerptDto ensurePdfClipExcerpt(String resourceItemId, CreatePdfClipExcerptRequest request) {
+        ResourceItemEntity item = findItem(resourceItemId);
+        ensureExcerptSupportedItem(item);
+
+        int startPage = Math.max(1, request.startPage());
+        int endPage = Math.max(startPage, request.endPage());
+        double clipTop = clampClipRatio(request.clipTop());
+        double clipBottom = clampClipRatio(request.clipBottom());
+        if (startPage == endPage && clipBottom < clipTop) {
+            throw new BusinessException(40000, "clipBottom must be >= clipTop on the same page");
+        }
+
+        String locator = PdfClipLocator.format(startPage, endPage, clipTop, clipBottom);
+        String key = PdfClipLocator.normalizeKey(locator);
+        for (ResourceExcerptEntity existing : excerptRepository.findByResourceItemId(item.getId())) {
+            if (key.equals(PdfClipLocator.normalizeKey(existing.getLocator()))) {
+                return toExcerptDto(existing, item, loadChapterTitleMap(item.getId()));
+            }
+        }
+
+        String title = blankToNull(request.title());
+        if (title == null) {
+            title = PdfClipLocator.titleFor(startPage, endPage, clipTop, clipBottom);
+        }
+
+        ResourceExcerptEntity entity = new ResourceExcerptEntity();
+        entity.setId("re-" + compactUuid());
+        entity.setResourceItemId(item.getId());
+        fillExcerpt(
+            entity,
+            title,
+            null,
+            null,
+            locator,
+            null,
+            null,
+            nextExcerptSortOrder(item.getId()),
+            null,
+            item
+        );
+        return toExcerptDto(excerptRepository.save(entity), item, loadChapterTitleMap(item.getId()));
+    }
+
     @Transactional
     public ResourceExcerptDto updateExcerpt(String id, UpdateResourceExcerptRequest request) {
         ResourceExcerptEntity entity = findExcerpt(id);
@@ -557,7 +606,15 @@ public class ExternalResourceService {
             child.setParentId(parentId);
             excerptRepository.save(child);
         }
+        pdfRegionNoteRepository.deleteByExcerptId(id);
         excerptRepository.delete(entity);
+    }
+
+    private static double clampClipRatio(double value) {
+        if (Double.isNaN(value) || Double.isInfinite(value)) {
+            return 0d;
+        }
+        return Math.min(1d, Math.max(0d, Math.round(value * 1000d) / 1000d));
     }
 
     private void fillItem(ResourceItemEntity entity, ResourceTypeEntity type, ResourceWorkEntity work, CreateResourceItemRequest request) {

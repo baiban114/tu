@@ -10,11 +10,22 @@ export interface ResourcePositionLocator {
   endPage?: number
   paragraph?: number
   legacy?: string
+  /** Optional vertical clip on first/last page (0–1). */
+  clipTop?: number
+  clipBottom?: number
+}
+
+export interface PdfClipGeometry {
+  startPage: number
+  endPage: number
+  clipTop: number
+  clipBottom: number
 }
 
 const ANCHOR_PREFIX = 'anchor:'
 const PAGE_PREFIX = 'page:'
 const PARAGRAPH_PREFIX = 'paragraph:'
+const CLIP_PARAM_RE = /^clip=(\d+(?:\.\d+)?)-(\d+(?:\.\d+)?)$/i
 
 export function defaultPositionKindForResourceType(typeCode?: string | null): ResourcePositionKind {
   if (typeCode === WEB_LINK_RESOURCE_TYPE_CODE) return 'anchor'
@@ -39,6 +50,39 @@ export function positionKindLabel(kind: ResourcePositionKind): string {
   }
 }
 
+function clampClipRatio(value: number): number {
+  if (!Number.isFinite(value)) return 0
+  return Math.min(1, Math.max(0, Math.round(value * 1000) / 1000))
+}
+
+function normalizeClipPair(
+  clipTop?: number | null,
+  clipBottom?: number | null,
+): { clipTop: number; clipBottom: number } | null {
+  if (clipTop == null && clipBottom == null) return null
+  const top = clampClipRatio(clipTop ?? 0)
+  const bottom = clampClipRatio(clipBottom ?? 1)
+  if (top <= 0.001 && bottom >= 0.999) return null
+  return { clipTop: top, clipBottom: bottom }
+}
+
+function formatClipSuffix(clipTop: number, clipBottom: number): string {
+  return `&clip=${clampClipRatio(clipTop)}-${clampClipRatio(clipBottom)}`
+}
+
+function parseClipSuffix(parts: string[]): { clipTop?: number; clipBottom?: number } {
+  for (const part of parts) {
+    const match = part.trim().match(CLIP_PARAM_RE)
+    if (!match) continue
+    const clipTop = clampClipRatio(Number(match[1]))
+    const clipBottom = clampClipRatio(Number(match[2]))
+    const normalized = normalizeClipPair(clipTop, clipBottom)
+    if (!normalized) return {}
+    return normalized
+  }
+  return {}
+}
+
 function parseLegacyPage(value: string): { page?: number; endPage?: number } | null {
   const range = value.match(/^p\.?\s*(\d+)\s*[–—-]\s*p?\.?\s*(\d+)$/i)
   if (range) {
@@ -56,6 +100,26 @@ function parseLegacyPage(value: string): { page?: number; endPage?: number } | n
   return null
 }
 
+function parsePageBody(body: string): ResourcePositionLocator | null {
+  const segments = body.split('&').map((part) => part.trim()).filter(Boolean)
+  if (segments.length === 0) return null
+  const pagePart = segments[0]
+  const clip = parseClipSuffix(segments.slice(1))
+
+  const range = pagePart.match(/^(\d+)-(\d+)$/)
+  if (range) {
+    const page = Number(range[1])
+    const endPage = Number(range[2])
+    if (Number.isFinite(page) && Number.isFinite(endPage) && page > 0 && endPage >= page) {
+      return { kind: 'pageRange', page, endPage, ...clip }
+    }
+    return null
+  }
+  const page = Number(pagePart)
+  if (Number.isFinite(page) && page > 0) return { kind: 'page', page, ...clip }
+  return null
+}
+
 export function parseResourcePositionLocator(raw: string | null | undefined): ResourcePositionLocator | null {
   const value = raw?.trim()
   if (!value) return null
@@ -66,19 +130,7 @@ export function parseResourcePositionLocator(raw: string | null | undefined): Re
   }
 
   if (value.startsWith(PAGE_PREFIX)) {
-    const body = value.slice(PAGE_PREFIX.length).trim()
-    const range = body.match(/^(\d+)-(\d+)$/)
-    if (range) {
-      const page = Number(range[1])
-      const endPage = Number(range[2])
-      if (Number.isFinite(page) && Number.isFinite(endPage) && page > 0 && endPage >= page) {
-        return { kind: 'pageRange', page, endPage }
-      }
-      return null
-    }
-    const page = Number(body)
-    if (Number.isFinite(page) && page > 0) return { kind: 'page', page }
-    return null
+    return parsePageBody(value.slice(PAGE_PREFIX.length).trim())
   }
 
   if (value.startsWith(PARAGRAPH_PREFIX)) {
@@ -104,6 +156,9 @@ export function parseResourcePositionLocator(raw: string | null | undefined): Re
 }
 
 export function formatResourcePositionLocator(locator: ResourcePositionLocator): string {
+  const clip = normalizeClipPair(locator.clipTop, locator.clipBottom)
+  const clipSuffix = clip ? formatClipSuffix(clip.clipTop, clip.clipBottom) : ''
+
   switch (locator.kind) {
     case 'anchor': {
       const anchor = locator.anchor?.trim()
@@ -111,13 +166,13 @@ export function formatResourcePositionLocator(locator: ResourcePositionLocator):
     }
     case 'page': {
       const page = locator.page
-      return page != null && page > 0 ? `${PAGE_PREFIX}${page}` : ''
+      return page != null && page > 0 ? `${PAGE_PREFIX}${page}${clipSuffix}` : ''
     }
     case 'pageRange': {
       const page = locator.page
       const endPage = locator.endPage
       if (page != null && endPage != null && page > 0 && endPage >= page) {
-        return `${PAGE_PREFIX}${page}-${endPage}`
+        return `${PAGE_PREFIX}${page}-${endPage}${clipSuffix}`
       }
       return ''
     }
@@ -152,11 +207,11 @@ export function resourcePositionDisplay(raw: string | null | undefined): string 
     case 'anchor':
       return parsed.anchor ? `#${parsed.anchor}` : ''
     case 'page':
-      return parsed.page != null ? `第 ${parsed.page} 页` : ''
-    case 'pageRange':
-      return parsed.page != null && parsed.endPage != null
-        ? `第 ${parsed.page}–${parsed.endPage} 页`
-        : ''
+    case 'pageRange': {
+      const geometry = pdfClipGeometryFromLocator(parsed)
+      if (!geometry) return value
+      return formatPdfClipRangeLabel(geometry)
+    }
     case 'paragraph':
       return parsed.paragraph != null ? `第 ${parsed.paragraph} 段` : ''
     case 'legacy':
@@ -249,4 +304,64 @@ export function splitResourcePositionLocator(raw: string | null | undefined, typ
     default:
       return { kind: defaultPositionKindForResourceType(typeCode), value: '' }
   }
+}
+
+/** Build canonical locator string from PDF clip geometry. */
+export function formatPdfClipLocator(geometry: PdfClipGeometry): string {
+  const startPage = Math.max(1, Math.floor(Number(geometry.startPage) || 1))
+  const endPage = Math.max(startPage, Math.floor(Number(geometry.endPage) || startPage))
+  const clip = normalizeClipPair(geometry.clipTop, geometry.clipBottom)
+  if (startPage === endPage) {
+    return formatResourcePositionLocator({
+      kind: 'page',
+      page: startPage,
+      clipTop: clip?.clipTop,
+      clipBottom: clip?.clipBottom,
+    })
+  }
+  return formatResourcePositionLocator({
+    kind: 'pageRange',
+    page: startPage,
+    endPage,
+    clipTop: clip?.clipTop,
+    clipBottom: clip?.clipBottom,
+  })
+}
+
+export function pdfClipGeometryFromLocator(
+  locator: ResourcePositionLocator | string | null | undefined,
+): PdfClipGeometry | null {
+  const parsed = typeof locator === 'string' || locator == null
+    ? parseResourcePositionLocator(locator)
+    : locator
+  if (!parsed || (parsed.kind !== 'page' && parsed.kind !== 'pageRange')) return null
+  const startPage = parsed.page
+  if (startPage == null || startPage < 1) return null
+  const endPage = parsed.kind === 'pageRange'
+    ? (parsed.endPage ?? startPage)
+    : startPage
+  if (endPage < startPage) return null
+  const clip = normalizeClipPair(parsed.clipTop, parsed.clipBottom)
+  return {
+    startPage,
+    endPage,
+    clipTop: clip?.clipTop ?? 0,
+    clipBottom: clip?.clipBottom ?? 1,
+  }
+}
+
+export function formatPdfClipRangeLabel(geometry: PdfClipGeometry): string {
+  const start = Math.max(1, Math.floor(geometry.startPage) || 1)
+  const end = Math.max(start, Math.floor(geometry.endPage) || start)
+  const clip = normalizeClipPair(geometry.clipTop, geometry.clipBottom)
+  if (start === end) {
+    if (!clip) return `第 ${start} 页`
+    const topPct = Math.round(clip.clipTop * 100)
+    const bottomPct = Math.round(clip.clipBottom * 100)
+    return `第 ${start} 页 ${topPct}%–${bottomPct}%`
+  }
+  if (!clip) return `第 ${start}–${end} 页`
+  const topPct = Math.round(clip.clipTop * 100)
+  const bottomPct = Math.round(clip.clipBottom * 100)
+  return `第 ${start} 页 ${topPct}% → 第 ${end} 页 ${bottomPct}%`
 }

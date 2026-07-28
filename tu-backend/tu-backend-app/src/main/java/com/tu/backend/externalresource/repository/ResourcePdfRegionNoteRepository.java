@@ -9,5 +9,9 @@ public interface ResourcePdfRegionNoteRepository extends JpaRepository<ResourceP
 
     List<ResourcePdfRegionNoteEntity> findByResourceItemIdOrderByStartPageAscCreatedAtAsc(String resourceItemId);
 
+    List<ResourcePdfRegionNoteEntity> findByExcerptIdOrderByCreatedAtAsc(String excerptId);
+
     void deleteByResourceItemId(String resourceItemId);
+
+    void deleteByExcerptId(String excerptId);
 }

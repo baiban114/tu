@@ -28,11 +28,14 @@ const props = withDefaults(defineProps<{
   showBody?: boolean
   bodyBlockId?: string
   paragraphGutterActions?: boolean
+  /** Override badge text (e.g. 依据 / 资源节选). */
+  badgeLabel?: string
 }>(), {
   compact: false,
   showBody: false,
   bodyBlockId: '',
   paragraphGutterActions: false,
+  badgeLabel: '',
 })
 
 const emit = defineEmits<{
@@ -78,21 +81,81 @@ const excerptLocator = computed(() => latestExcerpt.value?.locator || snapshot.v
 const excerptNote = computed(() => latestExcerpt.value?.note || snapshot.value.excerptNote || '')
 const excerptText = computed(() => latestExcerpt.value?.excerptText || snapshot.value.excerptText || '')
 const usingSnapshot = computed(() => Boolean(loadError.value || (!latestItem.value && snapshot.value.resourceTitle)))
-const cardTitle = computed(() => (isExcerpt.value ? (excerptTitle.value || resourceTitle.value) : resourceTitle.value))
-const cardTitleDisplay = computed(() => truncateDisplayText(cardTitle.value, META_DISPLAY_LIMITS.title))
-const workTitleDisplay = computed(() => truncateDisplayText(workTitle.value, META_DISPLAY_LIMITS.workTitle))
-const identityDisplay = computed(() => {
-  if (!identityValue.value) return ''
-  const value = truncateDisplayText(identityValue.value, META_DISPLAY_LIMITS.identityValue)
-  return `${identityLabel.value}: ${value}`
-})
-const chapterTitleDisplay = computed(() => truncateDisplayText(chapterTitle.value, META_DISPLAY_LIMITS.chapterTitle))
-const excerptLocatorDisplay = computed(() => {
-  const text = resourcePositionDisplay(excerptLocator.value)
-  return truncateDisplayText(text, META_DISPLAY_LIMITS.locator)
-})
-const excerptNoteDisplay = computed(() => truncateDisplayText(excerptNote.value, META_DISPLAY_LIMITS.note))
 const sourceUrlLabel = computed(() => formatSourceUrlLabel(sourceUrl.value))
+
+const badgeText = computed(() => {
+  if (props.badgeLabel.trim()) return props.badgeLabel.trim()
+  return isExcerpt.value ? '资源节选' : resourceTypeName.value
+})
+const badgeTone = computed(() => {
+  const label = badgeText.value
+  if (label === '依据') return 'basis'
+  if (label === '来源') return 'source'
+  return 'excerpt'
+})
+
+/** Locator path layers only — role badge is separate, not joined with `>`. */
+const metaPathParts = computed(() => {
+  const parts: string[] = []
+  if (
+    resourceTypeName.value
+    && resourceTypeName.value !== badgeText.value
+    && resourceTypeName.value !== '外部资源'
+  ) {
+    parts.push(truncateDisplayText(resourceTypeName.value, META_DISPLAY_LIMITS.workTitle))
+  }
+  if (workTitle.value) {
+    parts.push(truncateDisplayText(workTitle.value, META_DISPLAY_LIMITS.workTitle))
+  } else if (
+    resourceTitle.value
+    && resourceTitle.value !== badgeText.value
+    && (!isExcerpt.value || !excerptTitle.value)
+  ) {
+    parts.push(truncateDisplayText(resourceTitle.value, META_DISPLAY_LIMITS.title))
+  }
+  if (identityValue.value) {
+    const value = truncateDisplayText(identityValue.value, META_DISPLAY_LIMITS.identityValue)
+    parts.push(`${identityLabel.value}: ${value}`)
+  }
+  if (isExcerpt.value && chapterTitle.value) {
+    parts.push(truncateDisplayText(chapterTitle.value, META_DISPLAY_LIMITS.chapterTitle))
+  }
+  if (isExcerpt.value && excerptLocator.value) {
+    const text = resourcePositionDisplay(excerptLocator.value)
+    if (text) parts.push(truncateDisplayText(text, META_DISPLAY_LIMITS.locator))
+  }
+  if (isExcerpt.value && excerptTitle.value) {
+    const title = truncateDisplayText(excerptTitle.value, META_DISPLAY_LIMITS.title)
+    const last = parts[parts.length - 1]
+    const workDisp = workTitle.value
+      ? truncateDisplayText(workTitle.value, META_DISPLAY_LIMITS.workTitle)
+      : ''
+    if (title && title !== last && title !== workDisp) {
+      parts.push(title)
+    }
+  }
+  if (isExcerpt.value && excerptNote.value) {
+    parts.push(truncateDisplayText(excerptNote.value, META_DISPLAY_LIMITS.note))
+  }
+  return parts.filter(Boolean)
+})
+
+const metaPath = computed(() => metaPathParts.value.join(' > '))
+const metaPathTitle = computed(() => {
+  const full: string[] = []
+  if (resourceTypeName.value && resourceTypeName.value !== badgeText.value) full.push(resourceTypeName.value)
+  if (workTitle.value) full.push(workTitle.value)
+  else if (resourceTitle.value && resourceTitle.value !== badgeText.value) full.push(resourceTitle.value)
+  if (identityValue.value) full.push(`${identityLabel.value}: ${identityValue.value}`)
+  if (isExcerpt.value && chapterTitle.value) full.push(chapterTitle.value)
+  if (isExcerpt.value && excerptLocator.value) {
+    const text = resourcePositionDisplay(excerptLocator.value)
+    if (text) full.push(text)
+  }
+  if (isExcerpt.value && excerptTitle.value) full.push(excerptTitle.value)
+  if (isExcerpt.value && excerptNote.value) full.push(excerptNote.value)
+  return full.filter(Boolean).join(' > ')
+})
 
 const excerptEditorBlocks = computed<Block[]>(() => [{
   id: props.bodyBlockId || 'external-resource-excerpt',
@@ -133,38 +196,16 @@ onMounted(() => {
 <template>
   <div class="external-resource-excerpt-panel" :class="{ 'external-resource-excerpt-panel--compact': compact }">
     <div class="external-resource-excerpt-meta">
-      <span class="external-resource-excerpt-meta__badge">{{ isExcerpt ? '资源节选' : resourceTypeName }}</span>
+      <span
+        class="external-resource-excerpt-meta__role"
+        :class="`external-resource-excerpt-meta__role--${badgeTone}`"
+      >{{ badgeText }}</span>
+      <span
+        v-if="metaPath"
+        class="external-resource-excerpt-meta__path"
+        :title="metaPathTitle"
+      >{{ metaPath }}</span>
       <span v-if="usingSnapshot" class="external-resource-excerpt-meta__snapshot">快照</span>
-      <span
-        v-if="cardTitleDisplay"
-        class="external-resource-excerpt-meta__title"
-        :title="cardTitle"
-      >{{ cardTitleDisplay }}</span>
-      <span
-        v-if="workTitleDisplay"
-        class="external-resource-excerpt-meta__chip"
-        :title="workTitle"
-      >{{ workTitleDisplay }}</span>
-      <span
-        v-if="identityDisplay"
-        class="external-resource-excerpt-meta__chip"
-        :title="`${identityLabel}: ${identityValue}`"
-      >{{ identityDisplay }}</span>
-      <span
-        v-if="isExcerpt && chapterTitleDisplay"
-        class="external-resource-excerpt-meta__chip"
-        :title="`章节：${chapterTitle}`"
-      >章节：{{ chapterTitleDisplay }}</span>
-      <span
-        v-if="isExcerpt && excerptLocatorDisplay"
-        class="external-resource-excerpt-meta__chip"
-        :title="excerptLocator"
-      >{{ excerptLocatorDisplay }}</span>
-      <span
-        v-if="isExcerpt && excerptNoteDisplay"
-        class="external-resource-excerpt-meta__chip external-resource-excerpt-meta__chip--note"
-        :title="excerptNote"
-      >{{ excerptNoteDisplay }}</span>
       <a
         v-if="sourceUrl"
         class="external-resource-excerpt-meta__link"
@@ -227,43 +268,41 @@ onMounted(() => {
   font-size: 11px;
 }
 
-.external-resource-excerpt-meta__badge,
+.external-resource-excerpt-meta__role {
+  flex-shrink: 0;
+  font-weight: 700;
+  color: #075985;
+}
+
+.external-resource-excerpt-meta__role--basis {
+  color: #166534;
+}
+
+.external-resource-excerpt-meta__role--source {
+  color: #6b21a8;
+}
+
+.external-resource-excerpt-meta__role--excerpt {
+  color: #075985;
+}
+
+.external-resource-excerpt-meta__path {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+  color: #1f2937;
+}
+
 .external-resource-excerpt-meta__snapshot {
   border-radius: 999px;
   padding: 1px 8px;
   font-size: 11px;
   flex-shrink: 0;
-}
-
-.external-resource-excerpt-meta__badge {
-  color: #075985;
-  background: #e0f2fe;
-}
-
-.external-resource-excerpt-meta__snapshot {
   color: #92400e;
   background: #fef3c7;
-}
-
-.external-resource-excerpt-meta__title {
-  max-width: min(100%, 360px);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-weight: 600;
-  color: #1f2937;
-}
-
-.external-resource-excerpt-meta__chip {
-  max-width: min(100%, 240px);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.external-resource-excerpt-meta__chip--note {
-  max-width: min(100%, 280px);
-  font-style: italic;
 }
 
 .external-resource-excerpt-meta__link {

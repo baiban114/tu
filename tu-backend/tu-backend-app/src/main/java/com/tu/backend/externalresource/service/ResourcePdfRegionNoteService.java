@@ -1,13 +1,17 @@
 package com.tu.backend.externalresource.service;
 
 import com.tu.backend.common.BusinessException;
+import com.tu.backend.externalresource.dto.CreatePdfClipExcerptRequest;
 import com.tu.backend.externalresource.dto.CreateResourcePdfRegionNoteRequest;
 import com.tu.backend.externalresource.dto.ResourcePdfRegionNoteDto;
 import com.tu.backend.externalresource.dto.UpdateResourcePdfRegionNoteRequest;
+import com.tu.backend.externalresource.entity.ResourceExcerptEntity;
 import com.tu.backend.externalresource.entity.ResourceItemEntity;
 import com.tu.backend.externalresource.entity.ResourcePdfRegionNoteEntity;
+import com.tu.backend.externalresource.repository.ResourceExcerptRepository;
 import com.tu.backend.externalresource.repository.ResourceItemRepository;
 import com.tu.backend.externalresource.repository.ResourcePdfRegionNoteRepository;
+import com.tu.backend.externalresource.util.PdfClipLocator;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -19,20 +23,55 @@ import java.util.UUID;
 public class ResourcePdfRegionNoteService {
 
     private final ResourceItemRepository itemRepository;
+    private final ResourceExcerptRepository excerptRepository;
     private final ResourcePdfRegionNoteRepository noteRepository;
 
     public ResourcePdfRegionNoteService(
         ResourceItemRepository itemRepository,
+        ResourceExcerptRepository excerptRepository,
         ResourcePdfRegionNoteRepository noteRepository
     ) {
         this.itemRepository = itemRepository;
+        this.excerptRepository = excerptRepository;
         this.noteRepository = noteRepository;
     }
 
-    @Transactional(readOnly = true)
+    @Transactional
     public List<ResourcePdfRegionNoteDto> listByResourceItem(String resourceItemId) {
         findItem(resourceItemId);
-        return noteRepository.findByResourceItemIdOrderByStartPageAscCreatedAtAsc(resourceItemId)
+        List<ResourcePdfRegionNoteEntity> notes =
+            noteRepository.findByResourceItemIdOrderByStartPageAscCreatedAtAsc(resourceItemId);
+        boolean changed = false;
+        for (ResourcePdfRegionNoteEntity note : notes) {
+            if (note.getExcerptId() == null || note.getExcerptId().isBlank()) {
+                ResourceExcerptEntity excerpt = ensureClipExcerptEntity(
+                    resourceItemId,
+                    note.getStartPage(),
+                    note.getEndPage(),
+                    note.getClipTop(),
+                    note.getClipBottom(),
+                    PdfClipLocator.titleFor(
+                        note.getStartPage(),
+                        note.getEndPage(),
+                        note.getClipTop(),
+                        note.getClipBottom()
+                    )
+                );
+                note.setExcerptId(excerpt.getId());
+                noteRepository.save(note);
+                changed = true;
+            }
+        }
+        if (changed) {
+            notes = noteRepository.findByResourceItemIdOrderByStartPageAscCreatedAtAsc(resourceItemId);
+        }
+        return notes.stream().map(this::toDto).toList();
+    }
+
+    @Transactional(readOnly = true)
+    public List<ResourcePdfRegionNoteDto> listByExcerpt(String excerptId) {
+        ResourceExcerptEntity excerpt = findExcerpt(excerptId);
+        return noteRepository.findByExcerptIdOrderByCreatedAtAsc(excerpt.getId())
             .stream()
             .map(this::toDto)
             .toList();
@@ -41,6 +80,11 @@ public class ResourcePdfRegionNoteService {
     @Transactional
     public ResourcePdfRegionNoteDto create(String resourceItemId, CreateResourcePdfRegionNoteRequest request) {
         findItem(resourceItemId);
+        ResourceExcerptEntity excerpt = findExcerpt(request.excerptId());
+        if (!resourceItemId.equals(excerpt.getResourceItemId())) {
+            throw new BusinessException(40000, "excerpt does not belong to resource item");
+        }
+
         int startPage = request.startPage();
         int endPage = Math.max(startPage, request.endPage());
         double clipTop = clampRatio(request.clipTop());
@@ -52,6 +96,7 @@ public class ResourcePdfRegionNoteService {
         ResourcePdfRegionNoteEntity entity = new ResourcePdfRegionNoteEntity();
         entity.setId("rpn-" + compactUuid());
         entity.setResourceItemId(resourceItemId);
+        entity.setExcerptId(excerpt.getId());
         entity.setFileId(blankToNull(request.fileId()));
         entity.setStartPage(startPage);
         entity.setEndPage(endPage);
@@ -111,9 +156,54 @@ public class ResourcePdfRegionNoteService {
         noteRepository.deleteByResourceItemId(resourceItemId);
     }
 
+    @Transactional
+    public void deleteByExcerptId(String excerptId) {
+        noteRepository.deleteByExcerptId(excerptId);
+    }
+
+    private ResourceExcerptEntity ensureClipExcerptEntity(
+        String resourceItemId,
+        int startPage,
+        int endPage,
+        double clipTop,
+        double clipBottom,
+        String title
+    ) {
+        String locator = PdfClipLocator.format(startPage, endPage, clipTop, clipBottom);
+        String key = PdfClipLocator.normalizeKey(locator);
+        for (ResourceExcerptEntity existing : excerptRepository.findByResourceItemId(resourceItemId)) {
+            if (key.equals(PdfClipLocator.normalizeKey(existing.getLocator()))) {
+                return existing;
+            }
+        }
+        ResourceExcerptEntity entity = new ResourceExcerptEntity();
+        entity.setId("re-" + compactUuid());
+        entity.setResourceItemId(resourceItemId);
+        entity.setTitle(title == null || title.isBlank()
+            ? PdfClipLocator.titleFor(startPage, endPage, clipTop, clipBottom)
+            : title.trim());
+        entity.setLocator(locator);
+        entity.setSortOrder(nextExcerptSortOrder(resourceItemId));
+        return excerptRepository.save(entity);
+    }
+
+    private int nextExcerptSortOrder(String resourceItemId) {
+        return excerptRepository.findByResourceItemId(resourceItemId).stream()
+            .map(ResourceExcerptEntity::getSortOrder)
+            .filter(order -> order != null)
+            .max(Integer::compareTo)
+            .map(order -> order + 1)
+            .orElse(0);
+    }
+
     private ResourceItemEntity findItem(String id) {
         return itemRepository.findById(id)
             .orElseThrow(() -> new BusinessException(40001, "resource item not found"));
+    }
+
+    private ResourceExcerptEntity findExcerpt(String id) {
+        return excerptRepository.findById(id)
+            .orElseThrow(() -> new BusinessException(40001, "resource excerpt not found"));
     }
 
     private ResourcePdfRegionNoteEntity findNote(String id) {
@@ -125,6 +215,7 @@ public class ResourcePdfRegionNoteService {
         return new ResourcePdfRegionNoteDto(
             entity.getId(),
             entity.getResourceItemId(),
+            entity.getExcerptId(),
             entity.getFileId(),
             entity.getStartPage(),
             entity.getEndPage(),

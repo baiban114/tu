@@ -122,10 +122,47 @@ export function headingSourceBadgeTitle(binding: HeadingSourceBinding): string {
     snapshot.excerptTitle,
     snapshot.excerptLocator ? resourcePositionDisplay(snapshot.excerptLocator) : '',
   ].filter(Boolean)
-  return parts.join(' · ') || (binding.resourceExcerptId ? '外部资源节选' : '外部资源')
+  return parts.join(' > ') || (binding.resourceExcerptId ? '外部资源节选' : '外部资源')
 }
 
-/** 正文标题节元数据条 chips（与引用块节选条同构：类型 / 归类 / 定位） */
+/** Structured source fields for popover / detail panels after clicking 来源 or 资源节选 meta. */
+export function headingSourceInfoRows(
+  binding: HeadingSourceBinding,
+): Array<{ label: string; value: string }> {
+  const snapshot = binding.snapshot
+  const rows: Array<{ label: string; value: string }> = []
+  if (snapshot.resourceTitle?.trim()) {
+    rows.push({ label: '资源', value: snapshot.resourceTitle.trim() })
+  }
+  if (snapshot.resourceTypeName?.trim()) {
+    rows.push({ label: '类型', value: snapshot.resourceTypeName.trim() })
+  }
+  if (snapshot.workTitle?.trim()) {
+    rows.push({ label: '归类', value: snapshot.workTitle.trim() })
+  }
+  if (snapshot.excerptTitle?.trim()) {
+    rows.push({ label: '节选', value: snapshot.excerptTitle.trim() })
+  }
+  if (snapshot.excerptLocator?.trim()) {
+    rows.push({
+      label: '定位',
+      value: resourcePositionDisplay(snapshot.excerptLocator),
+    })
+  }
+  return rows
+}
+
+export function headingSourceInfoPrimaryTitle(binding: HeadingSourceBinding): string {
+  const snapshot = binding.snapshot
+  return (
+    snapshot.excerptTitle?.trim()
+    || snapshot.resourceTitle?.trim()
+    || (snapshot.excerptLocator ? resourcePositionDisplay(snapshot.excerptLocator) : '')
+    || (binding.resourceExcerptId ? '外部资源节选' : '外部资源')
+  )
+}
+
+/** 正文标题节元数据条：首项为类型标识「来源」，其后为定位层级 */
 export function headingSourceMetaChips(binding: HeadingSourceBinding): string[] {
   const snapshot = binding.snapshot
   const chips = ['来源']
@@ -142,6 +179,33 @@ export function headingSourceMetaChips(binding: HeadingSourceBinding): string[] 
   return chips
 }
 
+export function headingSourceMetaRole(): string {
+  return '来源'
+}
+
+/** Resource locator layers only (joined with ` > ` in UI). */
+export function headingSourceMetaPathParts(binding: HeadingSourceBinding): string[] {
+  return headingSourceMetaChips(binding).slice(1)
+}
+
 export function isAiHeadingSource(binding: HeadingSourceBinding): boolean {
   return effectiveMarkerSource(binding.markerSource) === 'ai'
 }
+
+/** Convert a heading/basis binding into embed data for ExternalResourceExcerptMeta. */
+export function externalResourceFromBinding(binding: HeadingSourceBinding): ExternalResourceEmbedData {
+  const hasExcerpt = Boolean(binding.resourceExcerptId)
+  return {
+    resourceItemId: binding.resourceItemId,
+    resourceExcerptId: binding.resourceExcerptId ?? null,
+    mode: hasExcerpt ? 'excerpt' : 'resource',
+    snapshot: {
+      resourceTitle: binding.snapshot.resourceTitle || '',
+      resourceTypeName: binding.snapshot.resourceTypeName,
+      workTitle: binding.snapshot.workTitle,
+      excerptTitle: binding.snapshot.excerptTitle,
+      excerptLocator: binding.snapshot.excerptLocator,
+    },
+  }
+}
+

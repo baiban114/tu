@@ -4,7 +4,8 @@ import { Decoration, DecorationSet } from '@tiptap/pm/view'
 import type { BlockTag, HeadingSourceBinding } from '@/api/types'
 import {
   headingSourceBadgeTitle,
-  headingSourceMetaChips,
+  headingSourceMetaPathParts,
+  headingSourceMetaRole,
   isAiHeadingSource,
 } from '@/utils/headingSource'
 import type { SectionTagsMap } from '@/utils/sectionMetadata'
@@ -69,11 +70,17 @@ export const HeadingSourceDecorations = Extension.create<HeadingSourceDecoration
                   }
 
                   if (hasSource && binding) {
-                    for (const chip of headingSourceMetaChips(binding)) {
-                      const span = document.createElement('span')
-                      span.className = 'heading-section-meta__chip'
-                      span.textContent = chip
-                      bar.appendChild(span)
+                    const roleEl = document.createElement('span')
+                    roleEl.className = 'heading-section-meta__role'
+                    roleEl.textContent = headingSourceMetaRole()
+                    bar.appendChild(roleEl)
+
+                    const pathParts = headingSourceMetaPathParts(binding)
+                    if (pathParts.length > 0) {
+                      const path = document.createElement('span')
+                      path.className = 'heading-section-meta__path'
+                      path.textContent = pathParts.join(' > ')
+                      bar.appendChild(path)
                     }
                     if (isAiHeadingSource(binding)) {
                       const aiTag = document.createElement('span')

@@ -29,15 +29,18 @@ import {
 import { applyLinkSuggest } from '@/editor/linkLabelSuggestApply'
 import type { ResourceChapter, ResourceExcerpt, ResourceItem } from '@/api/externalResource'
 
-describe('splitMarkdownLinkSourceRanges / caret-in-label', () => {
+describe('splitMarkdownLinkSourceRanges / caret-in-href', () => {
   it('splits complete markdown link', () => {
     const parts = splitMarkdownLinkSourceRanges('[文字](https://a.com)', 10)
     expect(parts).toMatchObject({
       labelText: '文字',
       href: 'https://a.com',
+      hrefText: 'https://a.com',
       complete: true,
       labelFrom: 11,
       labelTo: 13,
+      hrefFrom: 15,
+      hrefTo: 28,
     })
     expect(isCaretInLinkLabel(12, parts!.labelFrom, parts!.labelTo)).toBe(true)
     expect(isCaretInLinkLabel(14, parts!.labelFrom, parts!.labelTo)).toBe(false)
@@ -48,6 +51,18 @@ describe('splitMarkdownLinkSourceRanges / caret-in-label', () => {
     expect(parts).toMatchObject({
       labelText: '入门>',
       href: null,
+      hrefFrom: null,
+      complete: false,
+    })
+  })
+
+  it('supports incomplete [](href draft', () => {
+    const parts = splitMarkdownLinkSourceRanges('[](王道>', 0)
+    expect(parts).toMatchObject({
+      labelText: '',
+      hrefText: '王道>',
+      href: '王道>',
+      hrefFrom: 3,
       complete: false,
     })
   })
@@ -323,7 +338,7 @@ describe('collectResourceScopeSuggests display / apply separation', () => {
 })
 
 describe('findLinkLabelEditContext + applyLinkSuggest', () => {
-  it('finds caret in incomplete label and applies suggestion', () => {
+  it('finds caret in href draft and applies suggestion with PDF title in []', () => {
     const el = document.createElement('div')
     document.body.appendChild(el)
     const editor = new Editor({
@@ -343,13 +358,14 @@ describe('findLinkLabelEditContext + applyLinkSuggest', () => {
       ],
       content: {
         type: 'doc',
-        content: [{ type: 'paragraph', content: [{ type: 'text', text: '[入门' }] }],
+        content: [{ type: 'paragraph', content: [{ type: 'text', text: '[](入门' }] }],
       },
     })
 
-    editor.commands.setTextSelection(3)
+    editor.commands.setTextSelection(4)
     const ctx = findLinkLabelEditContext(editor.state)
-    expect(ctx?.labelText).toBe('入门')
+    expect(ctx?.hrefText).toBe('入门')
+    expect(ctx?.labelText).toBe('')
 
     applyLinkSuggest(editor, ctx!, {
       id: 'page:p1',
@@ -362,7 +378,7 @@ describe('findLinkLabelEditContext + applyLinkSuggest', () => {
     editor.destroy()
   })
 
-  it('prefers applyLabel over label when writing into []', () => {
+  it('does not arm search while caret is only in []', () => {
     const el = document.createElement('div')
     document.body.appendChild(el)
     const editor = new Editor({
@@ -382,11 +398,40 @@ describe('findLinkLabelEditContext + applyLinkSuggest', () => {
       ],
       content: {
         type: 'doc',
-        content: [{ type: 'paragraph', content: [{ type: 'text', text: '[王道>' }] }],
+        content: [{ type: 'paragraph', content: [{ type: 'text', text: '[入门](page:p1)' }] }],
       },
     })
 
     editor.commands.setTextSelection(3)
+    expect(findLinkLabelEditContext(editor.state)).toBeNull()
+    editor.destroy()
+  })
+
+  it('writes resource/PDF title into [] (not full applyLabel path)', () => {
+    const el = document.createElement('div')
+    document.body.appendChild(el)
+    const editor = new Editor({
+      element: el,
+      extensions: [
+        StarterKit.configure({ link: false }),
+        TuLink.configure({
+          openOnClick: false,
+          autolink: false,
+          protocols: ['http', 'https', 'page', 'resource'],
+          isAllowedUri: (url, ctx) => {
+            const value = String(url || '')
+            if (value.startsWith('page:') || value.startsWith('resource:')) return true
+            return !!ctx.defaultValidate(url)
+          },
+        }),
+      ],
+      content: {
+        type: 'doc',
+        content: [{ type: 'paragraph', content: [{ type: 'text', text: '[](王道>' }] }],
+      },
+    })
+
+    editor.commands.setTextSelection(4)
     const ctx = findLinkLabelEditContext(editor.state)
     applyLinkSuggest(editor, ctx!, {
       id: 'resource:ri:chapter:c1',
@@ -396,7 +441,7 @@ describe('findLinkLabelEditContext + applyLinkSuggest', () => {
       href: 'resource:ri:chapter:c1',
       description: '第1章',
     })
-    expect(editor.getText()).toBe('[王道2027计算机网络 > 第1章](resource:ri:chapter:c1)')
+    expect(editor.getText()).toBe('[王道2027计算机网络](resource:ri:chapter:c1)')
     editor.destroy()
   })
 })

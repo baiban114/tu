@@ -38,6 +38,65 @@ export function estimateFixedPanelPosition(
   return clampFixedPanelToViewport(clientX, clientY, estimatedWidth, estimatedHeight, padding, viewportWidth, viewportHeight)
 }
 
+export interface AnchorRect {
+  left: number
+  top: number
+  right: number
+  bottom: number
+  width: number
+  height: number
+}
+
+/**
+ * Prefer a panel at bottom-left of the document **content column**:
+ * sit just left of `contentLeft` (gutter side), below the grip.
+ *
+ * Left-space sufficiency uses the **browser window** (`padding`…`viewportWidth`),
+ * not the content viewport — otherwise a narrow gutter is wrongly treated as
+ * “no room” and the menu falls back to contentLeft (looks like bottom-right of the grip).
+ *
+ * If the window cannot fit left-of-content, fall back to `contentLeft`.
+ * Vertical: prefer below; flip above near the window bottom; then clamp.
+ */
+export function resolvePreferBottomLeftPanelPosition(
+  anchor: AnchorRect,
+  panelWidth: number,
+  panelHeight: number,
+  gap = 8,
+  padding = DEFAULT_VIEWPORT_PANEL_PADDING,
+  viewportWidth = window.innerWidth,
+  viewportHeight = window.innerHeight,
+  contentLeft?: number,
+): { left: number; top: number } {
+  const columnLeft = contentLeft != null && Number.isFinite(contentLeft) ? contentLeft : null
+
+  let left: number
+  if (columnLeft != null) {
+    const leftOfContent = columnLeft - gap - panelWidth
+    // Judge against the browser window, not the document content viewport.
+    left = leftOfContent >= padding ? leftOfContent : columnLeft
+  } else {
+    const leftOfAnchor = anchor.left - gap - panelWidth
+    left = leftOfAnchor >= padding ? leftOfAnchor : anchor.right + gap
+  }
+
+  let top = anchor.bottom + gap
+  if (top + panelHeight > viewportHeight - padding) {
+    const aboveTop = anchor.top - gap - panelHeight
+    if (aboveTop >= padding) top = aboveTop
+  }
+
+  return clampFixedPanelToViewport(
+    left,
+    top,
+    panelWidth,
+    panelHeight,
+    padding,
+    viewportWidth,
+    viewportHeight,
+  )
+}
+
 export interface UseViewportClampedFixedPanelOptions {
   visible: Ref<boolean> | ComputedRef<boolean>
   getSourcePoint: () => ViewportPoint | null

@@ -110,7 +110,7 @@ export function buildUrlHoverTargetFromPdfBlock(
   const { pos, node } = found
   const sourceHref = String(node.attrs.sourceHref || '').trim()
   const fileName = String(node.attrs.fileName || '')
-  const sourceLabel = String(node.attrs.sourceLabel || '').trim()
+  const sourceLabel = String(node.attrs.sourceLabel || node.attrs.title || '').trim()
   const url = sourceHref || `file:${String(node.attrs.fileId || '')}`
   let rect = anchorRect ?? null
   if (!rect) {

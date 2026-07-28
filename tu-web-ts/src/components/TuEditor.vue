@@ -47,6 +47,7 @@ import {
 } from '@/editor/linkLabelSuggest'
 import { syncResourceHrefWithPdfPages } from '@/editor/linkLabelSuggestQuery'
 import { isResourceLocatorHref, resolvePdfExcerptFromResourceHref } from '@/editor/resourceLinkToPdf'
+import { buildPdfClipExcerptSourceHref, ensurePdfClipExcerptEntity, resolveResourceItemIdForPdf } from '@/utils/pdfClipExcerpt'
 import {
   buildUrlHoverTargetFromLinkIr,
   buildUrlHoverTargetFromLinkMarkAtPos,
@@ -83,7 +84,7 @@ import {
   URL_EMBED_MIN_HEIGHT,
   type UrlDisplayMode,
 } from '@/utils/urlDisplay'
-import { parsePdfExcerptViewMode } from '@/utils/pdfExcerpt'
+import { parsePdfExcerptViewMode, PDF_EXCERPT_DEFAULT_HEIGHT } from '@/utils/pdfExcerpt'
 import {
   buildHandleMenuItems,
   getSectionHandleMenuContext,
@@ -146,7 +147,7 @@ const emit = defineEmits<{
   'bind-compare-side': [payload: { blockId: string; side: CompareSide }]
   'open-tag-editor': [blockId: string]
   'heading-source-click': [binding: HeadingSourceBinding, context: { blockId: string; title: string; clientX: number; clientY: number }]
-  'blockquote-excerpt-click': [binding: HeadingSourceBinding, context: { blockId: string; title: string; clientX: number; clientY: number }]
+  'blockquote-excerpt-click': [binding: HeadingSourceBinding, context: { blockId: string; title: string; clientX: number; clientY: number; role?: 'excerpt' | 'basis' }]
   'mark-block-excerpt': [blockId: string]
   'set-block-basis': [blockId: string]
   'section-annotate': [entryId: string]
@@ -194,11 +195,18 @@ let urlHoverSuppressed = false
 
 // --- Hover Handle ---
 const PARAGRAPH_HANDLE_NODE_TYPES = ['paragraph', 'heading', 'list_item', 'blockquote', 'bullet_list', 'ordered_list', 'task_list', 'task_item']
-const HANDLE_GUTTER_WIDTH = 44
+/** Tall markdown shells: purple grip (same top-left anchor as line handles). */
+const TOP_ANCHORED_HANDLE_NODE_TYPES = new Set(['blockquote'])
+const HANDLE_GUTTER_WIDTH = 36
 const hoveredPos = ref<number | null>(null)
 const handleVisible = ref(false)
 const handleTop = ref(0)
+/** Visual grip box height (always EDITOR_GUTTER_BTN_SIZE at block top-left). */
 const handleHeight = ref(28)
+/** Full block height for gutter keep-zone / hit testing while visual grip stays top-left. */
+const handleHitHeight = ref(28)
+/** true → purple block-shell variant; false → blue line/section handle. */
+const handleTopAnchored = ref(false)
 const handleMenuVisible = ref(false)
 let hideHandleTimer: ReturnType<typeof setTimeout> | null = null
 
@@ -218,6 +226,33 @@ const handlePositionStyle = computed<CSSProperties>(() => ({
   transform: 'none',
   ['--hover-handle-dot-left' as string]: `${handleFixedLeft.value - handleTriggerLeft.value}px`,
 }))
+
+const handleVariant = computed<'default' | 'block-top'>(() => (
+  handleTopAnchored.value ? 'block-top' : 'default'
+))
+
+function isTopAnchoredHandleTarget(target: EditorHandleTarget): boolean {
+  const ed = editor.value
+  if (!ed || ed.isDestroyed || target.kind !== 'paragraph') return false
+  try {
+    const $pos = ed.state.doc.resolve(target.pos)
+    for (let depth = $pos.depth; depth >= 1; depth -= 1) {
+      if (TOP_ANCHORED_HANDLE_NODE_TYPES.has($pos.node(depth).type.name)) return true
+    }
+  } catch {
+    return false
+  }
+  return false
+}
+
+function syncHandleGeometryFromAnchor(anchorEl: HTMLElement, topAnchored: boolean) {
+  const lineRect = anchorEl.getBoundingClientRect()
+  handleTop.value = lineRect.top
+  handleHitHeight.value = Math.max(EDITOR_GUTTER_BTN_SIZE, lineRect.height)
+  handleTopAnchored.value = topAnchored
+  // Yuque-style: visual grip always at block top-left; hit zone still spans full block height.
+  handleHeight.value = EDITOR_GUTTER_BTN_SIZE
+}
 
 const paragraphGutterActionsEnabled = computed(() => props.paragraphGutterActions ?? props.editable)
 const gutterReadOnly = computed(() => paragraphGutterActionsEnabled.value && !props.editable)
@@ -271,7 +306,7 @@ function disarmLinkSuggest() {
   clearLinkSuggest()
 }
 
-/** Hide menu when caret leaves label; do not open on selection-only (路过). */
+/** Hide menu when caret leaves href; do not open on selection-only (路过). */
 function syncLinkSuggestOnSelection() {
   const ed = editor.value
   if (!ed || !props.editable) {
@@ -286,7 +321,7 @@ function syncLinkSuggestOnSelection() {
   linkSuggestContext.value = context
   if (!linkSuggestArmed) return
   if (linkSuggestVisible.value) {
-    positionLinkSuggestMenu(context.labelFrom)
+    positionLinkSuggestMenu(context.hrefFrom ?? context.labelFrom)
   }
 }
 
@@ -319,14 +354,15 @@ async function refreshLinkSuggest() {
     disarmLinkSuggest()
     return
   }
-  const query = context.labelText
+  const query = context.hrefText
   if (!query.trim()) {
     clearLinkSuggest()
     linkSuggestContext.value = context
     return
   }
 
-  positionLinkSuggestMenu(context.labelFrom)
+  const menuAnchor = context.hrefFrom ?? context.labelFrom
+  positionLinkSuggestMenu(menuAnchor)
   const seq = ++linkSuggestSeq
   try {
     const items = await fetchLinkSuggestItems(query, {
@@ -341,7 +377,7 @@ async function refreshLinkSuggest() {
     linkSuggestIndex.value = 0
     linkSuggestListActive.value = false
     linkSuggestVisible.value = items.length > 0
-    if (items.length > 0) positionLinkSuggestMenu(context.labelFrom)
+    if (items.length > 0) positionLinkSuggestMenu(menuAnchor)
   } catch {
     if (seq !== linkSuggestSeq) return
     clearLinkSuggest()
@@ -992,6 +1028,7 @@ const insertPdfExcerptUsingExternalResourcePending = (input: {
   clipTop?: number
   clipBottom?: number
   sourceHref?: string
+  title?: string
   sourceLabel?: string
   notesVisible?: boolean
 }) => {
@@ -1026,6 +1063,7 @@ const insertPdfExcerptBlock = (input: {
   clipTop?: number
   clipBottom?: number
   sourceHref?: string
+  title?: string
   sourceLabel?: string
   notesVisible?: boolean
 }) => {
@@ -1136,7 +1174,8 @@ const updatePdfExcerptBlock = (
         viewMode,
         blockId,
         sourceHref,
-        sourceLabel: String(prev.sourceLabel || ''),
+        title: String(prev.title || prev.sourceLabel || ''),
+        sourceLabel: String(prev.sourceLabel || prev.title || ''),
         notesVisible: Boolean(prev.notesVisible),
         clipTop,
         clipBottom,
@@ -1146,6 +1185,104 @@ const updatePdfExcerptBlock = (
   }).run()
 }
 
+/**
+ * Bind the PDF block's resource link to a clip excerpt entity (upsert),
+ * instead of pointing at the whole resource.
+ */
+const applyPdfExcerptLinkToRegion = async (
+  region: PdfRegionAnchor,
+): Promise<{ ok: true; blockId: string } | { ok: false; message: string }> => {
+  const ed = editor.value
+  const blockId = String(region.blockId || '').trim()
+  const regionFileId = String(region.fileId || '').trim()
+  if (!ed) return { ok: false, message: '编辑器未就绪' }
+
+  type PdfHit = { pos: number; attrs: Record<string, unknown> }
+  let hitByBlock: PdfHit | null = null
+  let hitByFile: PdfHit | null = null
+  ed.state.doc.descendants((node, pos) => {
+    if (node.type.name !== 'pdfExcerptBlock') return true
+    const attrs = { ...(node.attrs as Record<string, unknown>) }
+    if (blockId && attrs.blockId === blockId) {
+      hitByBlock = { pos, attrs }
+      return false
+    }
+    if (regionFileId && String(attrs.fileId || '') === regionFileId && !hitByFile) {
+      hitByFile = { pos, attrs }
+    }
+    return true
+  })
+  const hit = (hitByBlock || hitByFile) as PdfHit | null
+  if (!hit) {
+    return { ok: false, message: '未找到对应的 PDF 块（blockId / fileId 不匹配）' }
+  }
+
+  const target = hit
+  const prevHref = String(target.attrs.sourceHref || '').trim()
+  const prevAttrs = target.attrs
+  const fileId = String(region.fileId || prevAttrs.fileId || '').trim()
+  const resolvedBlockId = String(prevAttrs.blockId || blockId || '').trim()
+
+  const resourceItemId = await resolveResourceItemIdForPdf({
+    resourceItemId: region.resourceItemId,
+    sourceHref: prevHref,
+    fileId,
+  })
+  if (!resourceItemId) {
+    return {
+      ok: false,
+      message: fileId
+        ? '未能根据该 PDF 文件反查到资源实体（请确认文件已登记在资源访问地址中）'
+        : 'PDF 块缺少 fileId，无法绑定节选',
+    }
+  }
+
+  const startPage = Math.max(1, Math.floor(Number(region.startPage) || 1))
+  const endPage = Math.max(startPage, Math.floor(Number(region.endPage) || startPage))
+  const clipTop = Number(region.clipTop) || 0
+  const clipBottom = region.clipBottom == null ? 1 : Number(region.clipBottom)
+  const geometry = { startPage, endPage, clipTop, clipBottom }
+
+  let excerptId = String(region.resourceExcerptId || '').trim()
+  try {
+    if (!excerptId) {
+      const excerpt = await ensurePdfClipExcerptEntity(resourceItemId, geometry, { fileId })
+      excerptId = excerpt.id
+    }
+  } catch (err) {
+    return {
+      ok: false,
+      message: err instanceof Error ? err.message : '创建划选节选失败',
+    }
+  }
+
+  const sourceHref = buildPdfClipExcerptSourceHref(resourceItemId, excerptId, geometry)
+  const applied = ed.chain().focus().command(({ tr, dispatch }) => {
+    if (!dispatch) return true
+    tr.setNodeMarkup(target.pos, undefined, {
+      ...createPdfExcerptNodeAttrs({
+        fileId: fileId || String(prevAttrs.fileId || ''),
+        fileName: String(prevAttrs.fileName || 'PDF'),
+        viewMode: 'excerpt',
+        startPage,
+        endPage,
+        height: Number(prevAttrs.height) || PDF_EXCERPT_DEFAULT_HEIGHT,
+        clipTop,
+        clipBottom,
+        blockId: resolvedBlockId,
+        sourceHref,
+        title: String(prevAttrs.title || prevAttrs.sourceLabel || ''),
+        sourceLabel: String(prevAttrs.sourceLabel || prevAttrs.title || ''),
+        notesVisible: Boolean(prevAttrs.notesVisible),
+      }),
+    })
+    return true
+  }).run()
+
+  if (!applied) return { ok: false, message: '更新 PDF 块链接失败' }
+  return { ok: true, blockId: resolvedBlockId }
+}
+
 const handleScrollInEditor = () => {
   if (activeHoverHighlight) refreshHoverHighlight()
   if (!handleVisible.value || !hoveredLineEl || !editorEl.value) return
@@ -1153,7 +1290,7 @@ const handleScrollInEditor = () => {
     clearHandleState()
     return
   }
-  handleTop.value = hoveredLineEl.getBoundingClientRect().top
+  syncHandleGeometryFromAnchor(hoveredLineEl, handleTopAnchored.value)
 }
 
 const isHandleInteractionTarget = (node: EventTarget | null): boolean => {
@@ -1171,6 +1308,7 @@ const clearHandleState = () => {
   handleTarget.value = null
   hoveredPos.value = null
   hoveredLineEl = null
+  handleTopAnchored.value = false
   pointerOnHandleControl = false
   clearHoverHighlight()
 }
@@ -1376,7 +1514,7 @@ function keepOrResolveHandleInGutter(clientY: number, contentLeft: number): bool
     handleVisible.value
     && hoveredLineEl
     && clientY >= handleTop.value
-    && clientY <= handleTop.value + handleHeight.value
+    && clientY <= handleTop.value + handleHitHeight.value
   ) {
     clearHideHandle()
     return true
@@ -1390,15 +1528,13 @@ function showHandle(target: EditorHandleTarget, anchorEl: HTMLElement) {
   const wrapperRect = editorEl.value.getBoundingClientRect()
   const gutter = getContentScrollGutterAnchor(editorEl.value)
   const trigger = gutter ? getHandleTriggerBounds(gutter, { contentLeft: wrapperRect.left }) : null
-  const lineRect = anchorEl.getBoundingClientRect()
 
   handleTarget.value = target
   hoveredLineEl = anchorEl
   handleFixedLeft.value = trigger?.dotCenterX ?? (wrapperRect.left - 24)
   handleTriggerLeft.value = trigger?.left ?? (handleFixedLeft.value - EDITOR_GUTTER_BTN_SIZE / 2)
   handleTriggerWidth.value = trigger?.width ?? EDITOR_GUTTER_BTN_SIZE
-  handleTop.value = lineRect.top
-  handleHeight.value = Math.max(EDITOR_GUTTER_BTN_SIZE, lineRect.height)
+  syncHandleGeometryFromAnchor(anchorEl, isTopAnchoredHandleTarget(target))
   if (target.kind === 'paragraph') {
     hoveredPos.value = target.pos
   } else {
@@ -1484,7 +1620,7 @@ function isClientPointInHandleKeepZone(clientX: number, clientY: number): boolea
   const wrapperRect = editorEl.value.getBoundingClientRect()
   const trigger = getHandleTriggerBounds(gutter, { contentLeft: wrapperRect.left })
   const vertical = handleVisible.value
-    ? { top: handleTop.value, height: handleHeight.value }
+    ? { top: handleTop.value, height: handleHitHeight.value }
     : { top: wrapperRect.top, height: wrapperRect.height }
   return isPointInHandleTriggerZone(clientX, clientY, trigger, vertical)
 }
@@ -2516,6 +2652,7 @@ async function applyUrlDisplayMode(
       ...pdf,
       // Keep full authored href including `#page=` for round-trip.
       sourceHref: target.url,
+      title: target.label || '',
       sourceLabel: target.label || '',
     })
 
@@ -2900,6 +3037,7 @@ defineExpose({
   insertPdfExcerptUsingExternalResourcePending,
   insertImageUsingExternalResourcePending,
   updatePdfExcerptBlock,
+  applyPdfExcerptLinkToRegion,
   updateCompareBlockSide,
   setUrlHoverSuppressed,
   showUrlHoverForInline: (from: number, to: number, url: string, displayMode: UrlDisplayMode = 'link', label?: string) => {
@@ -2958,6 +3096,7 @@ defineExpose({
       ref="hoverHandleRef"
       :items="activeHandleItems"
       :style="handlePositionStyle"
+      :variant="handleVariant"
       :menu-min-width="'140px'"
       :menu-gap="4"
       @select="(key: string) => handleHandleSelect(key as EditorHandleAction)"
@@ -2997,7 +3136,7 @@ defineExpose({
   position: relative;
   width: 100%;
   min-height: 200px;
-  --tiptap-handle-gutter: 44px;
+  --tiptap-handle-gutter: 36px;
 }
 
 .tu-editor-wrapper :deep(.tu-editor-content) {
@@ -3117,6 +3256,22 @@ defineExpose({
   border-color: #93c5fd;
 }
 
+.tu-editor-wrapper :deep(.heading-section-meta__role) {
+  flex-shrink: 0;
+  font-weight: 700;
+}
+
+.tu-editor-wrapper :deep(.heading-section-meta__path) {
+  display: inline;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  line-height: 1.4;
+  font-weight: 500;
+}
+
 .tu-editor-wrapper :deep(.heading-section-meta__chip) {
   display: inline-block;
   max-width: min(100%, 240px);
@@ -3180,8 +3335,34 @@ defineExpose({
   text-align: left;
 }
 
+.tu-editor-wrapper :deep(.blockquote-excerpt-meta--basis) {
+  border-color: #bbf7d0;
+  background: #f0fdf4;
+  color: #166534;
+}
+
 .tu-editor-wrapper :deep(.blockquote-excerpt-meta:hover) {
   background: #e0f2fe;
+}
+
+.tu-editor-wrapper :deep(.blockquote-excerpt-meta--basis:hover) {
+  background: #dcfce7;
+}
+
+.tu-editor-wrapper :deep(.blockquote-excerpt-meta__role) {
+  flex-shrink: 0;
+  font-weight: 700;
+}
+
+.tu-editor-wrapper :deep(.blockquote-excerpt-meta__path) {
+  display: inline;
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  line-height: 1.4;
+  font-weight: 500;
 }
 
 .tu-editor-wrapper :deep(.blockquote-excerpt-meta__chip) {
@@ -3203,6 +3384,10 @@ defineExpose({
   color: #fff;
   font-size: 9px;
   font-weight: 700;
+}
+
+.tu-editor-wrapper :deep(.blockquote-excerpt-meta--basis .blockquote-excerpt-meta__ai) {
+  background: #16a34a;
 }
 
 .tu-editor-wrapper :deep(.ProseMirror > p) {

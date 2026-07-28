@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   EDITOR_GUTTER_BTN_SIZE,
+  EDITOR_FOLD_BTN_SIZE,
   getHandleTriggerBounds,
   isPointInHandleTriggerZone,
   type ContentScrollGutterAnchor,
@@ -19,8 +20,8 @@ function gutter(partial?: Partial<ContentScrollGutterAnchor>): ContentScrollGutt
       y: 0,
       toJSON() { return this },
     } as DOMRect,
-    paddingLeft: 48,
-    foldLeft: 100 + 48 - EDITOR_GUTTER_BTN_SIZE / 2,
+    paddingLeft: 36,
+    foldLeft: 100 + 36 - EDITOR_FOLD_BTN_SIZE / 2,
     hoverLeft: 100 + EDITOR_GUTTER_BTN_SIZE / 2,
     ...partial,
   }

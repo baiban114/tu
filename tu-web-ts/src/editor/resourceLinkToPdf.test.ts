@@ -4,11 +4,14 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   isResourceLocatorHref,
+  OPEN_CHAPTER_END_PAGE,
   resolvePdfExcerptFromResourceHref,
+  resolveResourceChapterPageRange,
 } from '@/editor/resourceLinkToPdf'
 
 vi.mock('@/api/externalResource', () => ({
   getResourceItem: vi.fn(),
+  listResourceChapters: vi.fn(),
 }))
 
 vi.mock('@/utils/accessUrlInsert', async (importOriginal) => {
@@ -22,11 +25,66 @@ vi.mock('@/utils/accessUrlInsert', async (importOriginal) => {
   }
 })
 
-import { getResourceItem } from '@/api/externalResource'
+import { getResourceItem, listResourceChapters } from '@/api/externalResource'
+
+const pdfItem = {
+  id: 'ri-1',
+  typeId: 't1',
+  typeName: 'document',
+  identityFieldKey: 'title',
+  identityFieldLabel: '标题',
+  title: '书',
+  accessUrls: ['/api/files/file-1'],
+}
+
+describe('resolveResourceChapterPageRange', () => {
+  const chapters = [
+    { id: 'c1', parentId: null, locator: 'page:1', sortOrder: 0 },
+    { id: 'c1-1', parentId: 'c1', locator: 'page:3', sortOrder: 0 },
+    { id: 'c1-2', parentId: 'c1', locator: 'page:8', sortOrder: 1 },
+    { id: 'c2', parentId: null, locator: 'page:20', sortOrder: 1 },
+    { id: 'c3', parentId: null, locator: 'page:40-55', sortOrder: 2 },
+    { id: 'c4', parentId: null, locator: 'page:60', sortOrder: 3 },
+  ]
+
+  it('uses explicit pageRange locator when present', () => {
+    expect(resolveResourceChapterPageRange(chapters, 'c3')).toEqual({
+      startPage: 40,
+      endPage: 55,
+    })
+  })
+
+  it('spans to next sibling start − 1 (includes nested children)', () => {
+    expect(resolveResourceChapterPageRange(chapters, 'c1')).toEqual({
+      startPage: 1,
+      endPage: 19,
+    })
+    expect(resolveResourceChapterPageRange(chapters, 'c1-1')).toEqual({
+      startPage: 3,
+      endPage: 7,
+    })
+  })
+
+  it('uses open end for the last chapter', () => {
+    expect(resolveResourceChapterPageRange(chapters, 'c4')).toEqual({
+      startPage: 60,
+      endPage: OPEN_CHAPTER_END_PAGE,
+    })
+  })
+
+  it('returns null when chapter or locator is missing', () => {
+    expect(resolveResourceChapterPageRange(chapters, 'missing')).toBeNull()
+    expect(resolveResourceChapterPageRange(
+      [{ id: 'x', parentId: null, locator: 'anchor:a', sortOrder: 0 }],
+      'x',
+    )).toBeNull()
+  })
+})
 
 describe('resourceLinkToPdf', () => {
   beforeEach(() => {
     vi.mocked(getResourceItem).mockReset()
+    vi.mocked(listResourceChapters).mockReset()
   })
 
   it('detects resource locator hrefs', () => {
@@ -130,5 +188,69 @@ describe('resourceLinkToPdf', () => {
       accessUrls: ['https://example.com'],
     })
     expect(await resolvePdfExcerptFromResourceHref('resource:ri-1')).toBeNull()
+  })
+
+  it('maps chapter locator to chapter page span when converting to PDF', async () => {
+    vi.mocked(getResourceItem).mockResolvedValue(pdfItem)
+    vi.mocked(listResourceChapters).mockResolvedValue([
+      {
+        id: 'c1',
+        resourceItemId: 'ri-1',
+        resourceItemTitle: '书',
+        parentId: null,
+        title: '第1章',
+        locator: 'page:1',
+        sortOrder: 0,
+      },
+      {
+        id: 'c2',
+        resourceItemId: 'ri-1',
+        resourceItemTitle: '书',
+        parentId: null,
+        title: '第2章',
+        locator: 'page:20',
+        sortOrder: 1,
+      },
+    ])
+
+    expect(await resolvePdfExcerptFromResourceHref('resource:ri-1:chapter:c1')).toMatchObject({
+      viewMode: 'excerpt',
+      startPage: 1,
+      endPage: 19,
+    })
+    expect(listResourceChapters).toHaveBeenCalledWith('ri-1')
+  })
+
+  it('prefers explicit #page= over chapter inference', async () => {
+    vi.mocked(getResourceItem).mockResolvedValue(pdfItem)
+    vi.mocked(listResourceChapters).mockResolvedValue([
+      {
+        id: 'c1',
+        resourceItemId: 'ri-1',
+        resourceItemTitle: '书',
+        parentId: null,
+        title: '第1章',
+        locator: 'page:1',
+        sortOrder: 0,
+      },
+      {
+        id: 'c2',
+        resourceItemId: 'ri-1',
+        resourceItemTitle: '书',
+        parentId: null,
+        title: '第2章',
+        locator: 'page:20',
+        sortOrder: 1,
+      },
+    ])
+
+    expect(
+      await resolvePdfExcerptFromResourceHref('resource:ri-1:chapter:c1#page=3-5'),
+    ).toMatchObject({
+      viewMode: 'excerpt',
+      startPage: 3,
+      endPage: 5,
+    })
+    expect(listResourceChapters).not.toHaveBeenCalled()
   })
 })

@@ -2,7 +2,7 @@
 import { computed } from 'vue'
 import type { ResourceExcerpt, ResourceItem } from '@/api/externalResource'
 import { resourcePositionDisplay } from '@/utils/resourcePositionLocator'
-import ResourcePickerExcerptBranch from './ResourcePickerExcerptBranch.vue'
+import ResourceLocatorExcerptBranch from './ResourceLocatorExcerptBranch.vue'
 
 const EXCERPT_CHILD_LIMIT = 100
 
@@ -93,7 +93,7 @@ const page = computed(() => {
           <small v-if="excerpt.locator">{{ resourcePositionDisplay(excerpt.locator) || excerpt.locator }}</small>
         </button>
       </div>
-      <ResourcePickerExcerptBranch
+      <ResourceLocatorExcerptBranch
         v-if="isExpanded(excerpt.id)"
         :item="item"
         :parent-id="excerpt.id"

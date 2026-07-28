@@ -110,6 +110,7 @@ export function resourcePdfNoteToAnnotation(
   note: {
     id: string
     resourceItemId: string
+    excerptId?: string | null
     fileId?: string | null
     startPage: number
     endPage: number
@@ -125,6 +126,7 @@ export function resourcePdfNoteToAnnotation(
   const createdAt = toEpochMs(note.createdAt) || Date.now()
   const updatedAt = toEpochMs(note.updatedAt) || createdAt
   const fileId = String(note.fileId || '').trim()
+  const excerptId = String(note.excerptId || '').trim()
   return {
     id: note.id,
     selectedText: formatPdfExcerptRangeLabel(
@@ -146,6 +148,7 @@ export function resourcePdfNoteToAnnotation(
       blockId,
       fileId: fileId || undefined,
       resourceItemId: note.resourceItemId,
+      resourceExcerptId: excerptId || undefined,
       startPage: note.startPage,
       endPage: note.endPage,
       clipTop: note.clipTop,

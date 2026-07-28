@@ -12,10 +12,12 @@ import {
   createResourceExcerptMock,
   createResourcePdfRegionNoteMock,
   createResourceItemMock,
+  ensurePdfClipExcerptMock,
   createResourceTypeMock,
   createResourceWorkMock,
   deleteResourceExcerptMock,
   deleteResourcePdfRegionNoteMock,
+  listResourceExcerptPdfRegionNotesMock,
   listResourcePdfRegionNotesMock,
   removeResourceItemMock,
   mergeResourceWorksMock,
@@ -399,6 +401,7 @@ export function createResourceExcerpt(resourceItemId: string, payload: CreateRes
 export interface ResourcePdfRegionNote {
   id: string;
   resourceItemId: string;
+  excerptId?: string | null;
   fileId?: string | null;
   startPage: number;
   endPage: number;
@@ -416,11 +419,34 @@ export type CreateResourcePdfRegionNotePayload = {
   clipTop: number;
   clipBottom: number;
   note: string;
+  excerptId: string;
   fileId?: string;
   color?: string;
 };
 
-export type UpdateResourcePdfRegionNotePayload = Partial<CreateResourcePdfRegionNotePayload>;
+export type UpdateResourcePdfRegionNotePayload = Partial<Omit<CreateResourcePdfRegionNotePayload, 'excerptId'>>;
+
+export type CreatePdfClipExcerptPayload = {
+  startPage: number;
+  endPage: number;
+  clipTop: number;
+  clipBottom: number;
+  title?: string;
+  fileId?: string;
+};
+
+export function ensurePdfClipExcerpt(
+  resourceItemId: string,
+  payload: CreatePdfClipExcerptPayload,
+): Promise<ResourceExcerpt> {
+  if (isMockDataSource()) {
+    return Promise.resolve(ensurePdfClipExcerptMock(resourceItemId, payload));
+  }
+  return request<ResourceExcerpt>(
+    `/api/resource-items/${encodeURIComponent(resourceItemId)}/pdf-clip-excerpts`,
+    { method: 'POST', body: JSON.stringify(payload) },
+  );
+}
 
 export function listResourcePdfRegionNotes(resourceItemId: string): Promise<ResourcePdfRegionNote[]> {
   if (isMockDataSource()) {
@@ -428,6 +454,15 @@ export function listResourcePdfRegionNotes(resourceItemId: string): Promise<Reso
   }
   return request<ResourcePdfRegionNote[]>(
     `/api/resource-items/${encodeURIComponent(resourceItemId)}/pdf-region-notes`,
+  );
+}
+
+export function listResourceExcerptPdfRegionNotes(excerptId: string): Promise<ResourcePdfRegionNote[]> {
+  if (isMockDataSource()) {
+    return Promise.resolve(listResourceExcerptPdfRegionNotesMock(excerptId));
+  }
+  return request<ResourcePdfRegionNote[]>(
+    `/api/resource-excerpts/${encodeURIComponent(excerptId)}/pdf-region-notes`,
   );
 }
 

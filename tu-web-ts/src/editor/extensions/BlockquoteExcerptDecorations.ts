@@ -4,20 +4,24 @@ import { Decoration, DecorationSet } from '@tiptap/pm/view'
 import type { HeadingSourceBinding, TextAnnotation } from '@/api/types'
 import {
   blockquoteExcerptBadgeTitle,
-  blockquoteExcerptMetaChips,
+  blockquoteExcerptMetaPathParts,
+  blockquoteExcerptMetaRole,
   isAiBlockquoteExcerpt,
-  resolveBlockquoteExcerptBinding,
+  resolveBlockResourceBinding,
 } from '@/utils/blockquoteExcerpt'
 
 export interface BlockquoteExcerptDecorationsOptions {
   getAnnotations: () => TextAnnotation[]
   onExcerptClick: (
     binding: HeadingSourceBinding,
-    context: { blockId: string; title: string; clientX: number; clientY: number },
+    context: { blockId: string; title: string; clientX: number; clientY: number; role: 'excerpt' | 'basis' },
   ) => void
 }
 
 export const blockquoteExcerptDecorationsKey = new PluginKey('blockquoteExcerptDecorations')
+
+/** Nodes that can show the shared resource-excerpt / basis metadata bar. */
+const META_NODE_TYPES = new Set(['blockquote', 'paragraph'])
 
 export const BlockquoteExcerptDecorations = Extension.create<BlockquoteExcerptDecorationsOptions>({
   name: 'blockquoteExcerptDecorations',
@@ -39,25 +43,44 @@ export const BlockquoteExcerptDecorations = Extension.create<BlockquoteExcerptDe
             const decorations: Decoration[] = []
             const annotations = extension.options.getAnnotations()
             state.doc.descendants((node, pos) => {
-              if (node.type.name !== 'blockquote') return true
-              const binding = resolveBlockquoteExcerptBinding(node, pos, node.nodeSize, annotations)
-              if (!binding?.resourceItemId || !binding.resourceExcerptId) return true
+              if (!META_NODE_TYPES.has(node.type.name)) return true
+              // Nested paragraphs inside blockquote are covered by the outer shell meta.
+              if (node.type.name === 'paragraph') {
+                const $pos = state.doc.resolve(pos)
+                for (let d = $pos.depth; d > 0; d -= 1) {
+                  if ($pos.node(d).type.name === 'blockquote') return true
+                }
+              }
 
+              const resolved = resolveBlockResourceBinding(node, pos, node.nodeSize, annotations)
+              if (!resolved?.binding.resourceItemId) return true
+              if (resolved.role === 'excerpt' && !resolved.binding.resourceExcerptId) return true
+
+              const { binding, role } = resolved
               decorations.push(
                 Decoration.widget(pos, () => {
                   const bar = document.createElement('button')
                   bar.type = 'button'
                   bar.className = 'blockquote-excerpt-meta'
+                  if (role === 'basis') {
+                    bar.classList.add('blockquote-excerpt-meta--basis')
+                  }
                   if (isAiBlockquoteExcerpt(binding)) {
                     bar.classList.add('blockquote-excerpt-meta--ai')
                   }
-                  bar.title = blockquoteExcerptBadgeTitle(binding)
+                  bar.title = blockquoteExcerptBadgeTitle(binding, role)
 
-                  for (const chip of blockquoteExcerptMetaChips(binding)) {
-                    const span = document.createElement('span')
-                    span.className = 'blockquote-excerpt-meta__chip'
-                    span.textContent = chip
-                    bar.appendChild(span)
+                  const roleEl = document.createElement('span')
+                  roleEl.className = 'blockquote-excerpt-meta__role'
+                  roleEl.textContent = blockquoteExcerptMetaRole(role)
+                  bar.appendChild(roleEl)
+
+                  const pathParts = blockquoteExcerptMetaPathParts(binding, role)
+                  if (pathParts.length > 0) {
+                    const path = document.createElement('span')
+                    path.className = 'blockquote-excerpt-meta__path'
+                    path.textContent = pathParts.join(' > ')
+                    bar.appendChild(path)
                   }
 
                   if (isAiBlockquoteExcerpt(binding)) {
@@ -74,13 +97,14 @@ export const BlockquoteExcerptDecorations = Extension.create<BlockquoteExcerptDe
                   bar.addEventListener('click', (event) => {
                     event.preventDefault()
                     event.stopPropagation()
-                    const blockId = String(node.attrs.blockId || `blockquote-${pos}`)
+                    const blockId = String(node.attrs.blockId || `${node.type.name}-${pos}`)
                     const title = node.textContent?.trim() || ''
                     extension.options.onExcerptClick(binding, {
                       blockId,
                       title,
                       clientX: event.clientX,
                       clientY: event.clientY,
+                      role,
                     })
                   })
                   return bar

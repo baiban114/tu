@@ -6,6 +6,9 @@ import { getMarkRange } from '@tiptap/core'
  * Diff range in `after` relative to `before` (ProseMirror findDiffStart/End).
  * TipTap applies paste/input-rule appendTransactions before emitting `transaction`,
  * so pass the live `editor.state.doc` as `after` to get the post-rule range.
+ *
+ * Prefer {@link resolveInsertedContentDelta} from `reuseMarkContentLifecycle`
+ * when you need “new plain text added” rather than any structural change window.
  */
 export function collectDocDiffRange(
   before: ProseMirrorNode,

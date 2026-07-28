@@ -24,6 +24,9 @@ let scrollSaveTimer: ReturnType<typeof setTimeout> | null = null;
 let scrollRestoreToken = 0;
 /** Ignore scroll events while programmatically restoring after refresh. */
 let skipScrollPersistUntil = 0;
+/** Non-zero target last restored — ignore ephemeral 0 writes that would wipe storage. */
+let lastRestoredScrollTop = 0;
+let protectRestoredScrollUntil = 0;
 
 onMounted(() => {
   void initializeWorkspace();
@@ -47,6 +50,15 @@ function onContentScroll() {
   const el = contentScrollEl.value;
   const viewKey = store.currentViewKey;
   if (!el || !viewKey) return;
+  // After restore, focus-follow / layout can briefly clamp scrollTop to 0 before
+  // content height settles — do not persist that wipe over the saved position.
+  if (
+    Date.now() < protectRestoredScrollUntil
+    && lastRestoredScrollTop > 0
+    && el.scrollTop < 8
+  ) {
+    return;
+  }
   if (scrollSaveTimer) clearTimeout(scrollSaveTimer);
   scrollSaveTimer = setTimeout(() => {
     scrollSaveTimer = null;
@@ -65,12 +77,17 @@ async function restoreContentScroll() {
   if (!(showDocumentPage.value || showResourceDocument.value)) return;
 
   const target = loadWorkspaceScrollTop(viewKey);
-  if (target <= 0) return;
+  if (target <= 0) {
+    lastRestoredScrollTop = 0;
+    return;
+  }
 
   const token = ++scrollRestoreToken;
-  skipScrollPersistUntil = Date.now() + 1000;
+  skipScrollPersistUntil = Date.now() + 2500;
+  protectRestoredScrollUntil = Date.now() + 4000;
+  lastRestoredScrollTop = target;
 
-  for (const delay of [0, 50, 150, 400]) {
+  for (const delay of [0, 50, 150, 400, 800, 1600]) {
     if (delay > 0) await new Promise((r) => setTimeout(r, delay));
     if (token !== scrollRestoreToken) return;
     await nextTick();
@@ -78,7 +95,14 @@ async function restoreContentScroll() {
     if (!el) continue;
     el.scrollTop = target;
     // Stop early once layout is tall enough to hold the target.
-    if (el.scrollHeight >= target + el.clientHeight - 8) break;
+    if (el.scrollHeight >= target + el.clientHeight - 8) {
+      // Re-apply once more after sticky TOC / embeds settle.
+      await nextTick();
+      if (token === scrollRestoreToken && contentScrollEl.value === el) {
+        el.scrollTop = target;
+      }
+      break;
+    }
   }
 }
 
@@ -468,7 +492,8 @@ watch(
   flex-direction: column;
   overflow-y: auto;
   scrollbar-gutter: stable;
-  padding: 0 48px 32px;
+  /* Left gutter: handle (~28) + tight fold chevron (~14); was 48 when fold was 28. */
+  padding: 0 48px 32px 36px;
 }
 
 .resource-document-banner {

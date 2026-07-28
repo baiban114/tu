@@ -1,0 +1,25 @@
+---
+description: NodeView 拖拽不得抢占输入框划选与其它交互控件
+globs: tu-web-ts/src/editor/**/*
+alwaysApply: false
+---
+
+# Editor NodeView 拖拽 vs 控件交互
+
+在 TipTap NodeView / `ResizableBlockWrapper` / `TuBlockChromeHeader` 上实现块拖拽时：
+
+1. **拖拽手柄可包含控件，但控件内不得启动拖块**  
+   标题 `input`、按钮、链接、`contenteditable`、以及标了 `data-node-view-no-drag` 的区域，在划选文字或点击时**禁止**变成拖动整个 NodeView。
+
+2. **整行 `draggable="true"` 不够**  
+   仅靠子元素 `@mousedown.stop` **不能**阻止浏览器对可拖祖先发起的 HTML5 `dragstart`（输入框进入编辑后拖选文字会变成拖块）。必须：
+   - 在手柄根节点 `@dragstart` 调用 `preventNodeViewDragFromInteractive`（见 `nodeViewDragHandle.ts`）
+   - 输入框自身 `draggable="false"`，并在 `focus` 期间关闭手柄行的 `draggable`
+   - Node 扩展 `stopEvent: stopNonHandleNodeViewDragEvent`
+
+3. **标记约定**  
+   - 手柄根：`data-node-view-drag-handle`（可兼 `data-drag-handle`）  
+   - 禁拖控件：原生可交互标签，或显式 `data-node-view-no-drag`
+
+4. **反例**  
+   `TuBlockChromeHeader` 整行 `draggable` + 标题 input 仅 `@mousedown.stop` → 编辑态划选标题变成拖 NodeView。

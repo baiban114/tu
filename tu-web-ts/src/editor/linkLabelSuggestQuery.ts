@@ -13,8 +13,8 @@ export interface LinkSuggestItem {
   /** Primary list text (node name; no confirmed ancestors). */
   label: string
   /**
-   * Text written into `[]` on select. Defaults to `label`.
-   * Resource/heading drills use full readable path for further `>` browse.
+   * Full readable path used when deriving the PDF/resource title for `[]`
+   * (first `>` segment) and for page-range suffixes. Search now lives in `()`.
    */
   applyLabel?: string
   href: string
