@@ -77,16 +77,19 @@ watch(
     destroy-on-close
     @update:model-value="(value: boolean) => { if (!value) close(); else emit('update:visible', value); }"
   >
-    <KnowledgePointPickerPanel
-      ref="panelRef"
-      :kb-id="kbId"
-      :selected-id="draftPointId"
-      :hint="hint"
-      :allow-manage="allowManage"
-      :disabled-point-ids="disabledPointIds"
-      @select="onDraftSelect"
-      @update:selected-id="(id) => { draftPointId = id; }"
-    />
+    <div class="kpp-dialog-body">
+      <KnowledgePointPickerPanel
+        ref="panelRef"
+        class="kpp-dialog-body__panel"
+        :kb-id="kbId"
+        :selected-id="draftPointId"
+        :hint="hint"
+        :allow-manage="allowManage"
+        :disabled-point-ids="disabledPointIds"
+        @select="onDraftSelect"
+        @update:selected-id="(id) => { draftPointId = id; }"
+      />
+    </div>
 
     <template #footer>
       <ElButton @click="close">取消</ElButton>
@@ -94,3 +97,33 @@ watch(
     </template>
   </ElDialog>
 </template>
+
+<style scoped>
+.kpp-dialog-body {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+  box-sizing: border-box;
+}
+
+.kpp-dialog-body__panel {
+  flex: 1;
+  min-height: 0;
+}
+</style>
+
+<style>
+.knowledge-point-picker-dialog.tu-dialog-viewport {
+  height: min(640px, calc(100dvh - 32px));
+  max-height: calc(100dvh - 32px);
+}
+
+.knowledge-point-picker-dialog.el-dialog .el-dialog__body {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+</style>

@@ -87,6 +87,12 @@ function clearHoverListeners() {
 
 function onFoldButtonEnter(entryId: string) {
   showToggleForEntry(entryId)
+  // Collapsed: keep the chevron interactive, but do not highlight the section body.
+  const collapsed = toggles.value.find((item) => item.entryId === entryId)?.collapsed === true
+  if (collapsed) {
+    emit('section-handle-pointer-leave')
+    return
+  }
   emit('section-handle-pointer-enter', entryId)
 }
 

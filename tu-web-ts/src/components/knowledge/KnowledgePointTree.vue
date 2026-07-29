@@ -249,9 +249,8 @@ async function createPoint(parentId: string | null) {
     if (parentId) expandTreeNode(parentId);
     treeRef.value?.setCurrentKey(created.id);
     applySelection([created.id], created.id);
-    if (props.mode === 'manage') {
-      onStartRename(created);
-    }
+    emit('select', created);
+    onStartRename(created);
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : '创建知识点失败');
   } finally {
@@ -277,7 +276,7 @@ function onStartRename(node?: KnowledgePoint | null) {
   if (!target) return;
   closeContextMenu();
   renamingPointId.value = target.id;
-  renameValue.value = target.title;
+  renameValue.value = target.title === DEFAULT_POINT_TITLE ? '' : target.title;
   void nextTick(() => {
     renameInputRef.value?.focus();
   });
@@ -527,6 +526,7 @@ function handleKeydown(event: KeyboardEvent) {
 
 defineExpose({
   startRename: onStartRename,
+  createRootPoint: onCreateRootPoint,
   setCurrentKey: (id: string) => treeRef.value?.setCurrentKey(id),
   expandNode: expandTreeNode,
   clearSelection: () => {
@@ -542,6 +542,7 @@ defineExpose({
       <span v-if="toolbarHint" class="kpt-toolbar__hint">{{ toolbarHint }}</span>
       <span v-else-if="mode === 'manage'" class="kpt-toolbar__hint">拖拽调整层级与顺序；Ctrl+点击多选</span>
       <ElButton
+        v-if="mode === 'manage'"
         link
         size="small"
         title="新建顶层知识点"
@@ -590,6 +591,7 @@ defineExpose({
                 v-model="renameValue"
                 size="small"
                 class="kpt-tree-rename-input"
+                placeholder="输入名称"
                 @blur="onFinishRename(data)"
                 @keyup.enter="onFinishRename(data)"
                 @keyup.esc="cancelRename"
@@ -606,7 +608,19 @@ defineExpose({
             </span>
           </template>
         </ElTree>
-        <div v-else class="kpt-empty">暂无知识点</div>
+        <div v-else class="kpt-empty">
+          <p class="kpt-empty__text">暂无知识点</p>
+          <ElButton
+            v-if="showToolbar"
+            type="primary"
+            size="small"
+            :loading="creatingPoint"
+            :disabled="creatingPoint"
+            @click="onCreateRootPoint"
+          >
+            新建知识点
+          </ElButton>
+        </div>
       </ElScrollbar>
     </div>
 
@@ -751,10 +765,18 @@ defineExpose({
 }
 
 .kpt-empty {
-  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 24px 16px;
   text-align: center;
   color: #8c8c8c;
   font-size: 13px;
+}
+
+.kpt-empty__text {
+  margin: 0;
 }
 </style>
 

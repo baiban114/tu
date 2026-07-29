@@ -178,6 +178,14 @@ export const productFeatureCatalog: ProductFeature[] = [
     owner: 'Editor',
   },
   {
+    id: 'knowledge-point-document-display',
+    module: '知识关联',
+    name: '知识点展示在文档',
+    description: '按 displayTypeCode 用 Strategy+Registry 组合关联内容为文档 ViewModel。文档元数据前置点击后在正文前插入「阅读解析」视图（非文档内容、不落库，仅 localStorage 缓存阅读态）；持久化插入 UI 可后续接入。',
+    status: 'testing',
+    owner: 'Knowledge',
+  },
+  {
     id: 'local-file-sync',
     module: '存储',
     name: '本地文件绑定保存',

@@ -472,6 +472,11 @@ export interface KnowledgePoint {
   estimatedHours?: number | null;
   sortOrder: number;
   aliases?: string[];
+  /**
+   * Document display recipe code (see `src/knowledge/display`).
+   * Optional; defaults to `concept` when composing into a document.
+   */
+  displayTypeCode?: string | null;
   children?: KnowledgePoint[];
 }
 

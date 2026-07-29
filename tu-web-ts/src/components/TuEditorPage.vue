@@ -16,8 +16,8 @@ import BlockPicker from './BlockPicker.vue'
 import ExternalResourcePicker, { type ExternalResourcePickerSelection } from './ExternalResourcePicker.vue'
 import PdfExcerptPicker, { type PdfExcerptPickerMode, type PdfExcerptSelection } from './PdfExcerptPicker.vue'
 import BlockMetadataTagEditor from './BlockMetadataTagEditor.vue'
-import PageTagsBar from './PageTagsBar.vue'
 import PageKnowledgeContextBar from './PageKnowledgeContextBar.vue'
+import KnowledgePointReadingPreview from './KnowledgePointReadingPreview.vue'
 import CommentThreadPanel from './CommentThreadPanel.vue'
 import Toast from './Toast.vue'
 import NoteEditor from './NoteEditor.vue'
@@ -123,13 +123,19 @@ import {
 import { HEADING_SECTION_FOLD_META } from '@/utils/toc/tocSectionFoldActions'
 import { isMindmapBlueprint } from '@/components/x6'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import type { KnowledgeAnchor } from '@/api/types'
+import type { KnowledgeAnchor, KnowledgePoint } from '@/api/types'
+import {
+  clearKnowledgePointReadingPreview,
+  loadKnowledgePointReadingPreview,
+  saveKnowledgePointReadingPreview,
+} from '@/utils/knowledgePointReadingState'
 import {
   buildBlockAnchor,
   blockAnchor,
   buildSelectionAnchor,
   headingAnchor,
   navigateKnowledgeAnchor,
+  pageAnchor,
   parseLocator,
   sectionAnchor,
   type KnowledgeAnchorNavigateHandlers,
@@ -733,6 +739,46 @@ const tiptapEditor = computed(() => tuEditorRef.value?.editor ?? null)
 const knowledgeAnchorPickerVisible = ref(false)
 const knowledgeSourceAnchor = ref<KnowledgeAnchor | null>(null)
 const knowledgeRelationRefreshKey = ref(0)
+const readingPreviewPointId = ref<string | null>(null)
+const readingPreviewDisplayTypeCode = ref<string | undefined>(undefined)
+
+function restoreReadingPreviewForPage(pageId: string | null | undefined) {
+  if (!pageId) {
+    readingPreviewPointId.value = null
+    readingPreviewDisplayTypeCode.value = undefined
+    return
+  }
+  const saved = loadKnowledgePointReadingPreview(authStore.user?.id, pageId)
+  readingPreviewPointId.value = saved?.pointId ?? null
+  readingPreviewDisplayTypeCode.value = saved?.displayTypeCode
+}
+
+function handleOpenPrerequisiteReading(point: KnowledgePoint) {
+  const pageId = workspaceStore.currentPageId
+  if (!pageId) return
+  readingPreviewPointId.value = point.id
+  readingPreviewDisplayTypeCode.value = point.displayTypeCode ?? undefined
+  saveKnowledgePointReadingPreview(authStore.user?.id, pageId, {
+    pointId: point.id,
+    displayTypeCode: point.displayTypeCode ?? undefined,
+    updatedAt: Date.now(),
+  })
+}
+
+function handleCloseReadingPreview() {
+  const pageId = workspaceStore.currentPageId
+  readingPreviewPointId.value = null
+  readingPreviewDisplayTypeCode.value = undefined
+  if (pageId) clearKnowledgePointReadingPreview(authStore.user?.id, pageId)
+}
+
+watch(
+  () => workspaceStore.currentPageId,
+  (pageId) => {
+    restoreReadingPreviewForPage(pageId)
+  },
+  { immediate: true },
+)
 
 const documentMarkingPanelVisible = ref(false)
 const documentMarkingLoading = ref(false)
@@ -2150,9 +2196,17 @@ const handleCreateKnowledgeRelationFromSelection = () => {
   knowledgeAnchorPickerVisible.value = true
 }
 
+const handleAssociatePageKnowledge = () => {
+  const pageId = workspaceStore.currentPageId
+  const kbId = workspaceStore.currentKbId
+  if (!pageId || !kbId || !props.editable) return
+  knowledgeSourceAnchor.value = pageAnchor(pageId, pageTitleDraft.value || '未命名页面')
+  knowledgeAnchorPickerVisible.value = true
+}
+
 const handleKnowledgeRelationCreated = () => {
   knowledgeRelationRefreshKey.value += 1
-  showToast('已关联到知识点')
+  showToast(knowledgeSourceAnchor.value?.kind === 'page' ? '已更新前置' : '已关联到知识点')
 }
 
 const handleApplyDocumentMarking = async (payload: { selectedIds: string[]; replaceExistingAi: boolean }) => {
@@ -4406,30 +4460,36 @@ onBeforeUnmount(() => {
         @keydown.enter="focusEditorFromStart"
       />
       <h1 v-else class="page-title-heading">{{ pageTitleDraft || '未命名页面' }}</h1>
-      <PageTagsBar
-        v-if="editable || pageTags.length > 0 || filterableTags.length > 0"
-        class="page-title-row__tags"
-        :tags="pageTags"
-        :filter-tags="filterableTags"
-        :active-filter="activeTagFilter"
-        :editable="editable"
-        @edit="handleOpenPageTagEditor"
-        @remove="handleRemovePageTag"
-        @select-filter="handleTagFilterSelect"
-        @clear-filter="handleTagFilterClear"
-      />
     </section>
 
     <PageKnowledgeContextBar
-      v-if="workspaceStore.currentKbId && workspaceStore.currentPageId"
-      :kb-id="workspaceStore.currentKbId"
+      v-if="workspaceStore.currentPageId"
+      :kb-id="workspaceStore.currentKbId || ''"
       :page-id="workspaceStore.currentPageId"
       :navigate="knowledgeNavigateHandlers"
       :refresh-key="knowledgeRelationRefreshKey"
+      :editable="editable"
+      :tags="pageTags"
+      :filter-tags="filterableTags"
+      :active-filter="activeTagFilter"
+      @associate="handleAssociatePageKnowledge"
+      @open-prerequisite="handleOpenPrerequisiteReading"
+      @edit-tags="handleOpenPageTagEditor"
+      @remove-tag="handleRemovePageTag"
+      @select-filter="handleTagFilterSelect"
+      @clear-filter="handleTagFilterClear"
     />
 
     <div class="content-shell" :class="{ 'content-shell--toc-open': tocExpanded && tocItems.length > 0 }">
       <div class="content-container">
+        <KnowledgePointReadingPreview
+          v-if="workspaceStore.currentKbId && readingPreviewPointId"
+          :kb-id="workspaceStore.currentKbId"
+          :point-id="readingPreviewPointId"
+          :display-type-code="readingPreviewDisplayTypeCode"
+          :navigate="knowledgeNavigateHandlers"
+          @close="handleCloseReadingPreview"
+        />
         <TuEditor
           ref="tuEditorRef"
           :document="localDocument"
@@ -4985,11 +5045,6 @@ onBeforeUnmount(() => {
   padding: 8px 0 0;
   overflow: visible;
   cursor: text;
-}
-
-.page-title-row__tags {
-  margin-top: 8px;
-  cursor: default;
 }
 
 .page-title-input,

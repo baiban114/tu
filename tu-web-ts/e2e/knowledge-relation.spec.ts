@@ -370,9 +370,89 @@ test('shows page knowledge context bar with page points and prerequisites', asyn
   await page.reload()
   await expect(page.locator('.ProseMirror')).toBeVisible()
 
-  const contextBar = page.getByRole('region', { name: '页面知识点关联' })
+  const contextBar = page.getByRole('region', { name: '文档元数据' })
   await expect(contextBar).toBeVisible()
+  await contextBar.getByRole('button', { name: '展开文档元数据' }).click()
   await expect(contextBar.getByRole('button', { name: '基础概念' })).toBeVisible()
   await expect(contextBar.getByRole('button', { name: '前置概念' })).toBeVisible()
-  await expect(contextBar.getByText('前驱')).toBeVisible()
+  await expect(contextBar.getByText('前置')).toBeVisible()
+})
+
+test('page knowledge context truncates prerequisites and opens paged dialog', async ({ page }) => {
+  test.setTimeout(60_000)
+  await page.goto('/?pageId=p-demo-2')
+  await expect(page.locator('.ProseMirror')).toBeVisible()
+
+  await page.evaluate(() => {
+    const pointsRaw = window.localStorage.getItem('tu-mock-knowledge-points')
+    const points = pointsRaw ? JSON.parse(pointsRaw) as Array<Record<string, unknown>> : []
+    if (!points.some((item) => item.id === 'kp-demo-1')) {
+      points.push({
+        id: 'kp-demo-1',
+        kbId: 'kb-demo-1',
+        parentId: null,
+        title: '基础概念',
+        status: 'active',
+        sortOrder: 0,
+      })
+    }
+    for (let i = 1; i <= 6; i += 1) {
+      const id = `kp-pre-many-${i}`
+      if (points.some((item) => item.id === id)) continue
+      points.push({
+        id,
+        kbId: 'kb-demo-1',
+        parentId: null,
+        title: `前置点${i}`,
+        status: 'active',
+        sortOrder: 10 + i,
+      })
+    }
+    window.localStorage.setItem('tu-mock-knowledge-points', JSON.stringify(points))
+
+    const anchorsRaw = window.localStorage.getItem('tu-mock-knowledge-point-anchors')
+    const anchors = anchorsRaw ? JSON.parse(anchorsRaw) as Array<Record<string, unknown>> : []
+    if (!anchors.some((item) => item.id === 'kpa-e2e-page-truncate')) {
+      anchors.push({
+        id: 'kpa-e2e-page-truncate',
+        knowledgePointId: 'kp-demo-1',
+        kind: 'page',
+        locator: 'page:p-demo-2',
+        role: 'primary',
+        primary: true,
+        snapshot: { title: '基础概念' },
+      })
+    }
+    window.localStorage.setItem('tu-mock-knowledge-point-anchors', JSON.stringify(anchors))
+
+    const relationsRaw = window.localStorage.getItem('tu-mock-knowledge-relations')
+    const relations = relationsRaw ? JSON.parse(relationsRaw) as Array<Record<string, unknown>> : []
+    for (let i = 1; i <= 6; i += 1) {
+      const id = `kr-e2e-page-truncate-${i}`
+      if (relations.some((item) => item.id === id)) continue
+      relations.push({
+        id,
+        kbId: 'kb-demo-1',
+        relationTypeKey: 'prerequisite',
+        fromPointId: 'kp-demo-1',
+        toPointId: `kp-pre-many-${i}`,
+        sourceProvenance: 'user',
+        status: 'ok',
+      })
+    }
+    window.localStorage.setItem('tu-mock-knowledge-relations', JSON.stringify(relations))
+  })
+
+  await page.reload()
+  await expect(page.locator('.ProseMirror')).toBeVisible()
+
+  const contextBar = page.getByRole('region', { name: '文档元数据' })
+  await contextBar.getByRole('button', { name: '展开文档元数据' }).click()
+  await expect(contextBar.getByRole('button', { name: '前置点1' })).toBeVisible()
+  await expect(contextBar.getByRole('button', { name: '前置点5' })).toBeVisible()
+  await expect(contextBar.getByRole('button', { name: '前置点6' })).toHaveCount(0)
+  await contextBar.getByRole('button', { name: '查看全部前置（共 6 个）' }).click()
+  const dialog = page.getByRole('dialog', { name: '全部前置' })
+  await expect(dialog).toBeVisible()
+  await expect(dialog.getByRole('button', { name: '前置点6' })).toBeVisible()
 })

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue';
 import {
+  ElButton,
   ElInput,
   ElPagination,
   ElTabPane,
@@ -19,7 +20,7 @@ const props = withDefaults(defineProps<{
   disabledPointIds?: string[];
 }>(), {
   selectedId: null,
-  hint: '单击节点选中；可在树内右键新建子知识点',
+  hint: '单击选中；可新建知识点，或右键添加子知识点',
   allowManage: true,
   disabledPointIds: () => [],
 });
@@ -123,6 +124,11 @@ async function onTreeUpdated() {
   emit('updated');
 }
 
+function createRootPoint() {
+  activeTab.value = 'tree';
+  pointTreeRef.value?.createRootPoint();
+}
+
 async function initialize() {
   activeTab.value = 'tree';
   searchKeyword.value = '';
@@ -157,6 +163,7 @@ defineExpose({
   getDraftPoint: () => draftPoint.value,
   initialize,
   refreshPointTree,
+  createRootPoint,
   startRename: (point: KnowledgePoint) => pointTreeRef.value?.startRename(point),
 });
 </script>
@@ -164,72 +171,96 @@ defineExpose({
 <template>
   <div class="kpp-panel">
     <div class="kpp-panel__selected">
-      <span class="kpp-panel__label">当前选择</span>
-      <span class="kpp-panel__value">{{ draftPoint?.title ?? '未选择' }}</span>
+      <div class="kpp-panel__selected-main">
+        <span class="kpp-panel__label">当前选择</span>
+        <span class="kpp-panel__value">{{ draftPoint?.title ?? '未选择' }}</span>
+      </div>
+      <ElButton
+        v-if="allowManage"
+        type="primary"
+        link
+        size="small"
+        class="kpp-panel__create"
+        @click="createRootPoint"
+      >
+        新建知识点
+      </ElButton>
     </div>
 
     <ElTabs v-model="activeTab" class="kpp-panel__tabs">
       <ElTabPane label="知识点树" name="tree">
-        <div class="kpp-panel__scroll" tabindex="-1" @keydown.stop>
-          <KnowledgePointTree
-            ref="pointTreeRef"
-            :kb-id="kbId"
-            :tree="pointTree"
-            :selected-id="draftPointId"
-            :loading="treeLoading"
-            mode="pick"
-            :draggable="false"
-            :show-toolbar="allowManage"
-            :on-refresh="refreshPointTree"
-            :toolbar-hint="hint"
-            :disabled-point-ids="disabledPointIds"
-            @select="onTreeSelect"
-            @updated="onTreeUpdated"
-            @update:selected-id="(id) => { draftPointId = id; emit('update:selectedId', id); }"
-          />
+        <div class="kpp-panel__pane">
+          <!-- Same top/bottom chrome footprint as search tab so scroll slot height stays fixed. -->
+          <div class="kpp-panel__search-bar kpp-panel__search-bar--spacer" aria-hidden="true" />
+          <div class="kpp-panel__scroll" tabindex="-1" @keydown.stop>
+            <KnowledgePointTree
+              ref="pointTreeRef"
+              :kb-id="kbId"
+              :tree="pointTree"
+              :selected-id="draftPointId"
+              :loading="treeLoading"
+              mode="pick"
+              :draggable="false"
+              :show-toolbar="allowManage"
+              :on-refresh="refreshPointTree"
+              :toolbar-hint="hint"
+              :disabled-point-ids="disabledPointIds"
+              @select="onTreeSelect"
+              @updated="onTreeUpdated"
+              @update:selected-id="(id) => { draftPointId = id; emit('update:selectedId', id); }"
+            />
+          </div>
+          <div class="kpp-panel__pagination" aria-hidden="true" />
         </div>
       </ElTabPane>
       <ElTabPane label="搜索" name="search">
-        <div class="kpp-panel__search-bar">
-          <ElInput
-            v-model="searchKeyword"
-            clearable
-            placeholder="搜索知识点或别名"
-            @change="searchPage = 0; loadSearch()"
-            @clear="searchPage = 0; loadSearch()"
-          />
-        </div>
-        <div class="kpp-panel__scroll">
-          <button
-            v-for="item in searchItems"
-            :key="item.id"
-            type="button"
-            class="kpp-panel__list-item"
-            :class="{
-              'kpp-panel__list-item--active': draftPoint?.id === item.id,
-              'kpp-panel__list-item--disabled': disabledPointIds.includes(item.id),
-            }"
-            :disabled="disabledPointIds.includes(item.id)"
-            @click="selectSearchItem(item)"
-          >
-            <span class="kpp-panel__list-item-title">{{ item.title }}</span>
-            <span
-              v-if="findMatchingAlias(item, searchKeyword)"
-              class="kpp-panel__list-item-alias"
+        <div class="kpp-panel__pane">
+          <div class="kpp-panel__search-bar">
+            <ElInput
+              v-model="searchKeyword"
+              clearable
+              placeholder="搜索知识点或别名"
+              @change="searchPage = 0; loadSearch()"
+              @clear="searchPage = 0; loadSearch()"
+            />
+          </div>
+          <div class="kpp-panel__scroll">
+            <button
+              v-for="item in searchItems"
+              :key="item.id"
+              type="button"
+              class="kpp-panel__list-item"
+              :class="{
+                'kpp-panel__list-item--active': draftPoint?.id === item.id,
+                'kpp-panel__list-item--disabled': disabledPointIds.includes(item.id),
+              }"
+              :disabled="disabledPointIds.includes(item.id)"
+              @click="selectSearchItem(item)"
             >
-              {{ findMatchingAlias(item, searchKeyword) }}
-            </span>
-          </button>
+              <span class="kpp-panel__list-item-title">{{ item.title }}</span>
+              <span
+                v-if="findMatchingAlias(item, searchKeyword)"
+                class="kpp-panel__list-item-alias"
+              >
+                {{ findMatchingAlias(item, searchKeyword) }}
+              </span>
+            </button>
+            <div v-if="searchItems.length === 0" class="kpp-panel__empty">
+              暂无匹配知识点
+            </div>
+          </div>
+          <div class="kpp-panel__pagination">
+            <ElPagination
+              v-if="searchTotal > DEFAULT_PAGE_SIZE"
+              small
+              layout="prev, pager, next"
+              :total="searchTotal"
+              :page-size="DEFAULT_PAGE_SIZE"
+              :current-page="searchPage + 1"
+              @current-change="onSearchPageChange"
+            />
+          </div>
         </div>
-        <ElPagination
-          v-if="searchTotal > DEFAULT_PAGE_SIZE"
-          small
-          layout="prev, pager, next"
-          :total="searchTotal"
-          :page-size="DEFAULT_PAGE_SIZE"
-          :current-page="searchPage + 1"
-          @current-change="onSearchPageChange"
-        />
       </ElTabPane>
     </ElTabs>
   </div>
@@ -241,12 +272,28 @@ defineExpose({
   flex-direction: column;
   gap: 10px;
   min-height: 0;
+  height: 100%;
+  box-sizing: border-box;
 }
 
 .kpp-panel__selected {
+  flex-shrink: 0;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.kpp-panel__selected-main {
   display: flex;
   flex-direction: column;
   gap: 4px;
+  min-width: 0;
+}
+
+.kpp-panel__create {
+  flex-shrink: 0;
+  margin-top: 2px;
 }
 
 .kpp-panel__label {
@@ -266,27 +313,67 @@ defineExpose({
   flex-direction: column;
 }
 
+.kpp-panel__tabs :deep(.el-tabs__header) {
+  flex-shrink: 0;
+  margin-bottom: 8px;
+}
+
 .kpp-panel__tabs :deep(.el-tabs__content) {
   flex: 1;
   min-height: 0;
+  overflow: hidden;
 }
 
 .kpp-panel__tabs :deep(.el-tab-pane) {
   height: 100%;
 }
 
+.kpp-panel__pane {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.kpp-panel__search-bar {
+  flex-shrink: 0;
+  margin-bottom: 8px;
+  min-height: 32px;
+}
+
+.kpp-panel__search-bar--spacer {
+  visibility: hidden;
+  pointer-events: none;
+}
+
 .kpp-panel__scroll {
   flex: 1;
   min-height: 0;
-  max-height: min(52vh, 420px);
+  /* Occupy remaining pane height so tree/search tabs share one fixed slot. */
+  height: 0;
   overflow: auto;
   border: 1px solid #f0f0f0;
   border-radius: 8px;
   padding: 8px;
+  box-sizing: border-box;
 }
 
-.kpp-panel__search-bar {
-  margin-bottom: 8px;
+.kpp-panel__pagination {
+  flex-shrink: 0;
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  min-height: 32px;
+  margin-top: 8px;
+}
+
+.kpp-panel__empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 120px;
+  color: #8c8c8c;
+  font-size: 13px;
 }
 
 .kpp-panel__list-item {
