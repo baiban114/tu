@@ -1,7 +1,7 @@
 package com.studyflow.note;
 
 import com.studyflow.common.ApiResponse;
-import com.studyflow.common.StudyflowConstants;
+import com.studyflow.common.StudyFlowConstants;
 import jakarta.validation.Valid;
 import org.springframework.util.StringUtils;
 import org.springframework.web.bind.annotation.DeleteMapping;
@@ -30,7 +30,7 @@ public class PersonalNoteController {
 
     @GetMapping
     public ApiResponse<PersonalNotePage> list(
-            @RequestHeader(value = StudyflowConstants.USER_ID_HEADER, required = false) String userId,
+            @RequestHeader(value = StudyFlowConstants.USER_ID_HEADER, required = false) String userId,
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "10") int pageSize
     ) {
@@ -39,7 +39,7 @@ public class PersonalNoteController {
 
     @GetMapping("/{id}")
     public ApiResponse<PersonalNote> get(
-            @RequestHeader(value = StudyflowConstants.USER_ID_HEADER, required = false) String userId,
+            @RequestHeader(value = StudyFlowConstants.USER_ID_HEADER, required = false) String userId,
             @PathVariable String id
     ) {
         return ApiResponse.ok(personalNoteService.get(resolveUserId(userId), id));
@@ -47,7 +47,7 @@ public class PersonalNoteController {
 
     @PostMapping
     public ApiResponse<PersonalNote> create(
-            @RequestHeader(value = StudyflowConstants.USER_ID_HEADER, required = false) String userId,
+            @RequestHeader(value = StudyFlowConstants.USER_ID_HEADER, required = false) String userId,
             @Valid @RequestBody PersonalNoteUpsertRequest request
     ) {
         return ApiResponse.ok(personalNoteService.create(resolveUserId(userId), request.body()));
@@ -55,7 +55,7 @@ public class PersonalNoteController {
 
     @PutMapping("/{id}")
     public ApiResponse<PersonalNote> update(
-            @RequestHeader(value = StudyflowConstants.USER_ID_HEADER, required = false) String userId,
+            @RequestHeader(value = StudyFlowConstants.USER_ID_HEADER, required = false) String userId,
             @PathVariable String id,
             @Valid @RequestBody PersonalNoteUpsertRequest request
     ) {
@@ -64,7 +64,7 @@ public class PersonalNoteController {
 
     @DeleteMapping("/{id}")
     public ApiResponse<Void> delete(
-            @RequestHeader(value = StudyflowConstants.USER_ID_HEADER, required = false) String userId,
+            @RequestHeader(value = StudyFlowConstants.USER_ID_HEADER, required = false) String userId,
             @PathVariable String id
     ) {
         personalNoteService.delete(resolveUserId(userId), id);
@@ -73,7 +73,7 @@ public class PersonalNoteController {
 
     private static String resolveUserId(String headerValue) {
         if (!StringUtils.hasText(headerValue)) {
-            return StudyflowConstants.DEFAULT_USER_ID;
+            return StudyFlowConstants.DEFAULT_USER_ID;
         }
         return headerValue.trim();
     }

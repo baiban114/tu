@@ -3,7 +3,7 @@ import { onBeforeUnmount, ref, watch } from 'vue';
 import { useMaterialLibraryStore, type MaterialItem } from '@/stores/materialLibrary';
 import type { GraphData } from '@/api/types';
 import { Graph, Export } from '@antv/x6';
-import { beginMaterialDrag, endMaterialDrag, trackMaterialDrag } from '@/components/x6/materialDrag';
+import { beginMaterialDrag, endMaterialDrag, trackMaterialDrag, X6_MATERIAL_MIME } from '@/components/x6/materialDrag';
 
 const emit = defineEmits<{
   (e: 'insert', graphData: GraphData): void;
@@ -88,7 +88,7 @@ function handleInsert(item: MaterialItem) {
 function handleDragStart(e: DragEvent, item: MaterialItem) {
   beginMaterialDrag(e);
   if (e.dataTransfer) {
-    e.dataTransfer.setData('application/x6-material', JSON.stringify(item.graphData));
+    e.dataTransfer.setData(X6_MATERIAL_MIME, JSON.stringify(item.graphData));
     e.dataTransfer.effectAllowed = 'copy';
   }
 }

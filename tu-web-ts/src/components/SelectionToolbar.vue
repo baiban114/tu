@@ -2,8 +2,10 @@
 import { computed, ref, watch, onBeforeUnmount, toRef } from 'vue'
 import type { Editor } from '@tiptap/core'
 import { BubbleMenu } from '@tiptap/vue-3/menus'
-import { ElButton, ElDivider } from 'element-plus'
+import { ElButton, ElDivider, ElDropdown, ElDropdownMenu, ElDropdownItem } from 'element-plus'
 import { getSelectionToolbarActions, shouldShowSelectionBubbleMenu } from '@/editor/selectionToolbar'
+import type { DocumentUnitRole } from '@/utils/documentUnitRole'
+import { DOCUMENT_UNIT_ROLE_LABEL } from '@/utils/documentUnitRole'
 
 export interface ReuseMarkOffer {
   label: string
@@ -28,6 +30,7 @@ const emit = defineEmits<{
   (e: 'add-note'): void
   (e: 'mark-resource-excerpt'): void
   (e: 'set-excerpt-basis'): void
+  (e: 'set-unit-role', role: DocumentUnitRole): void
   (e: 'create-knowledge-relation'): void
   (e: 'confirm-reuse-mark'): void
   (e: 'dismiss-reuse-mark'): void
@@ -136,6 +139,8 @@ const actions = computed(() => {
       canAddNote: false,
       canMarkResourceExcerpt: false,
       canSetExcerptBasis: false,
+      canSetUnitRole: false,
+      canEditTextTags: false,
       canCreateKnowledgeRelation: false,
       canShow: false,
     }
@@ -327,9 +332,36 @@ onBeforeUnmount(() => {
               设置依据
             </ElButton>
           </template>
-          <template v-if="actions.canCreateKnowledgeRelation">
+          <template v-if="actions.canSetUnitRole">
             <ElDivider
               v-if="actions.canAddNote || actions.canMarkResourceExcerpt || actions.canSetExcerptBasis"
+              direction="vertical"
+              class="selection-toolbar__divider"
+            />
+            <ElDropdown
+              trigger="click"
+              @command="(role: DocumentUnitRole) => emit('set-unit-role', role)"
+            >
+              <ElButton
+                size="small"
+                text
+                class="selection-toolbar__btn"
+                @mousedown.prevent.stop
+              >
+                单元角色
+              </ElButton>
+              <template #dropdown>
+                <ElDropdownMenu>
+                  <ElDropdownItem command="system">{{ DOCUMENT_UNIT_ROLE_LABEL.system }}</ElDropdownItem>
+                  <ElDropdownItem command="problem">{{ DOCUMENT_UNIT_ROLE_LABEL.problem }}</ElDropdownItem>
+                  <ElDropdownItem command="solution">{{ DOCUMENT_UNIT_ROLE_LABEL.solution }}</ElDropdownItem>
+                </ElDropdownMenu>
+              </template>
+            </ElDropdown>
+          </template>
+          <template v-if="actions.canCreateKnowledgeRelation">
+            <ElDivider
+              v-if="actions.canAddNote || actions.canMarkResourceExcerpt || actions.canSetExcerptBasis || actions.canSetUnitRole"
               direction="vertical"
               class="selection-toolbar__divider"
             />

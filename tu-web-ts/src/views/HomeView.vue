@@ -7,16 +7,36 @@ import DevModePanel from '@/components/DevModePanel.vue';
 import LeftPanel from '@/components/LeftPanel.vue';
 import CanvasPage from '@/components/CanvasPage.vue';
 import TuEditorPage from '@/components/TuEditorPage.vue';
+import KnowledgePointReadingPreview from '@/components/KnowledgePointReadingPreview.vue';
 import type { PageContent, PageType } from '@/api/types';
 import { useWorkspaceStore } from '@/stores/workspace';
+import { useWorkspaceViewsStore } from '@/stores/workspaceViews';
 import {
   loadWorkspaceScrollTop,
   saveWorkspaceScrollTop,
 } from '@/utils/workspaceScroll';
+import type { KnowledgeAnchorNavigateHandlers } from '@/utils/knowledgeAnchor';
 
 const store = useWorkspaceStore();
+const viewsStore = useWorkspaceViewsStore();
 const route = useRoute();
 const router = useRouter();
+
+const kpNavigateHandlers = computed<KnowledgeAnchorNavigateHandlers>(() => ({
+  router,
+  selectPage: (pageId) => store.selectPage(pageId),
+  currentPageId: store.currentPageId,
+}));
+
+const showLearningPlanPointPreview = computed(() => (
+  viewsStore.isViewsMode
+  && viewsStore.isLearningPlanView
+  && Boolean(store.currentKbId && viewsStore.selectedPointId)
+));
+
+function closeLearningPlanPointPreview() {
+  viewsStore.selectPoint(null);
+}
 
 /** Document / resource-document scroll container (`.content-scroll`). */
 const contentScrollEl = ref<HTMLElement | null>(null);
@@ -282,7 +302,19 @@ watch(
         <AppHelpButton variant="topbar" :page-type="helpPageType" />
       </div>
       <div
-        v-if="showCanvasPage"
+        v-if="showLearningPlanPointPreview"
+        class="content-scroll content-scroll--view-preview"
+      >
+        <KnowledgePointReadingPreview
+          :kb-id="store.currentKbId!"
+          :point-id="viewsStore.selectedPointId!"
+          :navigate="kpNavigateHandlers"
+          @close="closeLearningPlanPointPreview"
+        />
+      </div>
+
+      <div
+        v-else-if="showCanvasPage"
         :key="store.currentPageId!"
         class="content-canvas"
       >
@@ -342,7 +374,12 @@ watch(
       </div>
 
       <div v-else class="content-placeholder">
-        <el-empty description="请在左侧选择或新建一个页面" :image-size="80" />
+        <el-empty
+          :description="viewsStore.isViewsMode
+            ? '在学习计划中选择一个知识点查看解析'
+            : '请在左侧选择或新建一个页面'"
+          :image-size="80"
+        />
       </div>
     </div>
 
@@ -494,6 +531,11 @@ watch(
   scrollbar-gutter: stable;
   /* Left gutter: handle (~28) + tight fold chevron (~14); was 48 when fold was 28. */
   padding: 0 48px 32px 36px;
+}
+
+.content-scroll--view-preview {
+  padding: 16px 24px 32px;
+  min-height: 0;
 }
 
 .resource-document-banner {

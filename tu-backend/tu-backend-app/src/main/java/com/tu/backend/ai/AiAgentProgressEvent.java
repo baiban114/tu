@@ -47,6 +47,11 @@ public record AiAgentProgressEvent(
         return "model_call";
     }
 
+    /** Intermediate model reasoning / scratch text (not tool calls). */
+    public static String phaseThinking() {
+        return "thinking";
+    }
+
     public static String phaseToolCall() {
         return "tool_call";
     }

@@ -23,6 +23,9 @@ public class TuBackendApplication {
     public static void main(String[] args) {
         // Dubbo 3.3.6 + JDK 25: prefer fastjson2 (transitive from dubbo); optional SPI libs on classpath.
         System.setProperty("dubbo.json-framework.prefer", "fastjson2");
+        // Nacos client default logback rolling renames a fixed file; on Windows this often WARN-spams
+        // when C:\Users\<user>\logs\nacos\config.log is locked by another process.
+        System.setProperty("nacos.logging.default.config.enabled", "false");
         SpringApplication.run(TuBackendApplication.class, args);
     }
 }

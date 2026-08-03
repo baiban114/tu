@@ -87,13 +87,19 @@ import {
 import { parsePdfExcerptViewMode, PDF_EXCERPT_DEFAULT_HEIGHT } from '@/utils/pdfExcerpt'
 import {
   buildHandleMenuItems,
+  contentTemplateOptions,
   getSectionHandleMenuContext,
   insertOptions,
+  isContentTemplateAction,
   isInsertBlockAction,
+  type ContentTemplateOption,
   type EditorHandleAction,
   type EditorHandleTarget,
   type InsertBlockType,
+  type InsertOption,
 } from '@/editor/lineHandleMenu'
+import { buildSpsTemplateContent } from '@/utils/documentUnitRole'
+import type { DocumentUnitRole } from '@/utils/documentUnitRole'
 import { collectFlatTocEntries } from '@/utils/toc/collectFlatTocEntries'
 import { iterTocFoldSections } from '@/utils/toc/tocSections'
 import { findTocFoldAnchorElement } from '@/utils/toc/tocSectionFoldActions'
@@ -150,9 +156,11 @@ const emit = defineEmits<{
   'blockquote-excerpt-click': [binding: HeadingSourceBinding, context: { blockId: string; title: string; clientX: number; clientY: number; role?: 'excerpt' | 'basis' }]
   'mark-block-excerpt': [blockId: string]
   'set-block-basis': [blockId: string]
+  'mark-block-unit-role': [blockId: string, role: DocumentUnitRole]
   'section-annotate': [entryId: string]
   'section-mark-excerpt': [entryId: string]
   'section-set-basis': [entryId: string]
+  'section-mark-unit-role': [entryId: string, role: DocumentUnitRole]
   'section-create-knowledge-relation': [entryId: string]
   'section-mark-heading-source': [entryId: string]
   'section-clear-heading-source': [entryId: string]
@@ -268,9 +276,19 @@ const activeHandleItems = computed(() => {
     })()
 
   if (gutterReadOnly.value) {
-    const allowed = new Set(['add-note', 'create-knowledge-relation', 'mark-excerpt', 'set-basis'])
+    const allowed = new Set([
+      'add-note',
+      'create-knowledge-relation',
+      'mark-excerpt',
+      'set-basis',
+      'mark-unit-role-system',
+      'mark-unit-role-problem',
+      'mark-unit-role-solution',
+    ])
     items = items.filter((item) => (
-      item.divider ? item.key === 'action-divider' : allowed.has(item.key)
+      item.divider
+        ? item.key === 'action-divider' || item.key === 'unit-role-divider'
+        : allowed.has(item.key)
     ))
   }
   return items
@@ -456,15 +474,21 @@ function handleLinkSuggestKeyDown(event: KeyboardEvent): boolean {
   return false
 }
 
-const filteredSlashOptions = computed(() => {
-  const keyword = slashQuery.value.trim().toLowerCase()
-  if (!keyword) return insertOptions
-  return insertOptions.filter((option) => (
-    option.label.toLowerCase().includes(keyword)
-    || option.key.includes(keyword)
-    || option.keywords.some((item) => item.includes(keyword))
+type SlashMenuOption = InsertOption | ContentTemplateOption
+
+const allSlashOptions: SlashMenuOption[] = [...insertOptions, ...contentTemplateOptions]
+
+function filterSlashOptions(keyword: string): SlashMenuOption[] {
+  const q = keyword.trim().toLowerCase()
+  if (!q) return allSlashOptions
+  return allSlashOptions.filter((option) => (
+    option.label.toLowerCase().includes(q)
+    || option.key.includes(q)
+    || option.keywords.some((item) => item.includes(q))
   ))
-})
+}
+
+const filteredSlashOptions = computed(() => filterSlashOptions(slashQuery.value))
 
 const flattenedAnnotations = computed(() => Object.values(props.annotations).flat())
 
@@ -472,20 +496,23 @@ const compoundAnnotationBadges = computed(() => {
   const map: Record<string, { annotationId: string; color: string }[]> = {}
   for (const annotations of Object.values(props.annotations)) {
     for (const ann of annotations) {
-      if (ann.kind === 'basis' && (ann.scope === 'compound' || ann.scope === 'block') && ann.spannedBlockIds?.length) {
+      if ((ann.scope === 'compound' || ann.scope === 'block') && ann.spannedBlockIds?.length) {
+        const color = ann.kind === 'basis'
+          ? (ann.color || '#81C784')
+          : ann.kind === 'excerpt'
+            ? (ann.color || '#4FC3F7')
+            : ann.kind === 'unitRole'
+              ? (ann.color || (
+                ann.unitRole === 'problem'
+                  ? '#FFCC80'
+                  : ann.unitRole === 'solution'
+                    ? '#80CBC4'
+                    : '#CFD8DC'
+              ))
+              : (ann.color || '#FFEB3B')
         for (const bid of ann.spannedBlockIds) {
           if (!map[bid]) map[bid] = []
-          map[bid].push({ annotationId: ann.id, color: ann.color || '#81C784' })
-        }
-      } else if (ann.kind === 'excerpt' && (ann.scope === 'compound' || ann.scope === 'block') && ann.spannedBlockIds?.length) {
-        for (const bid of ann.spannedBlockIds) {
-          if (!map[bid]) map[bid] = []
-          map[bid].push({ annotationId: ann.id, color: ann.color || '#4FC3F7' })
-        }
-      } else if ((ann.scope === 'compound' || ann.scope === 'block') && ann.spannedBlockIds?.length) {
-        for (const bid of ann.spannedBlockIds) {
-          if (!map[bid]) map[bid] = []
-          map[bid].push({ annotationId: ann.id, color: ann.color || '#FFEB3B' })
+          map[bid].push({ annotationId: ann.id, color })
         }
       }
     }
@@ -1779,16 +1806,45 @@ function getSectionRange(entryId: string): { from: number; to: number } | null {
   return { from: entry.pos, to }
 }
 
+function unitRoleFromHandleAction(key: EditorHandleAction): DocumentUnitRole | null {
+  if (key === 'mark-unit-role-system') return 'system'
+  if (key === 'mark-unit-role-problem') return 'problem'
+  if (key === 'mark-unit-role-solution') return 'solution'
+  return null
+}
+
+function insertSpsTemplateAtSelection() {
+  if (!editor.value) return
+  const content = buildSpsTemplateContent().content
+  editor.value.chain().focus().insertContent(content).run()
+}
+
 function runParagraphHandleAction(key: EditorHandleAction, resolved: ResolvedPos, cursorPos: number) {
   if (!editor.value) return
   const { from, to } = getBlockRange(resolved)
 
-  if (gutterReadOnly.value && !['add-note', 'create-knowledge-relation', 'mark-excerpt', 'set-basis'].includes(key)) {
+  const unitRoleReadonlyKeys = [
+    'add-note',
+    'create-knowledge-relation',
+    'mark-excerpt',
+    'set-basis',
+    'mark-unit-role-system',
+    'mark-unit-role-problem',
+    'mark-unit-role-solution',
+  ]
+  if (gutterReadOnly.value && !unitRoleReadonlyKeys.includes(key)) {
     return
   }
 
   if (isInsertBlockAction(key)) {
     insertExternalBlockAfterPos(key, cursorPos)
+    return
+  }
+
+  const unitRole = unitRoleFromHandleAction(key)
+  if (unitRole) {
+    const blockId = ensureTopLevelLineBlockId(resolved)
+    if (blockId) emit('mark-block-unit-role', blockId, unitRole)
     return
   }
 
@@ -1855,7 +1911,17 @@ function runParagraphHandleAction(key: EditorHandleAction, resolved: ResolvedPos
 function runSectionHandleAction(entryId: string, key: EditorHandleAction) {
   if (!editor.value) return
 
-  if (gutterReadOnly.value && !['add-note', 'create-knowledge-relation', 'mark-excerpt', 'set-basis', 'section-ai-marking'].includes(key)) {
+  const sectionReadonlyKeys = [
+    'add-note',
+    'create-knowledge-relation',
+    'mark-excerpt',
+    'set-basis',
+    'section-ai-marking',
+    'mark-unit-role-system',
+    'mark-unit-role-problem',
+    'mark-unit-role-solution',
+  ]
+  if (gutterReadOnly.value && !sectionReadonlyKeys.includes(key)) {
     return
   }
 
@@ -1864,6 +1930,12 @@ function runSectionHandleAction(entryId: string, key: EditorHandleAction) {
     if (!resolved) return
     const insertPos = Math.min(resolved.entry.pos + 1, editor.value.state.doc.content.size - 1)
     insertExternalBlockAfterPos(key, insertPos)
+    return
+  }
+
+  const unitRole = unitRoleFromHandleAction(key)
+  if (unitRole) {
+    emit('section-mark-unit-role', entryId, unitRole)
     return
   }
 
@@ -1939,7 +2011,7 @@ const getSlashClientRect = (props: any) => {
   slashMenuLeft.value = 120
 }
 
-const selectSlashOption = (option: (typeof insertOptions)[number]) => {
+const selectSlashOption = (option: SlashMenuOption) => {
   if (!editor.value) return
   const range = currentSlashRange
   slashMenuVisible.value = false
@@ -1947,6 +2019,10 @@ const selectSlashOption = (option: (typeof insertOptions)[number]) => {
 
   if (range) {
     editor.value.chain().focus().deleteRange(range).run()
+  }
+  if (isContentTemplateAction(option.key)) {
+    if (option.key === 'sps-template') insertSpsTemplateAtSelection()
+    return
   }
   insertExternalBlockAtSelection(option.key)
 }
@@ -2002,15 +2078,7 @@ const editor = useEditor({
     getSchemaExtensions: () => getTuEditorSchemaExtensions(),
     insertOptions,
     slashSuggestion: {
-      items: ({ query }: { query: string }) => {
-        const keyword = query.trim().toLowerCase()
-        if (!keyword) return insertOptions
-        return insertOptions.filter((option) => (
-          option.label.toLowerCase().includes(keyword)
-          || option.key.includes(keyword)
-          || option.keywords.some((item) => item.includes(keyword))
-        ))
-      },
+      items: ({ query }: { query: string }) => filterSlashOptions(query),
       render: () => ({
         onStart: (props: any) => {
           currentSlashRange = props.range

@@ -184,3 +184,176 @@ body {
   gap: 12px;
   margin-top: 16px;
 }
+
+.goals__hint {
+  margin: 0 0 16px;
+  color: #64748b;
+  font-size: 0.9rem;
+}
+
+.goals__current {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 16px;
+  padding: 10px 12px;
+  border: 1px solid #bfdbfe;
+  border-radius: 8px;
+  background: #eff6ff;
+}
+
+.goals__current-label {
+  font-size: 0.8rem;
+  color: #2563eb;
+}
+
+.goals__composer,
+.goals__edit {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+
+.goals__input {
+  flex: 1;
+  min-width: 180px;
+  padding: 8px 10px;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  font: inherit;
+}
+
+.goals__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.goals__item {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #fff;
+  flex-wrap: wrap;
+}
+
+.goals__item--current {
+  border-color: #93c5fd;
+  background: #f8fbff;
+}
+
+.goals__item-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.goals__title {
+  font-weight: 600;
+}
+
+.goals__meta {
+  font-size: 0.8rem;
+  color: #64748b;
+}
+
+.goals__item-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.goals__error {
+  color: #b91c1c !important;
+}
+
+.goals__pager {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.mastery-page .muted {
+  color: #64748b;
+  font-size: 0.9rem;
+}
+
+.mastery-page__form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 12px 0 16px;
+}
+
+.mastery-page__form input,
+.mastery-page__form select {
+  min-width: 140px;
+  padding: 6px 8px;
+}
+
+.mastery-page__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.mastery-page__item {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+}
+
+.mastery-page__actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.chip {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 0.75rem;
+}
+
+.chip--unknown {
+  background: #f1f5f9;
+  color: #64748b;
+}
+
+.chip--learning {
+  background: #dbeafe;
+  color: #1d4ed8;
+}
+
+.chip--mastered {
+  background: #dcfce7;
+  color: #15803d;
+}
+
+.mastery-page__pager {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.mastery-page .error {
+  color: #b91c1c;
+}
+

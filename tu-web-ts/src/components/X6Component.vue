@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import X6NodeOverlay from './X6NodeOverlay.vue';
+import X6CellContentPanel from './X6CellContentPanel.vue';
 import X6MaterialLibrary from './X6MaterialLibrary.vue';
 import { useMaterialLibraryStore } from '@/stores/materialLibrary';
 import { useBlockRegistryStore } from '@/stores/blockRegistry';
@@ -10,7 +11,22 @@ import { useWorkspaceStore } from '@/stores/workspace';
 import type { GraphData } from '@/api/types';
 import type { PageItem } from '@/api/page';
 import type { UmlClassDefinition, UmlModel } from '@/stores/objectModel';
-import { didMaterialDragMove, resetMaterialDrag } from '@/components/x6/materialDrag';
+import {
+  X6_MATERIAL_MIME,
+  X6_SHAPE_MIME,
+  beginMaterialDrag,
+  didMaterialDragMove,
+  endMaterialDrag,
+  parseShapeDragPayload,
+  resetMaterialDrag,
+  trackMaterialDrag,
+  type ShapeDragPayload,
+} from '@/components/x6/materialDrag';
+import {
+  cellContentBindingToData,
+  readCellContentBinding,
+  type CellContentBinding,
+} from '@/utils/cellContent';
 import {
   Clipboard,
   type Edge,
@@ -75,6 +91,7 @@ import {
   updateMindmapDragPreview,
   collectMindmapDescendantIds,
   ensureMindmapConnectorRegistered,
+  MINDMAP_CONNECTOR_NAME,
   MINDMAP_DRAG_PREVIEW_EDGE_ID,
   MINDMAP_DRAG_PREVIEW_OPTION,
   type NodePreset,
@@ -121,6 +138,7 @@ type SelectedCellState =
       /** 定位系统 locator（目录思维导图等） */
       sourceLocator: string;
       tocEntryId: string;
+      contentBinding: CellContentBinding;
     }
   | {
       kind: 'edge';
@@ -129,6 +147,7 @@ type SelectedCellState =
       stroke: string;
       router: string;
       connector: string;
+      contentBinding: CellContentBinding;
     };
 
 const props = withDefaults(defineProps<Props>(), {
@@ -333,10 +352,13 @@ let isApplyingExternalData = false;
 let isUserInteracting = false;
 let pendingSyncAfterInteraction = false;
 let lastSerializedSnapshot = '';
+let lastStructuralSnapshot = '';
 let pendingNodeInternalClickId: string | null = null;
 let suppressNextNodeInternalClickId: string | null = null;
 let lastMaterialInsertTime = 0;
 const MATERIAL_INSERT_DEBOUNCE_MS = 300;
+/** Suppress shape-button click after an HTML5 drag session (dragend → click). */
+let suppressShapeButtonClick = false;
 
 function splitLines(value: string): string[] {
   return value
@@ -488,7 +510,7 @@ function normalizeNode(node: CellData, mindmap = false): CellData {
 
 function normalizeEdge(edge: CellData, mindmap = false): CellData {
   if (mindmap) {
-    const base = createEdgeMetadata(edge, {
+    return createEdgeMetadata(edge, {
       router: { name: 'normal' },
       connector: { name: 'smooth' },
       attrs: {
@@ -499,24 +521,13 @@ function normalizeEdge(edge: CellData, mindmap = false): CellData {
         },
       },
     });
-    return {
-      ...base,
-      ...edge,
-      router: { name: 'normal' },
-      connector: { name: 'smooth' },
-      attrs: mergeDeep(base.attrs, edge.attrs ?? {}),
-    };
   }
 
-  const base = createEdgeMetadata(edge);
   const router = edge.router;
   const routerName = typeof router === 'string' ? router : router?.name;
-  return {
-    ...base,
-    ...edge,
-    router: routerName === 'manhattan' ? { name: 'orth' } : (router ?? base.router),
-    attrs: mergeDeep(base.attrs, edge.attrs ?? {}),
-  };
+  return createEdgeMetadata(edge, {
+    router: routerName === 'manhattan' ? { name: 'orth' } : (router ?? { name: 'orth' }),
+  });
 }
 
 function normalizeGraphData(data?: GraphData): GraphData {
@@ -549,7 +560,31 @@ function normalizeGraphData(data?: GraphData): GraphData {
 }
 
 function getGraphSnapshot(data?: GraphData) {
-  return JSON.stringify(normalizeGraphData(data));
+  // Ignore volatile cell body content so typing in the inspector does not
+  // fromJSON-reload the whole graph (which clears selection / can break hit targets).
+  return JSON.stringify(stripVolatileCellContent(normalizeGraphData(data)));
+}
+
+function stripVolatileCellContent(data: GraphData): GraphData {
+  const stripCell = (cell: Record<string, unknown>) => {
+    const rawData = cell.data;
+    if (!rawData || typeof rawData !== 'object') return cell;
+    const nextData = { ...(rawData as Record<string, unknown>) };
+    delete nextData.contentDocument;
+    return { ...cell, data: nextData };
+  };
+  return {
+    ...data,
+    cells: Array.isArray(data.cells)
+      ? data.cells.map((cell) => stripCell(cell as Record<string, unknown>))
+      : data.cells,
+    nodes: Array.isArray(data.nodes)
+      ? data.nodes.map((node) => stripCell(node as Record<string, unknown>))
+      : data.nodes,
+    edges: Array.isArray(data.edges)
+      ? data.edges.map((edge) => stripCell(edge as Record<string, unknown>))
+      : data.edges,
+  } as GraphData;
 }
 
 function serializeGraphData(): GraphData {
@@ -579,6 +614,7 @@ function emitGraphData() {
   const snapshot = JSON.stringify(payload);
   if (snapshot === lastSerializedSnapshot) return;
   lastSerializedSnapshot = snapshot;
+  lastStructuralSnapshot = JSON.stringify(stripVolatileCellContent(payload));
   emit('graph-data-change', payload);
 }
 
@@ -720,9 +756,18 @@ function getEdgeLabel(edge: Edge) {
   return typeof label === 'string' ? label : (label?.attrs?.label?.text ?? '');
 }
 
+function ensureEdgeHitTarget(edge: Edge) {
+  // Transparent wrap is the click target; visible line has pointer-events: none.
+  // Selected CSS / attrs merges sometimes shrink or restyle wrap — restore it.
+  edge.attr('wrap/stroke', 'transparent');
+  edge.attr('wrap/strokeWidth', 12);
+  edge.attr('line/pointerEvents', 'none');
+}
+
 function setEdgeLabel(edge: Edge, text: string) {
   if (!text.trim()) {
     edge.setLabels([]);
+    ensureEdgeHitTarget(edge);
     return;
   }
 
@@ -737,6 +782,7 @@ function setEdgeLabel(edge: Edge, text: string) {
       },
     },
   ]);
+  ensureEdgeHitTarget(edge);
 }
 
 // --- Node overlay helpers ---
@@ -1218,17 +1264,24 @@ function refreshSelectedCellState() {
         refSourceLabel: isRefBlock && refBlockId ? buildRefSourceLabel(refBlockId, refType) : '',
         sourceLocator,
         tocEntryId,
+        contentBinding: readCellContentBinding(nodeData),
       };
     } else if (graph.isEdge(cell)) {
       const router = cell.getRouter();
       const connector = cell.getConnector();
+      const edgeData = cell.getData<Record<string, unknown>>() ?? {};
+      const connectorName = typeof connector === 'string' ? connector : (connector?.name ?? 'rounded');
+      const routerName = typeof router === 'string'
+        ? router
+        : (router?.name ?? (connectorName === MINDMAP_CONNECTOR_NAME ? 'normal' : 'orth'));
       selectedCell.value = {
         kind: 'edge',
         id: cell.id,
         label: getEdgeLabel(cell),
         stroke: (cell.attr('line/stroke') as string) || '#52616b',
-        router: typeof router === 'string' ? router : (router?.name ?? 'orth'),
-        connector: typeof connector === 'string' ? connector : (connector?.name ?? 'rounded'),
+        router: routerName,
+        connector: connectorName,
+        contentBinding: readCellContentBinding(edgeData),
       };
     }
   }
@@ -1285,11 +1338,44 @@ function openInspectorForNodeSelection() {
 function finalizeSelectionVisualState() {
   if (!graph) return;
   reconcileSelectionHighlight();
+  syncEdgeTools();
   const cells = graph.getSelectedCells();
   if (cells.length !== 1 || !graph.isNode(cells[0])) {
     graph.clearTransformWidgets();
   }
   openInspectorForNodeSelection();
+}
+
+/**
+ * Mount bend-anchor / arrowhead tools only on the sole selected edge.
+ * Hover-mounted `vertices` tools capture the first click as "add vertex"
+ * (black dots) and prevent a clean edge selection for the inspector.
+ */
+function syncEdgeTools() {
+  if (!graph) return;
+  const selected = graph.getSelectedCells();
+  const soleEdge = selected.length === 1 && graph.isEdge(selected[0])
+    ? selected[0]
+    : null;
+
+  for (const edge of graph.getEdges()) {
+    const view = graph.findViewByCell(edge);
+    if (!view) continue;
+    if (!isEditable.value || !soleEdge || edge.id !== soleEdge.id) {
+      view.removeTools();
+      continue;
+    }
+    const items: Array<{ name: string; args?: Record<string, unknown> }> = [
+      { name: 'vertices' },
+      { name: 'source-arrowhead' },
+      { name: 'target-arrowhead' },
+    ];
+    // Mindmap: delete via selection + Delete/toolbar, not an on-edge remove button.
+    if (!isMindmap.value) {
+      items.push({ name: 'button-remove', args: { distance: -30 } });
+    }
+    view.addTools({ items });
+  }
 }
 
 function scheduleSync() {
@@ -1351,7 +1437,17 @@ function applyGraphData(data?: GraphData, fitView = false) {
   if (incomingUml) {
     objectModelStore.replaceModel(incomingUml);
   }
+  const structuralSnapshot = JSON.stringify(stripVolatileCellContent(normalized));
   const snapshot = JSON.stringify(normalized);
+
+  // Same topology: only patch cell content bindings, keep selection/hit targets.
+  if (structuralSnapshot === lastStructuralSnapshot && graph.getCellCount() > 0) {
+    patchCellContentFromGraphData(normalized);
+    lastSerializedSnapshot = snapshot;
+    refreshSelectedCellState();
+    return;
+  }
+
   if (snapshot === lastSerializedSnapshot) {
     refreshSelectedCellState();
     return;
@@ -1365,8 +1461,10 @@ function applyGraphData(data?: GraphData, fitView = false) {
     syncTimer = null;
   }
   lastSerializedSnapshot = snapshot;
+  lastStructuralSnapshot = structuralSnapshot;
   graph.fromJSON({ cells: normalized.cells ?? [] });
   graph.cleanSelection();
+  graph.getEdges().forEach((edge) => ensureEdgeHitTarget(edge));
   syncTaskFlowEdgeState();
   if (isMindmap.value) {
     fitAllMindmapNodesToText(graph.getNodes());
@@ -1384,6 +1482,7 @@ function applyGraphData(data?: GraphData, fitView = false) {
 
   refreshSelectedCellState();
   updateNodeOverlays();
+  syncEdgeTools();
 
   nextTick(() => {
     if (!graph) return;
@@ -1404,10 +1503,33 @@ function applyGraphData(data?: GraphData, fitView = false) {
       const laidOutSnapshot = JSON.stringify(laidOut);
       if (laidOutSnapshot !== snapshot) {
         lastSerializedSnapshot = laidOutSnapshot;
+        lastStructuralSnapshot = JSON.stringify(stripVolatileCellContent(laidOut));
         emit('graph-data-change', laidOut);
       }
     }
   });
+}
+
+function patchCellContentFromGraphData(data: GraphData) {
+  if (!graph) return;
+  const cells = [
+    ...(Array.isArray(data.cells) ? data.cells : []),
+    ...(Array.isArray(data.nodes) ? data.nodes : []),
+    ...(Array.isArray(data.edges) ? data.edges : []),
+  ];
+  const seen = new Set<string>();
+  for (const cell of cells) {
+    const id = typeof cell.id === 'string' ? cell.id : '';
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    const graphCell = graph.getCellById(id);
+    if (!graphCell) continue;
+    const incoming = (cell as CellData).data;
+    if (!incoming || typeof incoming !== 'object') continue;
+    graphCell.updateData(cellContentBindingToData(
+      readCellContentBinding(incoming as Record<string, unknown>),
+    ));
+  }
 }
 
 function getCanvasCenter() {
@@ -1612,28 +1734,96 @@ function relayoutMindmap() {
   scheduleSync();
 }
 
-function addNode(preset: NodePreset, position?: { x: number; y: number }) {
+function buildBoardNodeMetadata(preset: NodePreset, position: { x: number; y: number }): CellData {
+  if (isTaskFlow.value) {
+    if (preset === 'ellipse') {
+      return createNodeMetadata('ellipse', {
+        x: position.x,
+        y: position.y,
+        width: 136,
+        height: 64,
+        label: '开始',
+        data: {
+          preset: 'ellipse',
+          taskRole: 'start',
+          taskStatus: 'ready',
+        },
+      });
+    }
+    return createTaskNode({
+      x: position.x,
+      y: position.y,
+    });
+  }
+  return createNodeMetadata(preset, {
+    x: position.x,
+    y: position.y,
+  });
+}
+
+/**
+ * Insert a board shape.
+ * @param position top-left in graph space, or when `centerAt` the intended center of the node.
+ */
+function addNode(
+  preset: NodePreset,
+  position?: { x: number; y: number },
+  options?: { centerAt?: boolean },
+) {
   if (!graph || !isEditable.value) return;
   if (isMindmap.value) {
     addMindmapChildNode();
     return;
   }
-  const center = position ?? getCanvasCenter();
-  const node = graph.addNode(
-    isTaskFlow.value
-      ? createTaskNode({
-        x: center.x,
-        y: center.y,
-      })
-      : createNodeMetadata(preset, {
-        x: center.x,
-        y: center.y,
-      }),
-  );
+  const draft = buildBoardNodeMetadata(preset, { x: 0, y: 0 });
+  const width = typeof draft.width === 'number' ? draft.width : 160;
+  const height = typeof draft.height === 'number' ? draft.height : 64;
+  let topLeft = position ?? getCanvasCenter();
+  if (position && options?.centerAt) {
+    topLeft = {
+      x: position.x - width / 2,
+      y: position.y - height / 2,
+    };
+  }
+  const node = graph.addNode(buildBoardNodeMetadata(preset, topLeft));
   graph.cleanSelection();
   graph.select(node);
   refreshSelectedCellState();
   scheduleSync();
+}
+
+function onShapeButtonClick(preset: NodePreset) {
+  if (suppressShapeButtonClick) return;
+  addNode(preset);
+}
+
+function onShapeButtonDragStart(event: DragEvent, payload: ShapeDragPayload) {
+  if (!isEditable.value || isMindmap.value) {
+    event.preventDefault();
+    return;
+  }
+  beginMaterialDrag(event);
+  if (event.dataTransfer) {
+    event.dataTransfer.setData(X6_SHAPE_MIME, JSON.stringify(payload));
+    event.dataTransfer.effectAllowed = 'copy';
+  }
+}
+
+function onShapeButtonDrag(event: DragEvent) {
+  trackMaterialDrag(event);
+}
+
+function onShapeButtonDragEnd() {
+  suppressShapeButtonClick = true;
+  endMaterialDrag();
+  window.setTimeout(() => {
+    suppressShapeButtonClick = false;
+  }, 0);
+}
+
+function onUmlShapeButtonClick() {
+  if (suppressShapeButtonClick) return;
+  insertUmlClassPreset();
 }
 
 function canCreateTaskFlowEdge(sourceCell: Node, targetCell: Node) {
@@ -1893,16 +2083,45 @@ function insertMaterialAt(graphData: GraphData, position?: { x: number; y: numbe
 }
 
 function onMaterialDragOver(e: DragEvent) {
-  if (e.dataTransfer?.types.includes('application/x6-material')) {
-    e.preventDefault();
-    if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
-  }
+  const types = e.dataTransfer?.types;
+  if (!types) return;
+  const accepts = types.includes(X6_MATERIAL_MIME) || types.includes(X6_SHAPE_MIME);
+  if (!accepts) return;
+  e.preventDefault();
+  if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
 }
 
 function onMaterialDrop(e: DragEvent) {
   if (!graph || !isEditable.value || isApplyingExternalData) return;
-  if (!e.dataTransfer?.types.includes('application/x6-material')) return;
-  const raw = e.dataTransfer.getData('application/x6-material');
+  const types = e.dataTransfer?.types;
+  if (!types) return;
+
+  if (types.includes(X6_SHAPE_MIME)) {
+    const raw = e.dataTransfer?.getData(X6_SHAPE_MIME);
+    if (!raw) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (!didMaterialDragMove()) {
+      resetMaterialDrag();
+      return;
+    }
+    const payload = parseShapeDragPayload(raw);
+    if (!payload) {
+      resetMaterialDrag();
+      return;
+    }
+    const pos = graph.clientToLocal(e.clientX, e.clientY);
+    if (payload.kind === 'uml-preset') {
+      insertUmlClassPreset({ x: pos.x, y: pos.y });
+    } else {
+      addNode(payload.preset, { x: pos.x, y: pos.y }, { centerAt: true });
+    }
+    resetMaterialDrag();
+    return;
+  }
+
+  if (!types.includes(X6_MATERIAL_MIME)) return;
+  const raw = e.dataTransfer.getData(X6_MATERIAL_MIME);
   if (!raw) return;
   e.preventDefault();
   e.stopPropagation();
@@ -2263,7 +2482,33 @@ function updateSelectedEdgeConnector(value: string) {
   if (!graph || !selectedCell.value || selectedCell.value.kind !== 'edge') return;
   const edge = graph.getCellById(selectedCell.value.id);
   if (!edge || !graph.isEdge(edge)) return;
-  edge.setConnector(value);
+  if (value === MINDMAP_CONNECTOR_NAME) {
+    ensureMindmapConnectorRegistered();
+    // Orth/manhattan route points fight the quadratic mindmap path — clear router.
+    edge.removeRouter();
+    edge.setConnector({ name: MINDMAP_CONNECTOR_NAME });
+  } else {
+    edge.setConnector(value);
+  }
+  selectedCell.value = {
+    ...selectedCell.value,
+    connector: value,
+    router: value === MINDMAP_CONNECTOR_NAME
+      ? 'normal'
+      : selectedCell.value.router,
+  };
+  scheduleSync();
+}
+
+function updateSelectedCellContentBinding(binding: CellContentBinding) {
+  if (!graph || !selectedCell.value) return;
+  const cell = graph.getCellById(selectedCell.value.id);
+  if (!cell) return;
+  cell.updateData(cellContentBindingToData(binding));
+  selectedCell.value = {
+    ...selectedCell.value,
+    contentBinding: readCellContentBinding(cell.getData<Record<string, unknown>>() ?? {}),
+  };
   scheduleSync();
 }
 
@@ -2301,8 +2546,11 @@ function syncAllUmlClassNodes() {
   scheduleSync();
 }
 
-function insertUmlClassPreset() {
-  if (!isEditable.value) return;
+function insertUmlClassPreset(position?: { x: number; y: number }) {
+  if (!isEditable.value || !graph) return;
+  const anchor = position
+    ? { x: position.x - 120, y: position.y - 86 }
+    : getCanvasCenter();
   const userClass: UmlClassDefinition = {
     id: createId('uml-class'),
     name: 'User',
@@ -2316,8 +2564,8 @@ function insertUmlClassPreset() {
     methods: ['submit(): void', 'cancel(): void'],
   };
   const classNodes = [
-    createUmlClassNode(userClass, { x: 160, y: 120, data: { umlClassId: userClass.id, umlDefinition: userClass } }),
-    createUmlClassNode(orderClass, { x: 460, y: 120, data: { umlClassId: orderClass.id, umlDefinition: orderClass } }),
+    createUmlClassNode(userClass, { x: anchor.x, y: anchor.y, data: { umlClassId: userClass.id, umlDefinition: userClass } }),
+    createUmlClassNode(orderClass, { x: anchor.x + 300, y: anchor.y, data: { umlClassId: orderClass.id, umlDefinition: orderClass } }),
   ];
   userClass.nodeId = classNodes[0].id;
   orderClass.nodeId = classNodes[1].id;
@@ -2333,10 +2581,10 @@ function insertUmlClassPreset() {
       },
     },
   });
-  const userNode = graph?.addNode(classNodes[0]);
-  const orderNode = graph?.addNode(classNodes[1]);
+  const userNode = graph.addNode(classNodes[0]);
+  const orderNode = graph.addNode(classNodes[1]);
   if (userNode && orderNode) {
-    graph?.addEdge(relation);
+    graph.addEdge(relation);
   }
   objectModelStore.upsertClass(userClass);
   objectModelStore.upsertClass(orderClass);
@@ -2349,6 +2597,10 @@ function insertUmlClassPreset() {
       email: 'alice@example.com',
     },
   });
+  graph.cleanSelection();
+  graph.select([userNode, orderNode].filter(Boolean) as Node[]);
+  refreshSelectedCellState();
+  updateNodeOverlays();
   scheduleSync();
 }
 
@@ -2471,6 +2723,7 @@ function bindGraphEvents() {
   graph.on('selection:changed', () => {
     reconcileSelectionHighlight();
     refreshSelectedCellState();
+    syncEdgeTools();
     updateMindmapCollapseOverlays();
     openInspectorForNodeSelection();
   });
@@ -2654,23 +2907,8 @@ function bindGraphEvents() {
     editEdgeLabel(edge);
   });
 
-  graph.on('edge:mouseenter', ({ view }) => {
-    if (!isEditable.value) return;
-    const items: Array<{ name: string; args?: Record<string, unknown> }> = [
-      { name: 'vertices' },
-      { name: 'source-arrowhead' },
-      { name: 'target-arrowhead' },
-    ];
-    // Mindmap: delete via selection + Delete/toolbar, not an on-edge remove button.
-    if (!isMindmap.value) {
-      items.push({ name: 'button-remove', args: { distance: -30 } });
-    }
-    view.addTools({ items });
-  });
-
-  graph.on('edge:mouseleave', ({ view }) => {
-    view.removeTools();
-  });
+  // Bend anchors / arrowheads only while a single edge is selected.
+  // Hover-mounted vertices tools steal the first click (black dots) and block selection.
 
   graph.on('history:change', () => {
     updateUndoRedoState();
@@ -2810,15 +3048,22 @@ function initGraph() {
         && graph?.isNode(cell)
         && cell.getData<Record<string, unknown>>()?.mindRole !== 'root';
       const defaultMovable = isEditable.value && !isMindmap.value;
+      // Only the sole selected edge may add/move bend vertices — otherwise the
+      // first click on an unselected edge creates a black anchor instead of selecting.
+      const soleSelectedEdge = !!graph
+        && graph.isEdge(cell)
+        && graph.isSelected(cell)
+        && graph.getSelectedCells().length === 1;
+      const edgeVertexEditable = defaultMovable && soleSelectedEdge;
       return {
         nodeMovable: mindmapSelectDrag || defaultMovable,
         edgeMovable: defaultMovable,
         edgeLabelMovable: defaultMovable,
         magnetConnectable: isEditable.value,
-        arrowheadMovable: defaultMovable,
-        vertexMovable: defaultMovable,
-        vertexAddable: defaultMovable,
-        vertexDeletable: defaultMovable,
+        arrowheadMovable: edgeVertexEditable,
+        vertexMovable: edgeVertexEditable,
+        vertexAddable: edgeVertexEditable,
+        vertexDeletable: edgeVertexEditable,
       };
     },
   });
@@ -3012,11 +3257,31 @@ defineExpose({
       </div>
 
       <div class="toolbar-group" v-if="isTaskFlow">
-        <button type="button" class="tool-button tool-button--shape" :disabled="!isEditable" @click="addNode('round')">
+        <button
+          type="button"
+          class="tool-button tool-button--shape"
+          :disabled="!isEditable"
+          draggable="true"
+          title="点击插入到画布中心，或拖到画布指定位置"
+          @click="onShapeButtonClick('round')"
+          @dragstart="onShapeButtonDragStart($event, { kind: 'preset', preset: 'round' })"
+          @drag="onShapeButtonDrag"
+          @dragend="onShapeButtonDragEnd"
+        >
           <svg class="tool-button__icon" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="6" fill="#fff8e6" stroke="#d48806" stroke-width="1.2"/></svg>
           <span class="tool-button__label">新任务</span>
         </button>
-        <button type="button" class="tool-button tool-button--shape" :disabled="!isEditable" @click="addNode('ellipse')">
+        <button
+          type="button"
+          class="tool-button tool-button--shape"
+          :disabled="!isEditable"
+          draggable="true"
+          title="点击插入到画布中心，或拖到画布指定位置"
+          @click="onShapeButtonClick('ellipse')"
+          @dragstart="onShapeButtonDragStart($event, { kind: 'preset', preset: 'ellipse' })"
+          @drag="onShapeButtonDrag"
+          @dragend="onShapeButtonDragEnd"
+        >
           <svg class="tool-button__icon" viewBox="0 0 24 24"><ellipse cx="12" cy="13" rx="9" ry="8" fill="#e6f4ff" stroke="#1677ff" stroke-width="1.2"/></svg>
           <span class="tool-button__label">起止节点</span>
         </button>
@@ -3033,23 +3298,73 @@ defineExpose({
         </button>
       </div>
       <div class="toolbar-group" v-else>
-        <button type="button" class="tool-button tool-button--shape" :disabled="!isEditable" @click="addNode('rect')">
+        <button
+          type="button"
+          class="tool-button tool-button--shape"
+          :disabled="!isEditable"
+          draggable="true"
+          title="点击插入到画布中心，或拖到画布指定位置"
+          @click="onShapeButtonClick('rect')"
+          @dragstart="onShapeButtonDragStart($event, { kind: 'preset', preset: 'rect' })"
+          @drag="onShapeButtonDrag"
+          @dragend="onShapeButtonDragEnd"
+        >
           <svg class="tool-button__icon" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2" fill="#fff7e6" stroke="#d48806" stroke-width="1.2"/></svg>
           <span class="tool-button__label">矩形</span>
         </button>
-        <button type="button" class="tool-button tool-button--shape" :disabled="!isEditable" @click="addNode('round')">
+        <button
+          type="button"
+          class="tool-button tool-button--shape"
+          :disabled="!isEditable"
+          draggable="true"
+          title="点击插入到画布中心，或拖到画布指定位置"
+          @click="onShapeButtonClick('round')"
+          @dragstart="onShapeButtonDragStart($event, { kind: 'preset', preset: 'round' })"
+          @drag="onShapeButtonDrag"
+          @dragend="onShapeButtonDragEnd"
+        >
           <svg class="tool-button__icon" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="5" fill="#f6ffed" stroke="#389e0d" stroke-width="1.2"/></svg>
           <span class="tool-button__label">圆角矩形</span>
         </button>
-        <button type="button" class="tool-button tool-button--shape" :disabled="!isEditable" @click="addNode('ellipse')">
+        <button
+          type="button"
+          class="tool-button tool-button--shape"
+          :disabled="!isEditable"
+          draggable="true"
+          title="点击插入到画布中心，或拖到画布指定位置"
+          @click="onShapeButtonClick('ellipse')"
+          @dragstart="onShapeButtonDragStart($event, { kind: 'preset', preset: 'ellipse' })"
+          @drag="onShapeButtonDrag"
+          @dragend="onShapeButtonDragEnd"
+        >
           <svg class="tool-button__icon" viewBox="0 0 24 24"><ellipse cx="12" cy="13" rx="9" ry="8" fill="#e6f4ff" stroke="#1677ff" stroke-width="1.2"/></svg>
           <span class="tool-button__label">圆形</span>
         </button>
-        <button type="button" class="tool-button tool-button--shape" :disabled="!isEditable" @click="addNode('diamond')">
+        <button
+          type="button"
+          class="tool-button tool-button--shape"
+          :disabled="!isEditable"
+          draggable="true"
+          title="点击插入到画布中心，或拖到画布指定位置"
+          @click="onShapeButtonClick('diamond')"
+          @dragstart="onShapeButtonDragStart($event, { kind: 'preset', preset: 'diamond' })"
+          @drag="onShapeButtonDrag"
+          @dragend="onShapeButtonDragEnd"
+        >
           <svg class="tool-button__icon" viewBox="0 0 24 24"><polygon points="12,3 22,13 12,23 2,13" fill="#fff1f0" stroke="#cf1322" stroke-width="1.2"/></svg>
           <span class="tool-button__label">菱形</span>
         </button>
-        <button type="button" class="tool-button tool-button--shape" :disabled="!isEditable" @click="insertUmlClassPreset">
+        <button
+          type="button"
+          class="tool-button tool-button--shape"
+          :disabled="!isEditable"
+          draggable="true"
+          title="点击插入到画布中心，或拖到画布指定位置"
+          @click="onUmlShapeButtonClick"
+          @dragstart="onShapeButtonDragStart($event, { kind: 'uml-preset' })"
+          @drag="onShapeButtonDrag"
+          @dragend="onShapeButtonDragEnd"
+        >
           <svg class="tool-button__icon" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="1.5" fill="#fffbe6" stroke="#d4a017" stroke-width="1"/><line x1="3" y1="9" x2="21" y2="9" stroke="#d4a017" stroke-width="0.6"/><line x1="3" y1="15" x2="21" y2="15" stroke="#d4a017" stroke-width="0.6"/></svg>
           <span class="tool-button__label">UML 类图</span>
         </button>
@@ -3442,6 +3757,19 @@ defineExpose({
             </div>
 
             <p class="field-meta">形状类型: {{ selectedCell.shape }}</p>
+
+            <div v-if="!selectedCell.isRefBlock" class="field x6-cell-content-field">
+              <span>内容</span>
+              <X6CellContentPanel
+                :cell-id="selectedCell.id"
+                cell-kind="node"
+                :binding="selectedCell.contentBinding"
+                :editable="isEditable"
+                :pages="workspaceStore.pageTree"
+                :current-page-id="workspaceStore.currentPageId"
+                @update:binding="updateSelectedCellContentBinding"
+              />
+            </div>
           </template>
 
           <template v-else-if="selectedCell?.kind === 'edge'">
@@ -3489,8 +3817,22 @@ defineExpose({
                 <option value="normal">普通</option>
                 <option value="rounded">圆角</option>
                 <option value="smooth">平滑</option>
+                <option :value="MINDMAP_CONNECTOR_NAME">思维导图</option>
               </select>
             </label>
+
+            <div class="field x6-cell-content-field">
+              <span>内容</span>
+              <X6CellContentPanel
+                :cell-id="selectedCell.id"
+                cell-kind="edge"
+                :binding="selectedCell.contentBinding"
+                :editable="isEditable"
+                :pages="workspaceStore.pageTree"
+                :current-page-id="workspaceStore.currentPageId"
+                @update:binding="updateSelectedCellContentBinding"
+              />
+            </div>
           </template>
         </div>
         </div>
@@ -3692,6 +4034,11 @@ defineExpose({
   min-width: 52px;
   border-radius: 8px;
   background: #fafbfd;
+  cursor: grab;
+}
+
+.tool-button--shape:active:not(:disabled) {
+  cursor: grabbing;
 }
 
 .tool-button--shape:hover:not(:disabled) {
@@ -4153,6 +4500,10 @@ defineExpose({
   color: #5f6b7a;
 }
 
+.x6-cell-content-field {
+  margin-top: 2px;
+}
+
 .field input,
 .field select,
 .field textarea {
@@ -4250,9 +4601,17 @@ defineExpose({
   stroke-width: 2.4px !important;
 }
 
-.x6-canvas :deep(.x6-edge.x6-edge-selected .connection) {
+/* Highlight only the visible stroke. Do not restyle the transparent wrap —
+ * that shrinks the hit area and can make edges unselectable after label clear. */
+.x6-canvas :deep(.x6-edge.x6-edge-selected .connection:not([stroke='transparent'])) {
   stroke-width: 3px !important;
   stroke: #1677ff !important;
+}
+
+.x6-canvas :deep(.x6-edge .connection[stroke='transparent']) {
+  stroke: transparent !important;
+  stroke-width: 12px !important;
+  pointer-events: stroke !important;
 }
 
 .x6-canvas :deep(.x6-widget-selection-inner),

@@ -268,17 +268,43 @@ function createDecorations(doc: ProseMirrorNode, annotations: TextAnnotation[]):
 
     const isBasis = annotation.kind === 'basis'
     const isExcerpt = annotation.kind === 'excerpt'
-    const defaultColor = isBasis ? '#A5D6A7' : isExcerpt ? '#B3E5FC' : '#FFEB3B'
+    const isUnitRole = annotation.kind === 'unitRole'
+    const unitRole = isUnitRole && (
+      annotation.unitRole === 'system'
+      || annotation.unitRole === 'problem'
+      || annotation.unitRole === 'solution'
+    )
+      ? annotation.unitRole
+      : null
+    const defaultColor = isBasis
+      ? '#A5D6A7'
+      : isExcerpt
+        ? '#B3E5FC'
+        : unitRole === 'system'
+          ? '#CFD8DC'
+          : unitRole === 'problem'
+            ? '#FFCC80'
+            : unitRole === 'solution'
+              ? '#80CBC4'
+              : '#FFEB3B'
     const className = isBasis
       ? 'tu-tiptap-annotation tu-tiptap-annotation--basis'
       : isExcerpt
         ? 'tu-tiptap-annotation tu-tiptap-annotation--excerpt'
-        : 'tu-tiptap-annotation'
+        : unitRole
+          ? `tu-tiptap-annotation tu-tiptap-annotation--unit-role tu-tiptap-annotation--unit-role-${unitRole}`
+          : 'tu-tiptap-annotation'
     const boxShadow = isBasis
       ? 'box-shadow:0 0 0 2px rgba(76,175,80,0.45)'
       : isExcerpt
         ? 'box-shadow:0 0 0 2px rgba(3,105,161,0.35)'
-        : 'box-shadow:0 0 0 2px rgba(255,193,7,0.55)'
+        : unitRole === 'system'
+          ? 'box-shadow:0 0 0 2px rgba(96,125,139,0.4)'
+          : unitRole === 'problem'
+            ? 'box-shadow:0 0 0 2px rgba(255,152,0,0.4)'
+            : unitRole === 'solution'
+              ? 'box-shadow:0 0 0 2px rgba(0,150,136,0.4)'
+              : 'box-shadow:0 0 0 2px rgba(255,193,7,0.55)'
 
     decorations.push(Decoration.inline(from, to, {
       class: [
@@ -287,6 +313,7 @@ function createDecorations(doc: ProseMirrorNode, annotations: TextAnnotation[]):
       ].filter(Boolean).join(' '),
       'data-tu-annotation-id': annotation.id,
       'data-tu-annotation-ai': annotation.markerSource === 'ai' ? '1' : undefined,
+      'data-tu-unit-role': unitRole || undefined,
       style: [
         `--tu-annotation-color:${annotation.color || defaultColor}`,
         `background:${annotation.color || defaultColor}`,

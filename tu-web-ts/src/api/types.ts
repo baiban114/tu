@@ -129,8 +129,10 @@ export interface TextAnnotation {
   spannedBlockMetadata?: SpannedBlockInfo[];
   /** PDF 摘页块内划选区域（scope=pdfRegion） */
   pdfRegion?: PdfRegionAnchor;
-  /** note（默认）、依据标注、或已标记的资源节选 */
-  kind?: 'note' | 'basis' | 'excerpt';
+  /** note（默认）、依据标注、已标记的资源节选、或文档单元角色（系统/问题/解决方案） */
+  kind?: 'note' | 'basis' | 'excerpt' | 'unitRole';
+  /** kind=unitRole 时的文档单元角色 */
+  unitRole?: 'system' | 'problem' | 'solution';
   /** 依据标注绑定的外部资源节选 */
   basisBinding?: HeadingSourceBinding;
   /** 标记来源；缺省视为 user */

@@ -22,6 +22,11 @@ export default defineConfig(({ mode }) => {
     },
     server: {
       proxy: {
+        '/api/learning': {
+          target: env.VITE_STUDYFLOW_PROXY_TARGET || 'http://localhost:18082',
+          changeOrigin: true,
+          timeout: 0,
+        },
         '/api': {
           target: devProxyTarget,
           changeOrigin: true,
@@ -31,6 +36,11 @@ export default defineConfig(({ mode }) => {
     },
     preview: {
       proxy: {
+        '/api/learning': {
+          target: env.VITE_STUDYFLOW_PROXY_TARGET || 'http://localhost:18082',
+          changeOrigin: true,
+          timeout: 0,
+        },
         '/api': {
           target: devProxyTarget,
           changeOrigin: true,

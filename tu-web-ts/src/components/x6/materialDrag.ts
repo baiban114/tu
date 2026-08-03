@@ -1,4 +1,12 @@
-/** Shared state for HTML5 material drag from the library onto the X6 stage. */
+/** Shared state for HTML5 palette drag (materials / shapes) onto the X6 stage. */
+
+export const X6_MATERIAL_MIME = 'application/x6-material';
+export const X6_SHAPE_MIME = 'application/x6-shape';
+
+/** Payload for toolbar shape drag-and-drop onto the board. */
+export type ShapeDragPayload =
+  | { kind: 'preset'; preset: 'rect' | 'round' | 'ellipse' | 'diamond' }
+  | { kind: 'uml-preset' };
 
 let dragStart: { x: number; y: number } | null = null;
 let dragMoved = false;
@@ -31,4 +39,23 @@ export function didMaterialDragMove(): boolean {
 export function resetMaterialDrag() {
   dragStart = null;
   dragMoved = false;
+}
+
+export function parseShapeDragPayload(raw: string): ShapeDragPayload | null {
+  try {
+    const parsed = JSON.parse(raw) as ShapeDragPayload;
+    if (parsed?.kind === 'uml-preset') return parsed;
+    if (
+      parsed?.kind === 'preset'
+      && (parsed.preset === 'rect'
+        || parsed.preset === 'round'
+        || parsed.preset === 'ellipse'
+        || parsed.preset === 'diamond')
+    ) {
+      return parsed;
+    }
+  } catch {
+    // ignore
+  }
+  return null;
 }

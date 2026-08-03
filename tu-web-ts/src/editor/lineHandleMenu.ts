@@ -36,6 +36,9 @@ export type EditorHandleAction =
   | InsertBlockType
   | 'mark-excerpt'
   | 'set-basis'
+  | 'mark-unit-role-system'
+  | 'mark-unit-role-problem'
+  | 'mark-unit-role-solution'
   | 'add-note'
   | 'create-knowledge-relation'
   | 'mark-heading-source'
@@ -66,6 +69,27 @@ export const insertOptions: InsertOption[] = [
   { key: 'spacer', label: '分割空白', icon: '↕', keywords: ['spacer', 'blank', 'kongbai'] },
 ]
 
+export interface ContentTemplateOption {
+  key: 'sps-template'
+  label: string
+  icon: string
+  keywords: string[]
+}
+
+/** Slash extras that insert structured document content (not external blocks). */
+export const contentTemplateOptions: ContentTemplateOption[] = [
+  {
+    key: 'sps-template',
+    label: '系统设计模板',
+    icon: '📐',
+    keywords: ['sps', 'system', 'problem', 'solution', '系统', '问题', '解决方案', '模板'],
+  },
+]
+
+export function isContentTemplateAction(key: string): key is ContentTemplateOption['key'] {
+  return contentTemplateOptions.some((option) => option.key === key)
+}
+
 export function buildEditorParagraphHandleItems(extraActionItems: EditorHandleMenuItem[] = []): EditorHandleMenuItem[] {
   return [
     { key: 'insert-divider', label: '插入', divider: true },
@@ -74,6 +98,10 @@ export function buildEditorParagraphHandleItems(extraActionItems: EditorHandleMe
     ...extraActionItems,
     { key: 'mark-excerpt', label: '标记节选', icon: '▣' },
     { key: 'set-basis', label: '设置依据', icon: '◎' },
+    { key: 'unit-role-divider', label: '单元角色', divider: true },
+    { key: 'mark-unit-role-system', label: '标为系统', icon: '⚙' },
+    { key: 'mark-unit-role-problem', label: '标为问题', icon: '⚠' },
+    { key: 'mark-unit-role-solution', label: '标为解决方案', icon: '✓' },
     { key: 'cut', label: '剪切段落', icon: '✂️' },
     { key: 'copy', label: '复制', icon: '📋' },
     { key: 'duplicate', label: '复制段落', icon: '📄' },
@@ -133,6 +161,9 @@ export function buildHandleMenuItems(
   const sectionLabels: Record<string, string> = {
     'mark-excerpt': '标记节选（本节）',
     'set-basis': '设置依据（本节）',
+    'mark-unit-role-system': '标为系统（本节）',
+    'mark-unit-role-problem': '标为问题（本节）',
+    'mark-unit-role-solution': '标为解决方案（本节）',
     cut: '剪切本节',
     copy: '复制本节',
     duplicate: '复制本节',

@@ -76,12 +76,17 @@ flowchart LR
 | 概念 | 用途 | 存储 |
 |------|------|------|
 | **标签** | 分类、筛选 | 页面/块/节 metadata；知识点 `metadata_json` 辅助 chips |
+| **文档单元角色** | 写作语义：系统 / 问题 / 解决方案（SPS） | `TextAnnotation.kind=unitRole` + `unitRole`；作用域同 note（`text`/`block`/`compound`） |
 | **知识点软分类树** | 概念分组浏览 | `knowledge_point.parent_id`（与 `PageItem` 无 FK） |
 | **关系** | 语义边（案例、依据、前置…） | `knowledge_relation.from_point_id` / `to_point_id` |
 | **证据** | 位置绑定 | `knowledge_point_anchor` |
 | **页面树** | 目录、导航 | `PageItem.parentId`；建链默认**不**以页面树为关系目标 |
 
+文档单元角色用于 SPS 写作标注，**不**自动建知识点边；斜杠「系统设计模板」仅插入 `## 系统 / ## 问题 / ## 解决方案` 标题骨架。与标签区分：标签可自由创建，角色为固定三元。
+
 知识关联边**不进入**页面父子树（同 `ResourceItemRelation`）；Phase 2 可投影到 X6 知识点关联图。
+
+侧栏 **视图**（见 [workspace-views.md](./workspace-views.md)）可在知识库存储之上拼出虚拟数据库（如「学习计划」按目标展开 prerequisite 闭包）；视图行指向 KnowledgePoint，不另建物理库。
 
 ## 6. 迁移与双写
 
@@ -106,6 +111,13 @@ flowchart LR
   - SSE `POST /api/ai/document-marking/analyze/stream` → `DocumentMarkingReviewPanel` 预览确认 → 前端 `applyAiMarkingSuggestions`
 - Mock：`src/api/aiDocumentMarking.ts` + `src/mock/aiDocumentMarking.ts`
 - Phase 2 设计草案（未实施）：[`ai-document-marking-phase2-design.md`](./ai-document-marking-phase2-design.md) — 文档切片、资源对齐、blockquote 节选写回等；索引 [`.cursor/plans/ai-document-marking-phase2.plan.md`](../../.cursor/plans/ai-document-marking-phase2.plan.md)
+
+### AI 学习文档编排（一期）
+
+- 入口：左侧页面区「AI」（与当前编辑页工具栏解耦）
+- Agent 三阶段：分析知识点 → 按 prerequisite 排序 → `listPointInsertCandidates` 匹配已有 NodeView
+- 确认后**始终新建文档页**写入 `AssemblyPlan.inserts`；不生成正文、不注册联网工具
+- 与「前置阅读面板」区别：阅读面板不落库；本功能写入真实 `refBlock` / 资源 / PDF / 知识点标题
 
 ## 7. API
 
@@ -150,6 +162,18 @@ flowchart LR
 | POST | `/api/ai/document-marking/analyze` |
 | POST | `/api/ai/document-marking/analyze/stream`（SSE，`completed.result` 为 suggestions JSON） |
 | DELETE | `/api/ai/document-marking/pages/{pageId}/ai-markers`（清理本页 `source_provenance=ai` 关系） |
+
+### AI 学习文档编排（一期）
+
+| 方法 | 路径 |
+|------|------|
+| POST | `/api/ai/learning-document/assemble` |
+| POST | `/api/ai/learning-document/assemble/stream`（SSE，`completed.result` 为 `LearningDocumentAssemblyPlan`） |
+
+- 请求：`{ topic, kbId }`（无 `pageId` 写入目标）
+- 一期只编排库内已有材料：`heading`（知识点原标题）/ `refBlock` / `externalResourceBlock` / `pdfExcerptBlock`；禁止生成正文与联网
+- 前端：左侧页面区「AI」→ `LearningDocumentAssemblyDialog` → 确认后 `createPage` + 写入 inserts → `selectPage`
+- Mock：`src/api/aiLearningDocument.ts` + `src/mock/aiLearningDocument.ts`
 
 ### 知识点关联图（Phase 2）
 

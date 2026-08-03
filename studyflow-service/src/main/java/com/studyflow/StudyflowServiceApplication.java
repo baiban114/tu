@@ -6,9 +6,13 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
 
 @SpringBootApplication
 @EnableDubbo
-public class StudyflowServiceApplication {
+public class StudyFlowServiceApplication {
 
     public static void main(String[] args) {
-        SpringApplication.run(StudyflowServiceApplication.class, args);
+        // Nacos client's built-in logback rolling uses a fixed file + rename; on Windows
+        // that fails when the file is locked (often by multiple local processes).
+        // Route Nacos logs through the app logger instead.
+        System.setProperty("nacos.logging.default.config.enabled", "false");
+        SpringApplication.run(StudyFlowServiceApplication.class, args);
     }
 }

@@ -9,6 +9,11 @@ spring:
       server:
         webflux:
           routes:
+            # More specific than /api/** — StudyFlow learning domain
+            - id: studyflow-learning
+              uri: ${STUDYFLOW_URI:http://localhost:18082}
+              predicates:
+                - Path=/api/learning/**
             - id: tu-backend-api
               uri: ${TU_BACKEND_URI:http://localhost:8080}
               predicates:

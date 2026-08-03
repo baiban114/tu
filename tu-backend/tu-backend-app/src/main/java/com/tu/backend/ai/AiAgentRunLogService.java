@@ -25,6 +25,8 @@ public class AiAgentRunLogService {
     public static final String STATUS_FAILED = "failed";
     public static final String TASK_LEARNING_PLAN = "learning-plan";
     public static final String TASK_DOCUMENT_MARKING = "document-marking";
+    public static final String TASK_LEARNING_DOCUMENT_ASSEMBLY = "learning-document-assembly";
+    public static final String TASK_LEARNING_ROUTE = "learning-route";
 
     private final AiAgentRunLogRepository repository;
 

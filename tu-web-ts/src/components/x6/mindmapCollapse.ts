@@ -258,9 +258,25 @@ export function settleMindmapCollapseSelection(graph: Graph): void {
 
 function applySuccessorVisibility(graph: Graph, node: Node, hideChildren: boolean) {
   const successors = graph.getSuccessors(node, { distance: 1 }) ?? [];
+  const parentData = node.getData<Record<string, any>>() ?? {};
+  const tocOnlyCollapse = hideChildren
+    && parentData.nodeKind === 'page'
+    && parentData.collapseMode === 'toc-only';
+
   successors.forEach((cell) => {
     if (!graph.isNode(cell)) return;
     const child = cell as Node;
+    const childData = child.getData<Record<string, any>>() ?? {};
+    const isPageChild = childData.nodeKind === 'page';
+
+    // Page nodes with toc-only collapse: keep nested pages visible, hide headings.
+    if (tocOnlyCollapse && isPageChild) {
+      child.toggleVisible(true);
+      const childHideChildren = resolveNodeCollapsed(graph, child, false);
+      applySuccessorVisibility(graph, child, childHideChildren);
+      return;
+    }
+
     child.toggleVisible(!hideChildren);
 
     if (hideChildren) {

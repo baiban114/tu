@@ -573,6 +573,11 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     return updated;
   }
 
+  async function refreshPageTree() {
+    if (!currentKbId.value) return;
+    pageTree.value = await getPageTree(currentKbId.value);
+  }
+
   async function addPage(parentId: string | null, title?: string, pageType?: PageType) {
     if (!currentKbId.value) return;
     const defaultTitle = defaultTitleForPageType(pageType);
@@ -582,7 +587,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     if (initialContent) {
       await savePageContent(page.id, initialContent);
     }
-    pageTree.value = await getPageTree(currentKbId.value);
+    await refreshPageTree();
     await selectPage(page.id);
   }
 
@@ -788,6 +793,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     removeKb,
     renameKb,
     addPage,
+    refreshPageTree,
     importMarkdownFile,
     importRoadmapJson,
     syncKnowledgeRoadmapToSource,

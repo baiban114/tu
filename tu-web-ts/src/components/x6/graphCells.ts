@@ -6,27 +6,45 @@ import { createMindmapPorts, createNodePorts, getMindmapEdgePorts } from './port
 export type NodePreset = 'rect' | 'round' | 'ellipse' | 'diamond' | 'umlClass';
 
 export function createEdgeMetadata(edge: Partial<CellData> = {}, overrides?: Partial<CellData>): CellData {
+  const edgeAttrs = (edge.attrs && typeof edge.attrs === 'object')
+    ? edge.attrs as Record<string, unknown>
+    : {};
+  const overrideAttrs = (overrides?.attrs && typeof overrides.attrs === 'object')
+    ? overrides.attrs as Record<string, unknown>
+    : {};
+
+  // Keep a wide transparent wrap for hit-testing. Call sites must merge attrs,
+  // never replace the whole attrs object (or wrap is lost and edges become hard to select).
+  const attrs = mergeDeep(
+    {
+      wrap: {
+        stroke: 'transparent',
+        strokeWidth: 12,
+      },
+      line: {
+        stroke: '#52616b',
+        strokeWidth: 2,
+        targetMarker: {
+          name: 'block',
+          width: 10,
+          height: 8,
+        },
+      },
+    },
+    mergeDeep(edgeAttrs, overrideAttrs),
+  );
+
+  const { attrs: _ignoredEdgeAttrs, ...edgeRest } = edge;
+  const { attrs: _ignoredOverrideAttrs, ...overrideRest } = overrides ?? {};
+
   return {
     shape: 'edge',
     router: { name: 'orth' },
     connector: { name: 'rounded' },
-    attrs: mergeDeep(
-      {
-        line: {
-          stroke: '#52616b',
-          strokeWidth: 2,
-          targetMarker: {
-            name: 'block',
-            width: 10,
-            height: 8,
-          },
-        },
-      },
-      edge.attrs ?? {},
-    ),
     zIndex: 0,
-    ...edge,
-    ...overrides,
+    ...edgeRest,
+    ...overrideRest,
+    attrs,
   };
 }
 

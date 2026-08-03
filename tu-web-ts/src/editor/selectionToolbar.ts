@@ -20,6 +20,7 @@ export interface SelectionToolbarActions {
   canAddNote: boolean
   canMarkResourceExcerpt: boolean
   canSetExcerptBasis: boolean
+  canSetUnitRole: boolean
   canEditTextTags: boolean
   canCreateKnowledgeRelation: boolean
   canShow: boolean
@@ -68,14 +69,21 @@ export function getSelectionToolbarActions(
   const canAddNote = hasText || spannedBlockIds.length > 0
   const canMarkResourceExcerpt = hasText && !inHeading
   const canSetExcerptBasis = hasText && !inHeading
+  const canSetUnitRole = hasText || spannedBlockIds.length > 0
   const canEditTextTags = hasText && spannedBlockIds.length === 0
   const canCreateKnowledgeRelation = canAddNote && !inHeading
-  const canShow = canAddNote || canMarkResourceExcerpt || canSetExcerptBasis || canEditTextTags || canCreateKnowledgeRelation
+  const canShow = canAddNote
+    || canMarkResourceExcerpt
+    || canSetExcerptBasis
+    || canSetUnitRole
+    || canEditTextTags
+    || canCreateKnowledgeRelation
 
   return {
     canAddNote,
     canMarkResourceExcerpt,
     canSetExcerptBasis,
+    canSetUnitRole,
     canEditTextTags,
     canCreateKnowledgeRelation,
     canShow,

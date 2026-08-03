@@ -8,6 +8,11 @@ import CommentThreadPanel from './CommentThreadPanel.vue'
 import ExternalResourceExcerptMeta from './ExternalResourceExcerptMeta.vue'
 import { annotationToAnchor } from '@/utils/knowledgeAnchor'
 import type { KnowledgeAnchorNavigateHandlers } from '@/utils/knowledgeAnchor'
+import {
+  DOCUMENT_UNIT_ROLE_LABEL,
+  annotationUnitRole,
+  documentUnitRoleLabel,
+} from '@/utils/documentUnitRole'
 
 const BLOCK_TYPE_LABELS: Record<string, string> = {
   x6Block: 'X6 画板',
@@ -99,6 +104,20 @@ const title = computed(() => {
         ? `节选 ${displayedAnnotations.value.length}`
         : '节选'
     }
+    if (displayedAnnotations.value.every((item) => item.kind === 'unitRole')) {
+      const roles = new Set(
+        displayedAnnotations.value
+          .map((item) => annotationUnitRole(item))
+          .filter(Boolean),
+      )
+      if (roles.size === 1) {
+        const only = [...roles][0]
+        return documentUnitRoleLabel(only) || '单元角色'
+      }
+      return displayedAnnotations.value.length > 1
+        ? `单元角色 ${displayedAnnotations.value.length}`
+        : '单元角色'
+    }
     return displayedAnnotations.value.length > 1
       ? `笔记 ${displayedAnnotations.value.length}`
       : '笔记'
@@ -106,6 +125,12 @@ const title = computed(() => {
   if (hasSourceBinding.value && hasAnnotations.value) return '元信息'
   return '元信息'
 })
+
+function unitRoleDeleteLabel(item: TextAnnotation): string {
+  const role = annotationUnitRole(item)
+  if (!role) return '清除角色'
+  return `清除「${DOCUMENT_UNIT_ROLE_LABEL[role]}」`
+}
 
 const effectiveRelationAnchor = computed(() => {
   if (props.relationAnchor) return props.relationAnchor
@@ -250,6 +275,8 @@ watch(
             :class="{
               'note-popover__item--basis': item.kind === 'basis',
               'note-popover__item--excerpt': item.kind === 'excerpt',
+              'note-popover__item--unit-role': item.kind === 'unitRole',
+              [`note-popover__item--unit-role-${item.unitRole || ''}`]: item.kind === 'unitRole',
             }"
           >
             <div v-if="item.scope !== 'block'" class="note-popover__quote">
@@ -276,7 +303,13 @@ watch(
               />
             </div>
 
-            <div v-if="item.kind !== 'basis' && item.kind !== 'excerpt'" class="note-popover__body">
+            <div v-else-if="item.kind === 'unitRole'" class="note-popover__unit-role">
+              <span class="note-popover__unit-role-badge">
+                {{ documentUnitRoleLabel(item.unitRole) || '单元角色' }}
+              </span>
+            </div>
+
+            <div v-else-if="item.kind !== 'basis' && item.kind !== 'excerpt'" class="note-popover__body">
               {{ item.note }}
             </div>
 
@@ -290,7 +323,7 @@ watch(
                 查看资料
               </button>
               <button
-                v-else
+                v-else-if="item.kind !== 'unitRole'"
                 type="button"
                 class="note-popover__edit-btn"
                 @click="emit('edit', item)"
@@ -315,7 +348,15 @@ watch(
                 转为手动标记
               </button>
               <button type="button" class="note-popover__delete-btn" @click="emit('delete', item)">
-                {{ item.kind === 'basis' ? '解除依据' : item.kind === 'excerpt' ? '取消节选标记' : '删除' }}
+                {{
+                  item.kind === 'basis'
+                    ? '解除依据'
+                    : item.kind === 'excerpt'
+                      ? '取消节选标记'
+                      : item.kind === 'unitRole'
+                        ? unitRoleDeleteLabel(item)
+                        : '删除'
+                }}
               </button>
             </div>
           </article>
@@ -412,6 +453,45 @@ watch(
 .note-popover__item--excerpt {
   border-color: rgba(3, 105, 161, 0.28);
   background: rgba(179, 229, 252, 0.2);
+}
+
+.note-popover__item--unit-role-system {
+  border-color: rgba(96, 125, 139, 0.35);
+  background: rgba(207, 216, 220, 0.35);
+}
+
+.note-popover__item--unit-role-problem {
+  border-color: rgba(255, 152, 0, 0.35);
+  background: rgba(255, 204, 128, 0.28);
+}
+
+.note-popover__item--unit-role-solution {
+  border-color: rgba(0, 150, 136, 0.35);
+  background: rgba(128, 203, 196, 0.28);
+}
+
+.note-popover__unit-role {
+  margin-bottom: 8px;
+}
+
+.note-popover__unit-role-badge {
+  display: inline-block;
+  border-radius: 999px;
+  padding: 2px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #334155;
+  background: rgba(148, 163, 184, 0.25);
+}
+
+.note-popover__item--unit-role-problem .note-popover__unit-role-badge {
+  color: #9a3412;
+  background: rgba(255, 152, 0, 0.2);
+}
+
+.note-popover__item--unit-role-solution .note-popover__unit-role-badge {
+  color: #0f766e;
+  background: rgba(0, 150, 136, 0.18);
 }
 
 .note-popover__basis-link--excerpt {

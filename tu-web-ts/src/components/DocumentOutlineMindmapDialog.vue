@@ -2,11 +2,13 @@
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { ElMessage, ElScrollbar } from 'element-plus'
 import X6Component from '@/components/X6Component.vue'
-import type { GraphData } from '@/api/types'
+import type { GraphData, PageItem } from '@/api/types'
 import type { TocTreeItem } from '@/utils/toc/headings'
-import { buildMindmapGraphFromToc } from '@/utils/toc/mindmapFromToc'
+import { buildMindmapGraphFromPageSubtree } from '@/utils/toc/mindmapFromPageSubtree'
+import { outlineNodesToTocTree } from '@/utils/toc/outlineNodesToTocTree'
 import { parseLocator } from '@/utils/knowledgeAnchor'
 import { getResourceExcerpt } from '@/api/externalResource'
+import { useOutlineCacheStore } from '@/stores/outlineCache'
 
 export interface OutlineMindmapSourceContentRequest {
   locator: string
@@ -19,6 +21,8 @@ const props = defineProps<{
   pageId: string
   pageTitle: string
   tocItems: TocTreeItem[]
+  /** Direct child pages of the current page (nested via `.children`). */
+  childPages?: PageItem[]
   /** Resolve page/heading section plain text for content preview. */
   resolvePageSectionText?: (request: OutlineMindmapSourceContentRequest) => string | null | Promise<string | null>
 }>()
@@ -28,11 +32,16 @@ const emit = defineEmits<{
   'navigate-source': [payload: OutlineMindmapSourceContentRequest]
 }>()
 
+const outlineCacheStore = useOutlineCacheStore()
 const canvasHostRef = ref<HTMLElement | null>(null)
 const canvasWidth = ref(0)
 const canvasHeight = ref(0)
 const x6Ref = ref<InstanceType<typeof X6Component> | null>(null)
 let resizeObserver: ResizeObserver | null = null
+
+const outlinesReady = ref(false)
+const outlinesLoading = ref(false)
+const outlineRevision = ref(0)
 
 const contentPreviewVisible = ref(false)
 const contentPreviewTitle = ref('')
@@ -40,14 +49,43 @@ const contentPreviewLocator = ref('')
 const contentPreviewBody = ref('')
 const contentPreviewLoading = ref(false)
 
-const graphData = computed<GraphData>(() => buildMindmapGraphFromToc({
-  rootTitle: props.pageTitle,
-  toc: props.tocItems,
-  pageId: props.pageId,
-}))
+const childPages = computed(() => props.childPages ?? [])
 
-const hasOutline = computed(() => props.tocItems.length > 0)
-const canvasReady = computed(() => canvasWidth.value > 0 && canvasHeight.value > 0)
+function collectDescendantPageIds(pages: PageItem[]): string[] {
+  const ids: string[] = []
+  const walk = (list: PageItem[]) => {
+    for (const page of list) {
+      const id = page.id?.trim()
+      if (id) ids.push(id)
+      if (page.children?.length) walk(page.children)
+    }
+  }
+  walk(pages)
+  return ids
+}
+
+const graphData = computed<GraphData>(() => {
+  // Depend on outlineRevision so graph rebuilds after batch load.
+  void outlineRevision.value
+  return buildMindmapGraphFromPageSubtree({
+    rootPageId: props.pageId,
+    rootTitle: props.pageTitle,
+    rootToc: props.tocItems,
+    childPages: childPages.value,
+    getPageOutlineToc: (pageId) => {
+      const nodes = outlineCacheStore.getPageNodes(pageId)
+      if (!nodes) return []
+      return outlineNodesToTocTree(pageId, nodes)
+    },
+  })
+})
+
+const hasContent = computed(() => (
+  props.tocItems.length > 0 || childPages.value.length > 0
+))
+const canvasReady = computed(() => (
+  canvasWidth.value > 0 && canvasHeight.value > 0 && outlinesReady.value
+))
 
 function close() {
   emit('update:modelValue', false)
@@ -110,7 +148,14 @@ async function resolveContentBody(payload: OutlineMindmapSourceContentRequest): 
   }
 
   if (parsed.kind === 'page') {
+    if (parsed.pageId && parsed.pageId !== props.pageId) {
+      return '（子文档节点；请跳转到来源打开该页）'
+    }
     return '（页面根节点；请跳转到来源查看整页内容）'
+  }
+
+  if (parsed.kind === 'heading' && parsed.pageId && parsed.pageId !== props.pageId) {
+    return '（其他文档标题；请跳转到来源查看该节内容）'
   }
 
   return '（暂无可用正文预览）'
@@ -133,6 +178,30 @@ async function onPreviewSource(payload: OutlineMindmapSourceContentRequest) {
   }
 }
 
+async function loadDescendantOutlines() {
+  const pageIds = collectDescendantPageIds(childPages.value)
+  outlinesLoading.value = true
+  try {
+    if (pageIds.length) {
+      await outlineCacheStore.prefetchBatch(pageIds, [])
+    }
+    outlineRevision.value += 1
+    outlinesReady.value = true
+  } catch (error) {
+    outlinesReady.value = true
+    const message = error instanceof Error ? error.message : '加载子文档目录失败'
+    ElMessage.warning(message)
+  } finally {
+    outlinesLoading.value = false
+  }
+}
+
+function fitCanvas() {
+  requestAnimationFrame(() => {
+    x6Ref.value?.fitGraph?.({ padding: 28, maxScale: 1.8 })
+  })
+}
+
 watch(
   () => props.modelValue,
   async (visible) => {
@@ -141,25 +210,23 @@ watch(
       canvasWidth.value = 0
       canvasHeight.value = 0
       contentPreviewVisible.value = false
+      outlinesReady.value = false
       return
     }
+    outlinesReady.value = false
+    await loadDescendantOutlines()
     await nextTick()
     measureCanvas()
     bindResizeObserver()
     await nextTick()
-    // Fit after layout settles so the mindmap fills the stage.
-    requestAnimationFrame(() => {
-      x6Ref.value?.fitGraph?.({ padding: 28, maxScale: 1.8 })
-    })
+    fitCanvas()
   },
 )
 
-watch([canvasWidth, canvasHeight], async () => {
+watch([canvasWidth, canvasHeight, outlinesReady], async () => {
   if (!props.modelValue || !canvasReady.value) return
   await nextTick()
-  requestAnimationFrame(() => {
-    x6Ref.value?.fitGraph?.({ padding: 28, maxScale: 1.8 })
-  })
+  fitCanvas()
 })
 
 onBeforeUnmount(() => {
@@ -180,13 +247,19 @@ onBeforeUnmount(() => {
   >
     <div class="document-outline-mindmap-dialog__body">
       <p class="document-outline-mindmap-dialog__hint">
-        由当前文档目录结构生成的只读预览（根节点为页面标题）。点击节点可在属性侧栏查看定位链接、跳转来源或打开内容窗口；按住空格拖动画布，Ctrl/⌘ + 滚轮缩放。
+        包含当前文档目录与子文档树（根为页面标题）。子文档默认收起其目录标题，但展开更下级子文档；点击节点可在属性侧栏查看定位、跳转或打开内容窗口。按住空格拖动画布，Ctrl/⌘ + 滚轮缩放。
       </p>
       <div
-        v-if="!hasOutline"
+        v-if="outlinesLoading"
         class="document-outline-mindmap-dialog__empty"
       >
-        当前文档暂无目录标题，仅显示页面根节点。
+        正在加载子文档目录…
+      </div>
+      <div
+        v-else-if="!hasContent"
+        class="document-outline-mindmap-dialog__empty"
+      >
+        当前文档暂无目录标题与子文档，仅显示页面根节点。
       </div>
       <div
         ref="canvasHostRef"
@@ -195,7 +268,7 @@ onBeforeUnmount(() => {
         <X6Component
           v-if="canvasReady"
           ref="x6Ref"
-          :key="`${pageId}-${pageTitle}-${tocItems.length}`"
+          :key="`${pageId}-${pageTitle}-${tocItems.length}-${childPages.length}-${outlineRevision}`"
           :graph-data="graphData"
           :editable="false"
           :block-actions-enabled="false"

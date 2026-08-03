@@ -38,6 +38,7 @@ import { createHtmlInlineRenderExtension } from './extensions/HtmlInlineRender'
 import type { TocCollectContext } from '@/utils/toc/collectFlatTocEntries'
 import type { BlockTag, TextTagSpan } from '@/api/types'
 import type { SectionTagsMap, SectionTagAnchor } from '@/utils/sectionMetadata'
+import type { ContentTemplateOption } from './lineHandleMenu'
 
 export type InsertBlockType =
   | 'richtext'
@@ -59,6 +60,9 @@ export interface InsertOption {
   icon: string
   keywords: string[]
 }
+
+/** Slash menu entries: block inserts + content templates (e.g. SPS). */
+export type SlashMenuOption = InsertOption | ContentTemplateOption
 
 export interface TuEditorExtensionsConfig {
   annotations: TextAnnotation[]
@@ -86,7 +90,7 @@ export interface TuEditorExtensionsConfig {
   onTextTagSpansMapped?: (spans: TextTagSpan[]) => void
   insertOptions: InsertOption[]
   slashSuggestion: {
-    items: (props: { query: string }) => InsertOption[]
+    items: (props: { query: string }) => SlashMenuOption[]
     render: () => {
       onStart: (props: { range: { from: number; to: number }; query?: string; clientRect?: (() => DOMRect | null) | null }) => void
       onUpdate: (props: { range: { from: number; to: number }; query?: string; clientRect?: (() => DOMRect | null) | null }) => void

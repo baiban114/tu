@@ -37,15 +37,19 @@ import GlobalSearchBox from './GlobalSearchBox.vue';
 import MarkdownImportButton from './MarkdownImportButton.vue';
 import RoadmapImportButton from './RoadmapImportButton.vue';
 import ExternalResourcePicker from './ExternalResourcePicker.vue';
+import LearningDocumentAssemblyDialog from './LearningDocumentAssemblyDialog.vue';
+import LearningPlanViewPanel from './workspaceViews/LearningPlanViewPanel.vue';
 import { createKbResourceLink, deleteKbResourceLink } from '@/api/kbResourceLink';
 import type { ResourceItem } from '@/api/externalResource';
 import { parseResourceDocumentTreeId } from '@/utils/resourceDocumentContent';
+import { useWorkspaceViewsStore } from '@/stores/workspaceViews';
 
 type LinkDocumentAttachTarget =
   | { kind: 'kb' }
   | { kind: 'page'; pageId: string; pageTitle: string };
 
 const store = useWorkspaceStore();
+const viewsStore = useWorkspaceViewsStore();
 const outlineCacheStore = useOutlineCacheStore();
 
 const treeRef = ref<InstanceType<typeof ElTree>>()
@@ -60,6 +64,7 @@ const selectedPageIds = ref<Set<string>>(new Set())
 const selectionAnchorId = ref<string | null>(null)
 
 const showAddKbDialog = ref(false);
+const showLearningDocDialog = ref(false);
 const newKbName = ref('');
 const renamingId = ref<string | null>(null);
 const renameValue = ref('');
@@ -916,6 +921,30 @@ function collapseAllTree() {
       <GlobalSearchBox />
     </div>
 
+    <div class="source-switch" role="tablist" aria-label="侧栏数据源">
+      <button
+        type="button"
+        role="tab"
+        class="source-switch__btn"
+        :class="{ 'source-switch__btn--active': viewsStore.sidebarSource === 'knowledgeBase' }"
+        :aria-selected="viewsStore.sidebarSource === 'knowledgeBase'"
+        @click.stop="viewsStore.setSidebarSource('knowledgeBase')"
+      >
+        知识库
+      </button>
+      <button
+        type="button"
+        role="tab"
+        class="source-switch__btn"
+        :class="{ 'source-switch__btn--active': viewsStore.sidebarSource === 'views' }"
+        :aria-selected="viewsStore.sidebarSource === 'views'"
+        @click.stop="viewsStore.setSidebarSource('views')"
+      >
+        视图
+      </button>
+    </div>
+
+    <template v-if="viewsStore.sidebarSource === 'knowledgeBase'">
     <div class="section">
       <div class="section-header">
         <span class="section-title">知识库</span>
@@ -990,6 +1019,15 @@ function collapseAllTree() {
             {{ allTreeExpanded ? '收起' : '展开' }}
           </button>
           <MarkdownImportButton />
+          <el-button
+            link
+            size="small"
+            title="AI 学习文档"
+            :disabled="!store.currentKbId"
+            @click.stop="showLearningDocDialog = true"
+          >
+            AI
+          </el-button>
           <el-dropdown
             trigger="click"
             :disabled="!store.currentKbId"
@@ -1138,6 +1176,45 @@ function collapseAllTree() {
       </el-scrollbar>
       </div>
     </div>
+    </template>
+
+    <template v-else>
+    <div class="section">
+      <div class="section-header">
+        <span class="section-title">视图</span>
+      </div>
+      <el-scrollbar class="kb-list">
+        <div
+          v-for="view in viewsStore.viewCatalog"
+          :key="view.id"
+          class="kb-item"
+          :class="{ 'kb-item--active': viewsStore.currentViewId === view.id }"
+          :title="view.description"
+          @click.stop="viewsStore.selectView(view.id)"
+        >
+          <span class="kb-icon">{{ view.icon }}</span>
+          <span class="kb-name">{{ view.name }}</span>
+        </div>
+        <div v-if="viewsStore.viewCatalog.length === 0" class="empty-hint">
+          暂无视图
+        </div>
+      </el-scrollbar>
+    </div>
+
+    <div class="divider" />
+
+    <div class="section section--grow">
+      <div class="section-header">
+        <span class="section-title">
+          {{ viewsStore.currentView?.name || '数据库' }}
+        </span>
+      </div>
+      <div class="view-panel-host">
+        <LearningPlanViewPanel v-if="viewsStore.isLearningPlanView" />
+        <div v-else class="empty-hint">请选择一个视图</div>
+      </div>
+    </div>
+    </template>
 
     <Teleport to="body">
       <div
@@ -1242,6 +1319,8 @@ function collapseAllTree() {
       @update:visible="showLinkDocumentPicker = $event"
       @link-item="onLinkDocumentResource"
     />
+
+    <LearningDocumentAssemblyDialog v-model:visible="showLearningDocDialog" />
   </div>
 </template>
 
@@ -1258,6 +1337,43 @@ function collapseAllTree() {
 .search-section {
   padding: 8px 12px;
   flex-shrink: 0;
+}
+
+.source-switch {
+  display: flex;
+  gap: 4px;
+  margin: 0 12px 4px;
+  padding: 3px;
+  flex-shrink: 0;
+  border-radius: 8px;
+  background: #eceff3;
+}
+
+.source-switch__btn {
+  flex: 1;
+  height: 26px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: #606266;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.source-switch__btn--active {
+  background: #fff;
+  color: #303133;
+  font-weight: 600;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
+}
+
+.view-panel-host {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 0 10px 10px;
+  overflow: hidden;
 }
 
 .section {

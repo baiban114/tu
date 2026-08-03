@@ -7,6 +7,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.LinkedHashMap;
+import java.util.Locale;
 import java.util.Map;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.messages.AssistantMessage;
@@ -192,6 +193,7 @@ public class OpenAiCompatibleChatClient implements AiChatClient, AiAgentConnecti
             ));
             ChatResponse chatResponse = chatModel.call(prompt);
             modelCallCount++;
+            emitModelThinkingProgress(progressListener, chatResponse, modelCallCount, startedAt);
 
             int maxToolRounds = Math.max(1, aiAgentProperties.getToolLoop().getMaxToolRounds());
             while (chatResponse.hasToolCalls() && toolRoundCount < maxToolRounds) {
@@ -211,6 +213,7 @@ public class OpenAiCompatibleChatClient implements AiChatClient, AiAgentConnecti
                 ));
                 chatResponse = chatModel.call(prompt);
                 modelCallCount++;
+                emitModelThinkingProgress(progressListener, chatResponse, modelCallCount, startedAt);
             }
 
             rawResponseBody = serializeChatResponse(chatResponse);
@@ -275,6 +278,52 @@ public class OpenAiCompatibleChatClient implements AiChatClient, AiAgentConnecti
         if (progressListener != null) {
             progressListener.onEvent(event);
         }
+    }
+
+    private void emitModelThinkingProgress(
+        AiAgentProgressListener progressListener,
+        ChatResponse chatResponse,
+        int round,
+        long startedAt
+    ) {
+        if (progressListener == null) {
+            return;
+        }
+        String text = contentFromResponse(chatResponse).strip();
+        if (text.isBlank()) {
+            return;
+        }
+        // Skip emitting the final structured JSON plan as "thinking".
+        if (looksLikeFinalPlanJson(text)) {
+            return;
+        }
+        emitProgress(progressListener, AiAgentProgressEvent.of(
+            AiAgentProgressEvent.phaseThinking(),
+            abbreviateThinking(text),
+            round,
+            null,
+            startedAt
+        ));
+    }
+
+    private static boolean looksLikeFinalPlanJson(String text) {
+        String trimmed = text.trim();
+        if (!trimmed.startsWith("{")) {
+            return false;
+        }
+        String lower = trimmed.toLowerCase(Locale.ROOT);
+        return lower.contains("\"ordereditems\"")
+            || lower.contains("\"orderedpointids\"")
+            || lower.contains("\"suggestions\"");
+    }
+
+    private String abbreviateThinking(String value) {
+        String normalized = value == null ? "" : value.strip();
+        int maxLength = 2000;
+        if (normalized.length() <= maxLength) {
+            return normalized;
+        }
+        return normalized.substring(0, maxLength) + "...<truncated>";
     }
 
     private void emitToolCallProgress(

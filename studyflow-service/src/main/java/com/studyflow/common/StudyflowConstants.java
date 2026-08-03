@@ -3,7 +3,7 @@ package com.studyflow.common;
 /**
  * Shared constants for StudyFlow APIs.
  */
-public final class StudyflowConstants {
+public final class StudyFlowConstants {
 
     /** Default page size for paginated lists. */
     public static final int DEFAULT_PAGE_SIZE = 10;
@@ -19,6 +19,6 @@ public final class StudyflowConstants {
 
     public static final String USER_ID_HEADER = "X-User-Id";
 
-    private StudyflowConstants() {
+    private StudyFlowConstants() {
     }
 }

@@ -1,7 +1,7 @@
 package com.studyflow.note;
 
 import com.studyflow.common.BusinessException;
-import com.studyflow.common.StudyflowConstants;
+import com.studyflow.common.StudyFlowConstants;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
@@ -72,16 +72,16 @@ public class PersonalNoteService {
 
     private static String normalizeUserId(String userId) {
         if (!StringUtils.hasText(userId)) {
-            return StudyflowConstants.DEFAULT_USER_ID;
+            return StudyFlowConstants.DEFAULT_USER_ID;
         }
         return userId.trim();
     }
 
     private static int clampPageSize(int pageSize) {
         if (pageSize <= 0) {
-            return StudyflowConstants.DEFAULT_PAGE_SIZE;
+            return StudyFlowConstants.DEFAULT_PAGE_SIZE;
         }
-        return Math.min(pageSize, StudyflowConstants.MAX_PAGE_SIZE);
+        return Math.min(pageSize, StudyFlowConstants.MAX_PAGE_SIZE);
     }
 
     private static String requireBody(String body) {

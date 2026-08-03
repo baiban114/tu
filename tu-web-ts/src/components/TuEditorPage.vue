@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, reactive, watch, computed, onMounted, onBeforeUnmount, nextTick, provide } from 'vue'
 import { useRouter } from 'vue-router'
-import type { Block, BlockTag, EmbeddedObject, ExternalResourceEmbedData, HeadingSourceBinding, PageContent, PdfRegionAnchor, TextAnnotation, TextTagSpan, SpannedBlockInfo } from '@/api/types'
+import type { Block, BlockTag, EmbeddedObject, ExternalResourceEmbedData, HeadingSourceBinding, PageContent, PageItem, PdfRegionAnchor, TextAnnotation, TextTagSpan, SpannedBlockInfo } from '@/api/types'
 import type { CompareSide } from '@/utils/compareBlock'
 import type { JSONContent } from '@tiptap/core'
 import { tipTapToBlocks } from '@/editor/converters'
@@ -39,6 +39,11 @@ import {
   saveLearningInProgress,
   type LearningInProgress,
 } from '@/utils/learningInProgress'
+import {
+  DOCUMENT_UNIT_ROLE_COLOR,
+  DOCUMENT_UNIT_ROLE_LABEL,
+  type DocumentUnitRole,
+} from '@/utils/documentUnitRole'
 import { useAuthStore } from '@/stores/auth'
 import type { DocumentMarkingSuggestion } from '@/api/types'
 import { useExpandCollapse } from '@/composables/useExpandCollapse'
@@ -796,6 +801,24 @@ let documentMarkingAbort: AbortController | null = null
 const outlineMindmapDialogVisible = ref(false)
 const pageRelationGraphDialogVisible = ref(false)
 
+const outlineMindmapChildPages = computed(() => {
+  const pageId = workspaceStore.currentPageId
+  if (!pageId) return [] as PageItem[]
+  const page = findPageItemInTree(workspaceStore.pageTree, pageId)
+  return page?.children ?? []
+})
+
+function findPageItemInTree(nodes: PageItem[], pageId: string): PageItem | null {
+  for (const node of nodes) {
+    if (node.id === pageId) return node
+    if (node.children?.length) {
+      const found = findPageItemInTree(node.children, pageId)
+      if (found) return found
+    }
+  }
+  return null
+}
+
 function openOutlineMindmapDialog() {
   outlineMindmapDialogVisible.value = true
 }
@@ -1467,6 +1490,97 @@ const handleSetExcerptBasisFromSelection = () => {
       ? normalizeSpannedBlockMetadata(selectionSpannedBlockIds.value, selectionSpannedBlockMetadata.value)
       : undefined,
   })
+}
+
+const saveUnitRoleAnnotation = (role: DocumentUnitRole, target: PendingBasisTarget) => {
+  if (!target.selectedText.trim() && !(target.spannedBlockIds?.length)) return
+  const now = Date.now()
+  const hasText = !!target.selectedText.trim()
+  const hasSpannedBlocks = (target.spannedBlockIds?.length ?? 0) > 0
+  const scope = target.scope
+  const annotation: TextAnnotation = {
+    id: `unit-role-${now}-${Math.random().toString(36).slice(2, 8)}`,
+    kind: 'unitRole',
+    unitRole: role,
+    selectedText: target.selectedText,
+    contextBefore: target.contextBefore,
+    contextAfter: target.contextAfter,
+    note: '',
+    color: DOCUMENT_UNIT_ROLE_COLOR[role],
+    createdAt: now,
+    updatedAt: now,
+    from: scope === 'text' && hasText ? target.from : undefined,
+    to: scope === 'text' && hasText ? target.to : undefined,
+    blockId: '',
+    anchorVersion: scope === 'text' && hasText ? 1 : undefined,
+    lastResolvedAt: scope === 'text' && hasText ? now : undefined,
+    unresolved: false,
+    scope,
+    spannedBlockIds: hasSpannedBlocks ? target.spannedBlockIds : undefined,
+    spannedBlockMetadata: hasSpannedBlocks ? target.spannedBlockMetadata : undefined,
+  }
+  localAnnotations.value = [...localAnnotations.value, annotation]
+  emitLocalContentChange()
+  showToast(`已标为「${DOCUMENT_UNIT_ROLE_LABEL[role]}」`)
+}
+
+const handleSetUnitRoleFromSelection = (role: DocumentUnitRole) => {
+  const payload = getSelectionAnnotationPayload(selectionFrom.value, selectionTo.value)
+  const text = payload.selectedText || selectedText.value
+  const hasSpannedBlocks = selectionSpannedBlockIds.value.length > 0
+  if (!text.trim() && !hasSpannedBlocks) return
+  saveUnitRoleAnnotation(role, {
+    selectedText: text,
+    contextBefore: payload.contextBefore,
+    contextAfter: payload.contextAfter,
+    from: payload.from ?? selectionFrom.value,
+    to: payload.to ?? selectionTo.value,
+    scope: hasSpannedBlocks ? 'compound' : 'text',
+    spannedBlockIds: hasSpannedBlocks ? selectionSpannedBlockIds.value : undefined,
+    spannedBlockMetadata: hasSpannedBlocks
+      ? normalizeSpannedBlockMetadata(selectionSpannedBlockIds.value, selectionSpannedBlockMetadata.value)
+      : undefined,
+  })
+}
+
+const handleMarkBlockUnitRole = (blockId: string, role: DocumentUnitRole) => {
+  const editor = tuEditorRef.value?.editor
+  if (!editor) return
+  const payload = getBlockExcerptContent(editor.state.doc, blockId, tocCollectContext.value)
+  if (!payload) return
+  const blockIds = collectBasisBlockIds(editor.state.doc, blockId, tocCollectContext.value)
+  const scope = blockIds.length > 1 ? 'compound' : 'block'
+  hideNodeViewToolbar()
+  saveUnitRoleAnnotation(role, {
+    selectedText: payload.text,
+    contextBefore: '',
+    contextAfter: '',
+    scope,
+    spannedBlockIds: blockIds,
+    spannedBlockMetadata: normalizeSpannedBlockMetadata(blockIds, []),
+  })
+}
+
+function openMarkUnitRoleForTocEntry(entryId: string, role: DocumentUnitRole) {
+  const editor = tuEditorRef.value?.editor
+  if (!editor) return
+  const flat = collectFlatTocEntries(editor.state.doc, tocCollectContext.value)
+  const payload = getTocEntryExcerptContent(editor.state.doc, flat, entryId, tocCollectContext.value)
+  if (!payload) return
+  const blockIds = collectTocEntryBasisBlockIds(editor.state.doc, flat, entryId, tocCollectContext.value)
+  const scope = blockIds.length > 1 ? 'compound' : 'block'
+  saveUnitRoleAnnotation(role, {
+    selectedText: payload.text,
+    contextBefore: '',
+    contextAfter: '',
+    scope,
+    spannedBlockIds: blockIds,
+    spannedBlockMetadata: normalizeSpannedBlockMetadata(blockIds, []),
+  })
+}
+
+const handleSectionMarkUnitRoleFromGutter = (entryId: string, role: DocumentUnitRole) => {
+  openMarkUnitRoleForTocEntry(entryId, role)
 }
 
 const handleSetBlockBasis = (blockId: string) => {
@@ -4163,7 +4277,7 @@ const handleCompoundBadgeClick = (_blockId: string, annotationId: string, client
 
 const handleEditAnnotation = (annotation?: TextAnnotation) => {
   const target = annotation ?? notePopoverAnnotation.value
-  if (!target || target.kind === 'basis') return
+  if (!target || target.kind === 'basis' || target.kind === 'unitRole') return
 
   if (target.scope === 'pdfRegion' && target.pdfRegion) {
     pendingNotePdfRegion.value = { ...target.pdfRegion }
@@ -4513,11 +4627,13 @@ onBeforeUnmount(() => {
           @block-click="handleBlockClick"
           @mark-block-excerpt="handleMarkBlockExcerpt"
           @set-block-basis="handleSetBlockBasis"
+          @mark-block-unit-role="handleMarkBlockUnitRole"
           @line-annotate="handleLineAnnotateFromGutter"
           @line-create-knowledge-relation="handleLineCreateKnowledgeRelationFromGutter"
           @section-annotate="handleSectionAnnotateFromGutter"
           @section-mark-excerpt="handleSectionMarkExcerptFromGutter"
           @section-set-basis="handleSectionSetBasisFromGutter"
+          @section-mark-unit-role="handleSectionMarkUnitRoleFromGutter"
           @section-create-knowledge-relation="handleSectionCreateKnowledgeRelationFromGutter"
           @section-mark-heading-source="handleSectionMarkHeadingSourceFromGutter"
           @section-clear-heading-source="handleSectionClearHeadingSourceFromGutter"
@@ -4755,6 +4871,7 @@ onBeforeUnmount(() => {
       @add-note="handleAddNoteFromSelection"
       @mark-resource-excerpt="handleMarkResourceExcerptFromSelection"
       @set-excerpt-basis="handleSetExcerptBasisFromSelection"
+      @set-unit-role="handleSetUnitRoleFromSelection"
       @create-knowledge-relation="handleCreateKnowledgeRelationFromSelection"
       @confirm-reuse-mark="handleConfirmReuseMark"
       @dismiss-reuse-mark="handleDismissReuseMark"
@@ -4896,6 +5013,7 @@ onBeforeUnmount(() => {
       :page-id="workspaceStore.currentPageId || ''"
       :page-title="pageTitleDraft || props.pageTitle || '未命名页面'"
       :toc-items="tocItems"
+      :child-pages="outlineMindmapChildPages"
       :resolve-page-section-text="resolveOutlineMindmapSectionText"
       @navigate-source="handleOutlineMindmapNavigate"
     />
