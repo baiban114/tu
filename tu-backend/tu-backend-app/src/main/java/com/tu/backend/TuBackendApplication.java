@@ -1,5 +1,6 @@
 package com.tu.backend;
 
+import com.tu.backend.externalresource.crawl.CrawlProperties;
 import com.tu.backend.index.IndexProperties;
 import com.tu.backend.rag.RagProperties;
 import com.tu.backend.search.SearchProperties;
@@ -17,7 +18,7 @@ import org.springframework.scheduling.annotation.EnableScheduling;
 @EnableDiscoveryClient
 @EnableDubbo(scanBasePackages = "com.tu.backend.platform.dubbo")
 @EnableScheduling
-@EnableConfigurationProperties({RagProperties.class, IntegrationProperties.class, SecretProperties.class, SearchProperties.class, IndexProperties.class, FileStorageProperties.class})
+@EnableConfigurationProperties({RagProperties.class, CrawlProperties.class, IntegrationProperties.class, SecretProperties.class, SearchProperties.class, IndexProperties.class, FileStorageProperties.class})
 public class TuBackendApplication {
 
     public static void main(String[] args) {

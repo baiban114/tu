@@ -21,6 +21,7 @@ import com.tu.backend.externalresource.entity.ResourceExcerptEntity;
 import com.tu.backend.externalresource.entity.ResourceItemEntity;
 import com.tu.backend.externalresource.entity.ResourceTypeEntity;
 import com.tu.backend.externalresource.entity.ResourceWorkEntity;
+import com.tu.backend.externalresource.repository.ResourceCrawledDocumentRepository;
 import com.tu.backend.externalresource.repository.ResourceExcerptRepository;
 import com.tu.backend.externalresource.repository.ResourceItemRelationRepository;
 import com.tu.backend.externalresource.repository.ResourceItemRepository;
@@ -227,6 +228,7 @@ class ExternalResourceServiceTest {
         context.service.removeItem("ri-book");
 
         verify(context.excerptRepository).deleteByResourceItemId("ri-book");
+        verify(context.crawledDocumentRepository).deleteByResourceItemId("ri-book");
         verify(context.contentTreeNodeService).deleteResourceScope("ri-book");
         verify(context.itemRepository).delete(item);
     }
@@ -391,6 +393,7 @@ class ExternalResourceServiceTest {
         final ResourceItemRepository itemRepository = mock(ResourceItemRepository.class);
         final ResourceExcerptRepository excerptRepository = mock(ResourceExcerptRepository.class);
         final ResourcePdfRegionNoteRepository pdfRegionNoteRepository = mock(ResourcePdfRegionNoteRepository.class);
+        final ResourceCrawledDocumentRepository crawledDocumentRepository = mock(ResourceCrawledDocumentRepository.class);
         final ContentTreeNodeService contentTreeNodeService = mock(ContentTreeNodeService.class);
         final ResourceItemRelationRepository itemRelationRepository = mock(ResourceItemRelationRepository.class);
         final UrlClusterMatcherService clusterMatcherService = mock(UrlClusterMatcherService.class);
@@ -400,6 +403,7 @@ class ExternalResourceServiceTest {
             itemRepository,
             excerptRepository,
             pdfRegionNoteRepository,
+            crawledDocumentRepository,
             contentTreeNodeService,
             itemRelationRepository,
             clusterMatcherService,

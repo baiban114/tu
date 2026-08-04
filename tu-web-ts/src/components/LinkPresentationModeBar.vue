@@ -15,16 +15,28 @@ const props = withDefaults(defineProps<{
   loadingMode?: UrlDisplayMode | null
   /** Extra modes to disable (merged with presentation defaults). */
   disabledModes?: UrlDisplayMode[]
+  /** Extra modes offered besides the computed ones (e.g. 'image' on canvas). */
+  extraModes?: UrlDisplayMode[]
+  /** Disable the whole bar. */
+  disabled?: boolean
 }>(), {
   loadingMode: null,
   disabledModes: () => [],
+  extraModes: () => [],
+  disabled: false,
 })
 
 const emit = defineEmits<{
   (e: 'select-mode', mode: UrlDisplayMode): void
 }>()
 
-const modes = computed(() => availableLinkPresentationModes(props.href, props.currentMode))
+const modes = computed(() => {
+  const list = [...availableLinkPresentationModes(props.href, props.currentMode)]
+  for (const mode of props.extraModes) {
+    if (!list.includes(mode)) list.push(mode)
+  }
+  return list
+})
 
 const disabledSet = computed(() => new Set([
   ...disabledLinkPresentationModes(props.href, props.currentMode),
@@ -32,7 +44,7 @@ const disabledSet = computed(() => new Set([
 ]))
 
 function isDisabled(mode: UrlDisplayMode): boolean {
-  return disabledSet.value.has(mode)
+  return props.disabled || disabledSet.value.has(mode)
 }
 </script>
 

@@ -38,6 +38,8 @@ export function linkPresentationModeLabel(mode: UrlDisplayMode): string {
       return '标题'
     case 'pdf':
       return 'PDF'
+    case 'image':
+      return '图片'
     default:
       return mode
   }

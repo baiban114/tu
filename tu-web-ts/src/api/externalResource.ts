@@ -40,6 +40,9 @@ import {
   createResourceChapterMock,
   updateResourceChapterMock,
   deleteResourceChapterMock,
+  deleteResourceCrawledDocumentMock,
+  fetchResourceCrawledDocumentMock,
+  crawlResourceWebPageMock,
   listResourceItemsMock,
   listResourceTypesMock,
   listResourceWorksMock,
@@ -142,6 +145,17 @@ export interface ResourceChapter {
   locator?: string;
   note?: string;
   sortOrder: number;
+}
+
+/** Crawled web page content stored as a standalone Markdown document (no KB/Page dependency). */
+export interface ResourceCrawledDocument {
+  id: string;
+  resourceItemId: string;
+  sourceUrl: string;
+  title?: string | null;
+  content: string;
+  crawledAt?: string;
+  updatedAt?: string;
 }
 
 export type CreateResourceChapterPayload = Omit<ResourceChapter, 'id' | 'resourceItemId' | 'resourceItemTitle'>;
@@ -555,6 +569,33 @@ export function deleteResourceChapter(id: string): Promise<void> {
   return request<void>(`/api/resource-chapters/${encodeURIComponent(id)}`, { method: 'DELETE' });
 }
 
+/** Returns the stored crawled document of a resource item, or null when not crawled yet. */
+export function fetchResourceCrawledDocument(resourceItemId: string): Promise<ResourceCrawledDocument | null> {
+  if (isMockDataSource()) return Promise.resolve(fetchResourceCrawledDocumentMock(resourceItemId));
+  return request<ResourceCrawledDocument | null>(
+    `/api/resource-items/${encodeURIComponent(resourceItemId)}/crawled-document`,
+  );
+}
+
+/** Triggers a server-side crawl of the web-link source URL (long-running request). */
+export function crawlResourceWebPage(resourceItemId: string): Promise<ResourceCrawledDocument> {
+  if (isMockDataSource()) return Promise.resolve(crawlResourceWebPageMock(resourceItemId));
+  return request<ResourceCrawledDocument>(
+    `/api/resource-items/${encodeURIComponent(resourceItemId)}/crawled-document`,
+    { method: 'POST' },
+  );
+}
+
+export function deleteResourceCrawledDocument(resourceItemId: string): Promise<void> {
+  if (isMockDataSource()) {
+    deleteResourceCrawledDocumentMock(resourceItemId);
+    return Promise.resolve();
+  }
+  return request<void>(`/api/resource-items/${encodeURIComponent(resourceItemId)}/crawled-document`, {
+    method: 'DELETE',
+  });
+}
+
 export const BOOK_RESOURCE_TYPE_CODE = 'book';
 export const WEB_LINK_RESOURCE_TYPE_CODE = 'web-link';
 export const DOCUMENT_RESOURCE_TYPE_CODE = 'document';
@@ -569,6 +610,23 @@ export function supportsResourceExcerpts(typeCode: string | undefined | null): b
 /** Book items may define a multi-level chapter tree. */
 export function supportsBookChapters(typeCode: string | undefined | null): boolean {
   return typeCode === BOOK_RESOURCE_TYPE_CODE;
+}
+
+/** Whether the value is a valid http(s) URL (used to decide if a non-web-link item can be crawled). */
+export function isHttpResourceUrl(value: string | undefined | null): boolean {
+  if (!value) return false;
+  try {
+    const url = new URL(value.trim());
+    return url.protocol === 'http:' || url.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
+/** Items crawlable for web content: web-link entities, or any entity whose sourceUrl/identity is an http(s) URL. */
+export function supportsContentCrawling(typeCode: string | undefined | null, sourceUrl?: string | null, identityValue?: string | null): boolean {
+  if (typeCode === WEB_LINK_RESOURCE_TYPE_CODE) return true;
+  return isHttpResourceUrl(sourceUrl) || isHttpResourceUrl(identityValue);
 }
 
 function getLinkTitle(label: string, url: string): string {

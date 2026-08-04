@@ -3,3 +3,7 @@ uvicorn[standard]==0.34.0
 httpx==0.28.1
 pydantic==2.10.4
 pydantic-settings==2.7.1
+# playwright 不硬锁小版本：其传递依赖 greenlet 需匹配本地 Python 预编译 wheel（本地 venv 3.14 与 Docker 3.12 漂移）；
+# 升级后需同步 Dockerfile 镜像 tag（mcr.microsoft.com/playwright/python:vX.Y.Z）
+playwright>=1.49.1
+trafilatura>=2.0.0

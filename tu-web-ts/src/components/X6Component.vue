@@ -1,8 +1,34 @@
+<script lang="ts">
+// Module-level shared state: the stage element of the canvas that most recently
+// received a pointer/focus interaction. Used to route document-level `paste`
+// events to exactly one X6Component instance when several coexist.
+let activeX6StageElement: HTMLElement | null = null;
+
+function markActiveX6Stage(el: HTMLElement) {
+  activeX6StageElement = el;
+}
+
+function getActiveX6Stage(): HTMLElement | null {
+  return activeX6StageElement;
+}
+
+// Shape name for canvas-pasted link nodes; registration happens once globally.
+const BOARD_LINK_SHAPE = 'board-link-card';
+let boardLinkShapeRegistered = false;
+function setBoardLinkShapeRegistered(value: boolean) {
+  boardLinkShapeRegistered = value;
+}
+function isBoardLinkShapeRegistered(): boolean {
+  return boardLinkShapeRegistered;
+}
+</script>
+
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import X6NodeOverlay from './X6NodeOverlay.vue';
 import X6CellContentPanel from './X6CellContentPanel.vue';
 import X6MaterialLibrary from './X6MaterialLibrary.vue';
+import LinkPresentationModeBar from './LinkPresentationModeBar.vue';
 import { useMaterialLibraryStore } from '@/stores/materialLibrary';
 import { useBlockRegistryStore } from '@/stores/blockRegistry';
 import { useObjectModelStore } from '@/stores/objectModel';
@@ -27,7 +53,11 @@ import {
   readCellContentBinding,
   type CellContentBinding,
 } from '@/utils/cellContent';
+import { fallbackPageTitleFromUrl, type UrlDisplayMode } from '@/utils/urlDisplay';
+import { uploadFile } from '@/api/fileStorage';
+import { findClipboardImageFileOnly } from '@/editor/pasteHtmlContent';
 import {
+  type Cell,
   Clipboard,
   type Edge,
   Graph,
@@ -35,6 +65,7 @@ import {
   Keyboard,
   type Node,
   Selection,
+  Shape,
   Snapline,
   Transform,
 } from '@antv/x6';
@@ -119,11 +150,18 @@ interface Props {
   openInspectorOnNodeSelect?: boolean;
 }
 
+/** 画板节点可互相转换的样式（graphCells NodePreset 去掉 umlClass） */
+type BoardNodeStylePreset = Exclude<NodePreset, 'umlClass'>;
+
+const BOARD_NODE_STYLE_PRESETS: readonly BoardNodeStylePreset[] = ['rect', 'round', 'ellipse', 'diamond'];
+
 type SelectedCellState =
   | {
       kind: 'node';
       id: string;
       shape: string;
+      /** 当前节点样式（'' 表示图片/链接卡片等不可转换的自定义形状） */
+      preset: BoardNodeStylePreset | '';
       label: string;
       fill: string;
       stroke: string;
@@ -131,6 +169,12 @@ type SelectedCellState =
       height: number;
       textMode: 'plain' | 'rich';
       richContent: string;
+      /** 粘贴链接生成的节点：目标 URL（空表示非链接节点） */
+      linkUrl: string;
+      /** 链接展示形式（移植文档链接 toolbar） */
+      linkDisplay: UrlDisplayMode;
+      /** 粘贴图片生成的节点：图片 URL（空表示非图片节点） */
+      imageUrl: string;
       isRefBlock: boolean;
       refBlockId: string;
       refType: 'block' | 'page';
@@ -139,6 +183,10 @@ type SelectedCellState =
       sourceLocator: string;
       tocEntryId: string;
       contentBinding: CellContentBinding;
+      /** 是否为组合容器节点 */
+      isGroup: boolean;
+      /** 组合容器的直接成员节点数 */
+      groupSize: number;
     }
   | {
       kind: 'edge';
@@ -193,6 +241,58 @@ const nodeOverlayRefs = ref<Record<string, {
   updateInsertedImageWidth?: (widthPercent: number) => boolean;
 }>>({});
 
+// --- Pasted link card node (HTML shape) ---
+// Pasting a URL without selection creates a link node; the inspector reuses the
+// document link toolbar (LinkPresentationModeBar) to switch its display mode.
+
+function isCustomPastedShape(shape: string): boolean {
+  return shape === 'image' || shape === BOARD_LINK_SHAPE;
+}
+
+function ensureBoardLinkShapeRegistered() {
+  if (isBoardLinkShapeRegistered()) return;
+  setBoardLinkShapeRegistered(true);
+  Shape.HTML.register({
+    shape: BOARD_LINK_SHAPE,
+    width: 320,
+    height: 96,
+    effect: ['data'],
+    html(cell) {
+      const wrap = document.createElement('div');
+      wrap.className = 'x6-board-link-card';
+      wrap.style.cssText = [
+        'width: 100%; height: 100%; box-sizing: border-box;',
+        'border: 1.6px solid #1677ff; border-radius: 6px; background: #ffffff;',
+        'display: flex; align-items: center; justify-content: center;',
+        'overflow: hidden; font-size: 13px; color: #003a8c;',
+      ].join(' ');
+      const data = (cell.getData() ?? {}) as Record<string, unknown>;
+      const url = typeof data.linkUrl === 'string' ? data.linkUrl : '';
+      const display = typeof data.linkDisplay === 'string' ? data.linkDisplay : 'link';
+      wrap.dataset.display = display;
+      if (display === 'image') {
+        const img = document.createElement('img');
+        img.src = url;
+        img.alt = url;
+        img.style.cssText = 'max-width: 100%; max-height: 100%; object-fit: contain;';
+        wrap.appendChild(img);
+      } else if (display === 'iframe') {
+        const frame = document.createElement('iframe');
+        frame.src = url;
+        frame.title = url;
+        frame.style.cssText = 'width: 100%; height: 100%; border: 0;';
+        wrap.appendChild(frame);
+      } else {
+        const text = document.createElement('span');
+        text.style.cssText = 'padding: 6px 12px; word-break: break-all; text-align: center;';
+        text.textContent = display === 'title' ? fallbackPageTitleFromUrl(url) : url;
+        wrap.appendChild(text);
+      }
+      return wrap;
+    },
+  });
+}
+
 const canUndo = ref(false);
 const canRedo = ref(false);
 const gridVisible = ref(true);
@@ -200,6 +300,8 @@ const zoomPercent = ref(100);
 const selectedCellsCount = ref(0);
 const deletableSelectionCount = ref(0);
 const selectedCell = ref<SelectedCellState | null>(null);
+/** 组合按钮状态：'' 禁用 / 'group' 可组合 / 'ungroup' 可取消组合 */
+const groupActionButtonMode = ref<'' | 'group' | 'ungroup'>('');
 const objectModelStore = useObjectModelStore();
 const materialLibraryStore = useMaterialLibraryStore();
 const outlineCacheStore = useOutlineCacheStore();
@@ -227,6 +329,8 @@ const mindmapRefTocContext = createMindmapRefTocContext({
   onCollapseSettled: () => settleMindmapCollapseInteraction(),
 });
 const inspectorTab = ref<'inspector' | 'library'>('inspector');
+const inspectorNodeStyleOpen = ref(false);
+const inspectorNodeContentOpen = ref(true);
 const toolbarVisible = ref(props.toolbarEnabled);
 const inspectorVisible = ref(props.inspectorEnabled && props.inspectorDefaultVisible);
 type CanvasInteractionMode = 'select' | 'pan';
@@ -393,6 +497,15 @@ function normalizeUmlModel(value: unknown): UmlModel {
 }
 
 function normalizeNode(node: CellData, mindmap = false): CellData {
+  // Canvas-pasted image / link-card nodes keep their own shape and rendering;
+  // do not rebuild them through the board preset factories.
+  if (typeof node.shape === 'string' && isCustomPastedShape(node.shape)) {
+    return { ...node };
+  }
+  // Group container nodes keep their dashed-frame appearance as-is.
+  if (node.data?.boardGroup === true) {
+    return { ...node };
+  }
   const mindRole = node.data?.mindRole;
   const isMindmapRefBlock = mindmap && (node.data?.refKind === 'block-ref' || node.data?.refBlockId);
   if (mindmap && (mindRole === 'root' || mindRole === 'topic' || isMindmapRefBlock)) {
@@ -847,16 +960,18 @@ function updateNodeOverlays() {
     graphSourceRegion.value = null;
     return;
   }
-  nodeOverlays.value = graph.getNodes().map(node => {
-    const data = node.getData<Record<string, any>>() ?? {};
-    return {
-      id: node.id,
-      style: getNodeOverlayStyle(node),
-      textMode: (data.textMode ?? 'plain') as 'plain' | 'rich',
-      label: getNodeLabel(node),
-      richContent: data.richContent ?? '',
-    };
-  });
+  nodeOverlays.value = graph.getNodes()
+    .filter((node) => !isBoardGroupNode(node))
+    .map(node => {
+      const data = node.getData<Record<string, any>>() ?? {};
+      return {
+        id: node.id,
+        style: getNodeOverlayStyle(node),
+        textMode: (data.textMode ?? 'plain') as 'plain' | 'rich',
+        label: getNodeLabel(node),
+        richContent: data.richContent ?? '',
+      };
+    });
   updateGraphSourceRegion();
   updateMindmapCollapseOverlays();
 }
@@ -1223,6 +1338,22 @@ function toggleNodeTextMode(mode: 'plain' | 'rich') {
   updateNodeOverlays();
 }
 
+/** 从 data.preset 推断当前节点样式，旧数据回退按 shape 猜测 */
+function resolveBoardNodeStylePreset(node: Node, nodeData: Record<string, any>): BoardNodeStylePreset | '' {
+  if (nodeData.boardGroup === true) return '';
+  const raw = nodeData.preset;
+  if ((BOARD_NODE_STYLE_PRESETS as readonly string[]).includes(raw)) {
+    return raw as BoardNodeStylePreset;
+  }
+  if (node.shape === 'ellipse') return 'ellipse';
+  if (node.shape === 'polygon') return 'diamond';
+  if (node.shape === 'rect') {
+    const rx = Number(node.attr('body/rx')) || 0;
+    return rx > 0 ? 'round' : 'rect';
+  }
+  return '';
+}
+
 function refreshSelectedCellState() {
   if (!graph) {
     return;
@@ -1247,10 +1378,20 @@ function refreshSelectedCellState() {
       const isRefBlock = nodeData.refKind === 'block-ref' || Boolean(refBlockId);
       const sourceLocator = typeof nodeData.sourceLocator === 'string' ? nodeData.sourceLocator.trim() : '';
       const tocEntryId = typeof nodeData.tocEntryId === 'string' ? nodeData.tocEntryId : '';
+      const linkUrl = typeof nodeData.linkUrl === 'string' ? nodeData.linkUrl : '';
+      const rawLinkDisplay = nodeData.linkDisplay;
+      const linkDisplay: UrlDisplayMode = rawLinkDisplay === 'iframe' || rawLinkDisplay === 'title'
+        || rawLinkDisplay === 'pdf' || rawLinkDisplay === 'image'
+        ? rawLinkDisplay
+        : 'link';
+      const imageUrl = typeof nodeData.imageUrl === 'string'
+        ? nodeData.imageUrl
+        : (cell.shape === 'image' ? String(cell.attr('image/xlinkHref') ?? '') : '');
       selectedCell.value = {
         kind: 'node',
         id: cell.id,
         shape: cell.shape,
+        preset: resolveBoardNodeStylePreset(cell, nodeData),
         label: getNodeLabel(cell),
         fill: (cell.attr('body/fill') as string) || '#ffffff',
         stroke: (cell.attr('body/stroke') as string) || '#1677ff',
@@ -1258,6 +1399,9 @@ function refreshSelectedCellState() {
         height: size.height,
         textMode: nodeData.textMode ?? 'plain',
         richContent: nodeData.richContent ?? '',
+        linkUrl,
+        linkDisplay,
+        imageUrl,
         isRefBlock,
         refBlockId,
         refType,
@@ -1265,6 +1409,8 @@ function refreshSelectedCellState() {
         sourceLocator,
         tocEntryId,
         contentBinding: readCellContentBinding(nodeData),
+        isGroup: nodeData.boardGroup === true,
+        groupSize: nodeData.boardGroup === true ? (cell.getChildren() ?? []).length : 0,
       };
     } else if (graph.isEdge(cell)) {
       const router = cell.getRouter();
@@ -1284,6 +1430,17 @@ function refreshSelectedCellState() {
         contentBinding: readCellContentBinding(edgeData),
       };
     }
+  }
+
+  // Refresh the group action button: containers selected → ungroup,
+  // otherwise ≥2 plain nodes → group.
+  if (!isMindmap.value) {
+    const g = graph;
+    const hasGroupContainer = !!g && cells.some((cell) => g.isNode(cell) && isBoardGroupNode(cell as Node));
+    const plainNodeCount = g ? cells.filter((cell) => g.isNode(cell) && !isBoardGroupNode(cell as Node)).length : 0;
+    groupActionButtonMode.value = hasGroupContainer ? 'ungroup' : plainNodeCount >= 2 ? 'group' : '';
+  } else {
+    groupActionButtonMode.value = '';
   }
 
   updateUndoRedoState();
@@ -1947,16 +2104,30 @@ function resolveDeletableCellsForDelete() {
 
 function deleteSelection() {
   if (!graph || !isEditable.value) return;
-  const cells = resolveDeletableCellsForDelete();
-  if (!cells.length) return;
+  const g = graph;
+  // Deleting a group container means “ungroup”: dissolve it and keep members.
+  const groupContainers = g.getSelectedCells().filter(
+    (cell) => g.isNode(cell) && isBoardGroupNode(cell as Node),
+  ) as Node[];
+  const cells = resolveDeletableCellsForDelete().filter((cell) => !groupContainers.includes(cell as Node));
+  if (!cells.length && !groupContainers.length) return;
 
   if (syncTimer !== null) {
     window.clearTimeout(syncTimer);
     syncTimer = null;
   }
 
-  graph.removeCells(cells);
-  graph.cleanSelection();
+  if (groupContainers.length) {
+    g.batchUpdate(() => {
+      groupContainers.forEach((container) => dissolveBoardGroup(container));
+    });
+  }
+  if (cells.length) {
+    g.removeCells(cells);
+  }
+  // Members deleted elsewhere may leave degraded groups (<2 members) behind.
+  dissolveDegradedBoardGroups();
+  g.cleanSelection();
   refreshSelectedCellState();
 
   if (isMindmap.value) {
@@ -1973,7 +2144,7 @@ function deleteSelection() {
 
 function duplicateSelection() {
   if (!graph || !isEditable.value) return;
-  const cells = graph.getSelectedCells();
+  const cells = expandBoardGroupCells(graph.getSelectedCells());
   if (!cells.length) return;
 
   const clones = Object.values(graph.cloneCells(cells));
@@ -1990,9 +2161,225 @@ function duplicateSelection() {
 
 function copySelection() {
   if (!graph) return;
-  const cells = graph.getSelectedCells();
+  const cells = expandBoardGroupCells(graph.getSelectedCells());
   if (!cells.length) return;
   graph.copy(cells);
+}
+
+// --- Board node groups ---
+// A group is a dashed-frame container node (data.boardGroup = true) whose
+// members are embedded children. Clicking a member selects the outermost
+// container; Alt+click bypasses the group and selects the member only.
+// (Alt is used instead of Ctrl/Cmd because Ctrl/Cmd+click is the built-in
+// additive multi-select modifier.)
+
+let boardGroupDragState: { memberId: string; rootId: string; last: { x: number; y: number } } | null = null;
+
+const BOARD_GROUP_SHAPE = 'board-group';
+
+// X6 v3 does not apply instance-level `markup` passed to addNode, so the
+// dashed container and its `data-board-group` marker must come from a
+// registered shape instead.
+let boardGroupShapeRegistered = false;
+function ensureBoardGroupShape() {
+  if (boardGroupShapeRegistered) return;
+  boardGroupShapeRegistered = true;
+  // overwrite=true: the module can be instantiated more than once per page
+  Graph.registerNode(BOARD_GROUP_SHAPE, {
+    markup: [
+      {
+        tagName: 'g',
+        attrs: { 'data-board-group': 'true' },
+        children: [
+          { tagName: 'rect', selector: 'body' },
+          { tagName: 'text', selector: 'label' },
+        ],
+      },
+    ],
+    attrs: {
+      body: {
+        refWidth: '100%',
+        refHeight: '100%',
+        fill: 'rgba(22, 119, 255, 0.05)',
+        stroke: '#91a7ff',
+        strokeWidth: 1.5,
+        strokeDasharray: '6 4',
+        rx: 12,
+        ry: 12,
+      },
+      label: { text: '' },
+    },
+  }, true);
+}
+
+function isBoardGroupNode(node: Node): boolean {
+  return node.getData<Record<string, any>>()?.boardGroup === true;
+}
+
+/** Walk up the parent chain to the outermost group ancestor; returns the node itself when not grouped. */
+function findBoardGroupRoot(node: Node): Node {
+  let current: Node = node;
+  const visited = new Set<string>([node.id]);
+  let parent = current.getParent();
+  while (parent && graph?.isNode(parent)) {
+    if (visited.has(parent.id)) break;
+    visited.add(parent.id);
+    current = parent as Node;
+    parent = current.getParent();
+  }
+  return current;
+}
+
+/** Detach all members from the container and remove the container itself (members survive). */
+function dissolveBoardGroup(container: Node) {
+  container.getChildren().forEach((child) => {
+    container.unembed(child);
+  });
+  container.remove();
+}
+
+/** Auto-dissolve groups that dropped below 2 members. */
+function dissolveDegradedBoardGroups() {
+  if (!graph) return;
+  graph.getNodes().forEach((node) => {
+    if (!isBoardGroupNode(node)) return;
+    if (node.getChildCount() < 2) dissolveBoardGroup(node);
+  });
+}
+
+/** Expand selected group containers into their descendants so copy/duplicate carries members along. */
+function expandBoardGroupCells(cells: Cell[]): Cell[] {
+  if (!graph) return cells;
+  const expanded: Cell[] = [];
+  const seen = new Set<string>();
+  cells.forEach((cell) => {
+    if (seen.has(cell.id)) return;
+    seen.add(cell.id);
+    expanded.push(cell);
+    if (graph!.isNode(cell) && isBoardGroupNode(cell as Node)) {
+      cell.getDescendants({ deep: true }).forEach((descendant) => {
+        if (!seen.has(descendant.id)) {
+          seen.add(descendant.id);
+          expanded.push(descendant);
+        }
+      });
+    }
+  });
+  return expanded;
+}
+
+/** Wrap ≥2 selected plain nodes into one group container. */
+function groupSelection() {
+  if (!graph || !isEditable.value || isMindmap.value) return;
+  ensureBoardGroupShape();
+  const g = graph;
+  const members = g.getSelectedCells().filter(
+    (cell) => g.isNode(cell) && !isBoardGroupNode(cell as Node),
+  ) as Node[];
+  if (members.length < 2) return;
+
+  const padding = 16;
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  members.forEach((node) => {
+    const box = node.getBBox();
+    minX = Math.min(minX, box.x);
+    minY = Math.min(minY, box.y);
+    maxX = Math.max(maxX, box.x + box.width);
+    maxY = Math.max(maxY, box.y + box.height);
+  });
+
+  // Keep the container behind every existing node. Do NOT call toBack() right
+  // after addNode: X6 v3 schedules the new view asynchronously and the
+  // synchronous z-index change leaves the container view unrendered.
+  let backZIndex = 0;
+  g.getNodes().forEach((node) => {
+    const z = node.getZIndex();
+    if (typeof z === 'number' && z < backZIndex) backZIndex = z;
+  });
+
+  let container: Node | null = null;
+  g.batchUpdate(() => {
+    // Detach members from any previous group first (supports merging groups).
+    members.forEach((node) => {
+      const parent = node.getParent();
+      if (parent && g.isNode(parent) && isBoardGroupNode(parent as Node)) {
+        parent.unembed(node);
+      }
+    });
+    container = g.addNode({
+      id: createId('board-group'),
+      shape: BOARD_GROUP_SHAPE,
+      x: minX - padding,
+      y: minY - padding,
+      width: maxX - minX + padding * 2,
+      height: maxY - minY + padding * 2,
+      zIndex: backZIndex - 1,
+      data: { boardGroup: true },
+    });
+    members.forEach((node) => container!.embed(node));
+    g.resetSelection([container!]);
+  });
+
+  refreshSelectedCellState();
+  updateNodeOverlays();
+  scheduleSync();
+}
+
+/** Dissolve the selected group containers, keeping their members. */
+function ungroupSelection() {
+  if (!graph || !isEditable.value) return;
+  const g = graph;
+  const containers = g.getSelectedCells().filter(
+    (cell) => g.isNode(cell) && isBoardGroupNode(cell as Node),
+  ) as Node[];
+  if (!containers.length) return;
+
+  const members: Node[] = [];
+  g.batchUpdate(() => {
+    containers.forEach((container) => {
+      container.getChildren().forEach((child) => {
+        if (g.isNode(child)) members.push(child as Node);
+      });
+      dissolveBoardGroup(container);
+    });
+  });
+
+  g.resetSelection(members);
+  refreshSelectedCellState();
+  scheduleSync();
+}
+
+function beginBoardGroupDrag(node: Node) {
+  if (isMindmap.value) return;
+  const root = findBoardGroupRoot(node);
+  if (root === node) return;
+  // Only treat the drag as a group-level operation when the group container is
+  // itself selected. When a member is selected alone (e.g. Alt+click), dragging
+  // moves just that member — its relative position inside the group changes.
+  if (!graph || !graph.isSelected(root)) return;
+  boardGroupDragState = { memberId: node.id, rootId: root.id, last: node.getPosition() };
+}
+
+/** While dragging a group member, move the rest of the group by the same delta. */
+function updateBoardGroupDrag(node: Node, current: { x: number; y: number }) {
+  if (!graph || !boardGroupDragState || node.id !== boardGroupDragState.memberId) return;
+  const root = graph.getCellById(boardGroupDragState.rootId);
+  if (root && graph.isNode(root)) {
+    const dx = current.x - boardGroupDragState.last.x;
+    const dy = current.y - boardGroupDragState.last.y;
+    if (dx !== 0 || dy !== 0) {
+      // The dragged member already moved via its own drag; exclude it.
+      root.translate(dx, dy, { exclude: [node] });
+    }
+  }
+  boardGroupDragState.last = { x: current.x, y: current.y };
+}
+
+function endBoardGroupDrag() {
+  boardGroupDragState = null;
 }
 
 function pasteSelection() {
@@ -2004,9 +2391,175 @@ function pasteSelection() {
   scheduleSync();
 }
 
+// --- System clipboard paste (no selection): image / link / rich-text node ---
+
+function isSingleHttpUrl(text: string): boolean {
+  return /^https?:\/\/\S+$/.test(text);
+}
+
+/**
+ * Whether this canvas instance should consume a document-level paste event:
+ * editable board canvas, no inline editing, no selected cells, and this stage
+ * is the most recently interacted canvas.
+ */
+function canHandleBoardSystemPaste(): boolean {
+  return Boolean(
+    graph
+    && isEditable.value
+    && !isMindmap.value
+    && editingNodeId.value == null
+    && !edgeInlineEditing.value
+    && graph.getSelectedCells().length === 0
+    && stageRef.value
+    && getActiveX6Stage() === stageRef.value,
+  );
+}
+
+function handleDocumentPaste(event: ClipboardEvent) {
+  if (!canHandleBoardSystemPaste()) return;
+  const target = event.target instanceof Element ? event.target : null;
+  if (target && target.closest('input, textarea, [contenteditable="true"]')) return;
+  const clipboard = event.clipboardData;
+  if (!clipboard) return;
+
+  const imageFile = findClipboardImageFileOnly(clipboard);
+  if (imageFile) {
+    event.preventDefault();
+    void pasteImageFileAsBoardNode(imageFile);
+    return;
+  }
+
+  const text = clipboard.getData('text/plain').trim();
+  if (!text) return;
+  event.preventDefault();
+  if (isSingleHttpUrl(text)) addPastedLinkNode(text);
+  else addPastedRichTextNode(text);
+}
+
+/** Fallback for ctrl+v handled by the graph keyboard binding (no native paste event). */
+async function readSystemClipboardIntoBoard() {
+  if (!graph || !isEditable.value || isMindmap.value) return;
+  if (editingNodeId.value != null || edgeInlineEditing.value) return;
+  if (!navigator.clipboard || typeof navigator.clipboard.read !== 'function') return;
+  try {
+    const items = await navigator.clipboard.read();
+    for (const item of items) {
+      const imageType = item.types.find((t) => t.startsWith('image/'));
+      if (imageType) {
+        const blob = await item.getType(imageType);
+        await pasteImageFileAsBoardNode(
+          new File([blob], `pasted-${Date.now()}`, { type: imageType }),
+        );
+        return;
+      }
+    }
+    const text = (await navigator.clipboard.readText().catch(() => '')).trim();
+    if (!text) return;
+    if (isSingleHttpUrl(text)) addPastedLinkNode(text);
+    else addPastedRichTextNode(text);
+  } catch {
+    // Clipboard read permission denied; ignore.
+  }
+}
+
+function loadImageNaturalSize(url: string): Promise<{ width: number; height: number }> {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => resolve({ width: img.naturalWidth, height: img.naturalHeight });
+    img.onerror = () => resolve({ width: 0, height: 0 });
+    img.src = url;
+  });
+}
+
+async function pasteImageFileAsBoardNode(file: File) {
+  if (!graph || !isEditable.value) return;
+  try {
+    const result = await uploadFile(file);
+    if (!graph) return;
+    const natural = await loadImageNaturalSize(result.url);
+    const maxWidth = 480;
+    let width = 320;
+    let height = 200;
+    if (natural.width > 0 && natural.height > 0) {
+      const scale = Math.min(1, maxWidth / natural.width);
+      width = Math.max(40, Math.round(natural.width * scale));
+      height = Math.max(40, Math.round(natural.height * scale));
+    }
+    const center = getCanvasCenter();
+    const node = graph.addNode({
+      shape: 'image',
+      x: center.x,
+      y: center.y,
+      width,
+      height,
+      attrs: { image: { xlinkHref: result.url, width, height } },
+      data: { preset: 'image', imageUrl: result.url },
+    });
+    graph.cleanSelection();
+    graph.select(node);
+    refreshSelectedCellState();
+    scheduleSync();
+  } catch (err) {
+    console.warn('[X6Component] 粘贴图片失败', err);
+  }
+}
+
+function addPastedLinkNode(url: string) {
+  if (!graph || !isEditable.value) return;
+  ensureBoardLinkShapeRegistered();
+  const center = getCanvasCenter();
+  const node = graph.addNode({
+    shape: BOARD_LINK_SHAPE,
+    x: center.x,
+    y: center.y,
+    width: 320,
+    height: 96,
+    data: { preset: 'linkCard', linkUrl: url, linkDisplay: 'link' },
+  });
+  graph.cleanSelection();
+  graph.select(node);
+  refreshSelectedCellState();
+  scheduleSync();
+}
+
+function addPastedRichTextNode(text: string) {
+  if (!graph || !isEditable.value) return;
+  const center = getCanvasCenter();
+  const meta = createNodeMetadata('rect', {
+    x: center.x,
+    y: center.y,
+    width: 320,
+    height: 180,
+    label: text,
+    data: { textMode: 'rich', richContent: text },
+  });
+  const node = graph.addNode(meta);
+  node.attr('label/visibility', 'hidden');
+  graph.cleanSelection();
+  graph.select(node);
+  refreshSelectedCellState();
+  updateNodeOverlays();
+  scheduleSync();
+}
+
+/** Switch the display mode of the selected pasted-link node (文档链接 toolbar 移植). */
+function updateSelectedLinkDisplay(mode: UrlDisplayMode) {
+  if (!graph || !isEditable.value) return;
+  const state = selectedCell.value;
+  if (!state || state.kind !== 'node' || !state.linkUrl) return;
+  const node = graph.getCellById(state.id) as Node | undefined;
+  if (!node) return;
+  node.setData({ linkDisplay: mode });
+  refreshSelectedCellState();
+  scheduleSync();
+}
+
 /** Extract selected cells as a reusable material and open the library panel. */
 function extractSelectionAsMaterial() {
   if (!graph || !props.blockActionsEnabled) return;
+  const g = graph;
+  // Group containers cannot be extracted as material; ungroup first.
+  if (g.getSelectedCells().some((cell) => g.isNode(cell) && isBoardGroupNode(cell as Node))) return;
   const rawData = buildMaterialGraphData();
   if (!rawData) return;
   const data = rawData as import('@/api/types').GraphData;
@@ -2330,15 +2883,6 @@ function syncToSource() {
   emit('sync-to-source', normalizeGraphData(serializeGraphData()));
 }
 
-function clearCanvas() {
-  if (!graph || !isEditable.value) return;
-  if (!window.confirm('确认清空当前图形吗？')) return;
-  graph.clearCells();
-  graph.cleanSelection();
-  refreshSelectedCellState();
-  scheduleSync();
-}
-
 function undo() {
   if (!graph || !canUndo.value) return;
   graph.undo();
@@ -2451,6 +2995,59 @@ function updateSelectedNodeSize(key: 'width' | 'height', rawValue: string) {
   if (isMindmap.value) {
     fitMindmapNodeToText(node);
   }
+  scheduleSync();
+}
+
+/** 将选中节点转换为另一种样式（矩形/圆角矩形/椭圆/菱形），保留文字、颜色、尺寸、连线与 id */
+function convertSelectedNodeStyle(preset: BoardNodeStylePreset) {
+  if (!graph || !isEditable.value) return;
+  const state = selectedCell.value;
+  if (!state || state.kind !== 'node' || state.preset === preset) return;
+  const oldNode = graph.getCellById(state.id);
+  if (!oldNode || !graph.isNode(oldNode)) return;
+
+  const position = oldNode.getPosition();
+  const size = oldNode.getSize();
+  const oldData = oldNode.getData<Record<string, any>>() ?? {};
+  const edgeSnapshots = graph.getConnectedEdges(oldNode).map((edge) => edge.toJSON());
+
+  const meta = createNodeMetadata(preset, {
+    id: oldNode.id,
+    x: position.x,
+    y: position.y,
+    width: size.width,
+    height: size.height,
+    label: getNodeLabel(oldNode),
+  });
+
+  // 保留用户已调整过的外观，不回退到新样式的默认配色
+  const bodyAttrs: Record<string, unknown> = {};
+  const bodyFill = oldNode.attr('body/fill');
+  if (typeof bodyFill === 'string') bodyAttrs.fill = bodyFill;
+  const bodyStroke = oldNode.attr('body/stroke');
+  if (typeof bodyStroke === 'string') bodyAttrs.stroke = bodyStroke;
+  const bodyStrokeWidth = oldNode.attr('body/strokeWidth');
+  if (typeof bodyStrokeWidth === 'number') bodyAttrs.strokeWidth = bodyStrokeWidth;
+  const labelFill = oldNode.attr('label/fill');
+  meta.attrs = mergeDeep(meta.attrs ?? {}, {
+    body: bodyAttrs,
+    ...(typeof labelFill === 'string' ? { label: { fill: labelFill } } : {}),
+  });
+  meta.data = { ...oldData, preset };
+  meta.zIndex = oldNode.getZIndex();
+  const oldPorts = oldNode.getPorts();
+  if (oldPorts?.length) meta.ports = oldPorts;
+
+  // X6 不支持修改既有节点的 shape，只能同 id 重建节点（连线从快照恢复）
+  graph.batchUpdate(() => {
+    graph!.removeCells([oldNode]);
+    const newNode = graph!.addNode(meta);
+    for (const edgeJson of edgeSnapshots) {
+      graph!.addEdge(edgeJson);
+    }
+    graph!.resetSelection([newNode]);
+  });
+  refreshSelectedCellState();
   scheduleSync();
 }
 
@@ -2608,6 +3205,10 @@ function editNodeLabel(node: Node) {
   if (!isEditable.value || !graph) return;
   emit('active');
   if (editingNodeId.value === node.id) return;
+  // Pasted image / link-card nodes have no inline label to edit.
+  if (isCustomPastedShape(node.shape)) return;
+  // Group containers carry no text content.
+  if (isBoardGroupNode(node)) return;
 
   const data = node.getData<Record<string, any>>() ?? {};
   if (data.textMode !== 'rich') {
@@ -2681,6 +3282,15 @@ function bindKeyboardShortcuts() {
   });
 
   graph.bindKey(['ctrl+v', 'meta+v'], () => {
+    if (!graph) return;
+    if (editingNodeId.value != null || edgeInlineEditing.value) {
+      return;
+    }
+    // 无选中元素且内部剪贴板为空时，从系统剪贴板粘贴（图片/链接/富文本）
+    if (!isMindmap.value && graph.getSelectedCells().length === 0 && graph.isClipboardEmpty()) {
+      void readSystemClipboardIntoBoard();
+      return false;
+    }
     pasteSelection();
     return false;
   });
@@ -2731,6 +3341,7 @@ function bindGraphEvents() {
   graph.on('node:mousedown', ({ node }) => {
     startUserInteraction();
     pendingNodeInternalClickId = null;
+    beginBoardGroupDrag(node);
 
     if (!isEditable.value) return;
 
@@ -2785,6 +3396,7 @@ function bindGraphEvents() {
   });
 
   graph.on('node:mouseup', () => {
+    endBoardGroupDrag();
     if (
       isMindmap.value
       && graph
@@ -2796,6 +3408,10 @@ function bindGraphEvents() {
       mindmapDragSessionStarted = false;
     }
     finishUserInteraction();
+  });
+
+  graph.on('node:change:position', ({ node }) => {
+    updateBoardGroupDrag(node, node.getPosition());
   });
 
   graph.on('node:moved', ({ node }) => {
@@ -2858,6 +3474,7 @@ function bindGraphEvents() {
 
   graph.on('blank:mouseup', () => {
     finishUserInteraction();
+    endBoardGroupDrag();
     pendingNodeInternalClickId = null;
   });
 
@@ -2878,12 +3495,33 @@ function bindGraphEvents() {
     scheduleHideMindmapCollapse();
   });
 
-  graph.on('node:click', ({ node }) => {
+  graph.on('node:click', ({ node, e }) => {
     const shouldHandleInternalClick = pendingNodeInternalClickId === node.id;
     pendingNodeInternalClickId = null;
 
     if (shouldHandleInternalClick) {
       tryHandleNodeInternalClick(node);
+    }
+
+    // Grouped members select their outermost group container on click;
+    // Alt+click bypasses the group and selects the member itself.
+    // Ctrl/⌘+click keeps its reserved multi-select meaning (member is toggled
+    // by X6's Selection plugin), so we skip the group redirect entirely.
+    if (!isMindmap.value && graph && !e.ctrlKey && !e.metaKey) {
+      const groupRoot = findBoardGroupRoot(node);
+      if (groupRoot !== node) {
+        if (e.altKey) {
+          // Keep the member (and any unrelated cells), but drop the group container.
+          const others = graph
+            .getSelectedCells()
+            .filter((cell) => cell.id !== groupRoot.id && cell.id !== node.id);
+          graph.resetSelection([...others, node]);
+        } else {
+          graph.resetSelection([groupRoot]);
+        }
+        finalizeSelectionVisualState();
+        return;
+      }
     }
 
     // Runs after Transform plugin's node:click handler (registered earlier in initGraph).
@@ -3029,6 +3667,8 @@ function initGraph() {
       validateConnection: ({ edge, sourceCell, targetCell, sourceMagnet, targetMagnet }) => {
         if (!isEditable.value) return false;
         if (!sourceCell || !targetCell || !sourceMagnet || !targetMagnet) return false;
+        if (graph?.isNode(sourceCell) && isBoardGroupNode(sourceCell)) return false;
+        if (graph?.isNode(targetCell) && isBoardGroupNode(targetCell)) return false;
         if (sourceCell.id === targetCell.id && sourceMagnet === targetMagnet) return false;
 
         if (isMindmap.value) {
@@ -3102,6 +3742,7 @@ function initGraph() {
     }),
   );
 
+  ensureBoardGroupShape();
   attachMindmapDirection(graph, props.graphData);
   bindKeyboardShortcuts();
   bindGraphEvents();
@@ -3121,9 +3762,19 @@ onMounted(() => {
         resizeGraph();
       });
       resizeObserver.observe(stageRef.value);
+      // 标记最近交互的画板 stage，用于多实例下的系统粘贴路由
+      stageRef.value.addEventListener('pointerdown', markStageActiveForBoardPaste);
+      stageRef.value.addEventListener('focusin', markStageActiveForBoardPaste);
     }
+    document.addEventListener('paste', handleDocumentPaste);
   });
 });
+
+function markStageActiveForBoardPaste() {
+  if (stageRef.value) {
+    markActiveX6Stage(stageRef.value);
+  }
+}
 
 onBeforeUnmount(() => {
   if (syncTimer !== null) {
@@ -3132,6 +3783,14 @@ onBeforeUnmount(() => {
   clearMindmapCollapseHideTimer();
   unbindStageCtrlWheel();
   unbindSpacePanListeners();
+  document.removeEventListener('paste', handleDocumentPaste);
+  if (stageRef.value) {
+    stageRef.value.removeEventListener('pointerdown', markStageActiveForBoardPaste);
+    stageRef.value.removeEventListener('focusin', markStageActiveForBoardPaste);
+  }
+  if (getActiveX6Stage() === stageRef.value) {
+    markActiveX6Stage(document.body);
+  }
   if (resizeObserver) {
     resizeObserver.disconnect();
     resizeObserver = null;
@@ -3205,7 +3864,7 @@ defineExpose({
       'x6-editor--fill': isFillLayout,
       'x6-editor--node-editing': isFillLayout && isNodeEditing,
       'x6-editor--mindmap': isMindmap,
-      'x6-editor--chrome-compact': isMindmap && !chromeBare,
+      'x6-editor--chrome-compact': !chromeBare,
       'x6-editor--chrome-bare': chromeBare,
       'x6-editor--readonly': !isEditable,
     }"
@@ -3410,10 +4069,11 @@ defineExpose({
         <button
           type="button"
           class="tool-button"
-          :class="{ 'tool-button--active': inspectorTab === 'library' }"
-          @click="inspectorTab = inspectorTab === 'library' ? 'inspector' : 'library'"
+          :disabled="!isEditable || groupActionButtonMode === ''"
+          :title="groupActionButtonMode === 'ungroup' ? '解散选中的组合（保留成员）' : '将选中的多个节点编为一组'"
+          @click="groupActionButtonMode === 'ungroup' ? ungroupSelection() : groupSelection()"
         >
-          素材库
+          {{ groupActionButtonMode === 'ungroup' ? '取消组合' : '组合' }}
         </button>
         <button type="button" class="tool-button" :disabled="!isEditable" @click="requestInsertRefBlock">
           插入引用块
@@ -3423,9 +4083,6 @@ defineExpose({
       <div class="toolbar-group toolbar-group--summary">
         <span class="toolbar-summary">{{ selectionSummary }}</span>
         <span class="toolbar-summary">{{ zoomPercent }}%</span>
-        <button type="button" class="tool-button tool-button--danger" :disabled="!isEditable" @click="clearCanvas">
-          清空
-        </button>
       </div>
     </div>
     <div
@@ -3600,10 +4257,129 @@ defineExpose({
           </template>
 
           <template v-else-if="selectedCellsCount > 1">
-            <p class="inspector-empty">当前选中了 {{ selectedCellsCount }} 个对象，可直接拖拽整体移动或批量删除。</p>
+            <p class="inspector-empty">当前选中了 {{ selectedCellsCount }} 个对象，可直接拖拽整体移动或批量删除。<template v-if="!isMindmap">工具栏「组合」可将它们编为一组。</template></p>
           </template>
 
           <template v-else-if="selectedCell?.kind === 'node'">
+            <p v-if="selectedCell.isGroup" class="inspector-empty">
+              当前选中的是组合容器（含 {{ selectedCell.groupSize }} 个成员）。单击成员会优先选中整个组合；Ctrl/Cmd + 单击成员可单独选中；工具栏「取消组合」可解散。
+            </p>
+            <div v-if="!selectedCell.linkUrl && !selectedCell.imageUrl" class="inspector-section">
+              <button
+                type="button"
+                class="inspector-section__toggle"
+                :aria-expanded="inspectorNodeStyleOpen"
+                @click="inspectorNodeStyleOpen = !inspectorNodeStyleOpen"
+              >
+                <svg
+                  class="inspector-section__caret"
+                  :class="{ 'inspector-section__caret--open': inspectorNodeStyleOpen }"
+                  viewBox="0 0 24 24"
+                  aria-hidden="true"
+                >
+                  <path
+                    d="M9 6l6 6-6 6"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2.4"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                  />
+                </svg>
+                <span class="inspector-section__title">样式</span>
+              </button>
+
+              <template v-if="inspectorNodeStyleOpen">
+            <label v-if="!isMindmap && selectedCell.preset && !selectedCell.isRefBlock" class="field">
+              <span>节点样式</span>
+              <select
+                :value="selectedCell.preset"
+                :disabled="!isEditable"
+                @change="convertSelectedNodeStyle(($event.target as HTMLSelectElement).value as BoardNodeStylePreset)"
+              >
+                <option value="rect">矩形</option>
+                <option value="round">圆角矩形</option>
+                <option value="ellipse">椭圆</option>
+                <option value="diamond">菱形</option>
+              </select>
+            </label>
+
+            <div class="field-row">
+              <label class="field">
+                <span>填充色</span>
+                <input
+                  type="color"
+                  :value="selectedCell.fill"
+                  :disabled="!isEditable"
+                  @input="updateSelectedNodeFill(($event.target as HTMLInputElement).value)"
+                />
+              </label>
+
+              <label class="field">
+                <span>边框色</span>
+                <input
+                  type="color"
+                  :value="selectedCell.stroke"
+                  :disabled="!isEditable"
+                  @input="updateSelectedNodeStroke(($event.target as HTMLInputElement).value)"
+                />
+              </label>
+            </div>
+
+            <div class="field-row">
+              <label class="field">
+                <span>宽度</span>
+                <input
+                  type="number"
+                  min="40"
+                  :value="selectedCell.width"
+                  :disabled="!isEditable"
+                  @change="updateSelectedNodeSize('width', ($event.target as HTMLInputElement).value)"
+                />
+              </label>
+
+              <label class="field">
+                <span>高度</span>
+                <input
+                  type="number"
+                  min="40"
+                  :value="selectedCell.height"
+                  :disabled="!isEditable"
+                  @change="updateSelectedNodeSize('height', ($event.target as HTMLInputElement).value)"
+                />
+              </label>
+            </div>
+
+            <p class="field-meta">形状类型: {{ selectedCell.shape }}</p>
+              </template>
+            </div>
+
+            <div class="inspector-section">
+              <button
+                type="button"
+                class="inspector-section__toggle"
+                :aria-expanded="inspectorNodeContentOpen"
+                @click="inspectorNodeContentOpen = !inspectorNodeContentOpen"
+              >
+                <svg
+                  class="inspector-section__caret"
+                  :class="{ 'inspector-section__caret--open': inspectorNodeContentOpen }"
+                  viewBox="0 0 24 24"
+                  aria-hidden="true"
+                >
+                  <path
+                    d="M9 6l6 6-6 6"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2.4"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                  />
+                </svg>
+                <span class="inspector-section__title">内容</span>
+              </button>
+
+              <template v-if="inspectorNodeContentOpen">
             <div v-if="selectedCell.isRefBlock" class="field">
               <span>源</span>
               <div class="inspector-source-row">
@@ -3683,7 +4459,21 @@ defineExpose({
               </button>
             </div>
 
-            <label v-if="!selectedCell.isRefBlock" class="field">
+            <div v-if="selectedCell.linkUrl" class="field">
+              <span>链接展示形式</span>
+              <LinkPresentationModeBar
+                :href="selectedCell.linkUrl"
+                :current-mode="selectedCell.linkDisplay"
+                :extra-modes="['image']"
+                :disabled="!isEditable"
+                @select-mode="updateSelectedLinkDisplay"
+              />
+            </div>
+
+            <label
+              v-if="!selectedCell.isRefBlock && !selectedCell.linkUrl && !selectedCell.imageUrl"
+              class="field"
+            >
               <span>文字模式</span>
               <select
                 :value="selectedCell.textMode"
@@ -3695,7 +4485,9 @@ defineExpose({
               </select>
             </label>
 
-            <template v-if="!selectedCell.isRefBlock && selectedCell.textMode === 'plain'">
+            <template
+              v-if="!selectedCell.isRefBlock && !selectedCell.linkUrl && !selectedCell.imageUrl && selectedCell.textMode === 'plain'"
+            >
               <label class="field">
                 <span>文字</span>
                 <input
@@ -3706,60 +4498,14 @@ defineExpose({
                 />
               </label>
             </template>
-            <template v-else-if="!selectedCell.isRefBlock">
+            <template
+              v-else-if="!selectedCell.isRefBlock && !selectedCell.linkUrl && !selectedCell.imageUrl"
+            >
               <p class="inspector-empty" style="font-size:12px;">双击节点可直接编辑富文本</p>
             </template>
 
-            <div class="field-row">
-              <label class="field">
-                <span>填充色</span>
-                <input
-                  type="color"
-                  :value="selectedCell.fill"
-                  :disabled="!isEditable"
-                  @input="updateSelectedNodeFill(($event.target as HTMLInputElement).value)"
-                />
-              </label>
-
-              <label class="field">
-                <span>边框色</span>
-                <input
-                  type="color"
-                  :value="selectedCell.stroke"
-                  :disabled="!isEditable"
-                  @input="updateSelectedNodeStroke(($event.target as HTMLInputElement).value)"
-                />
-              </label>
-            </div>
-
-            <div class="field-row">
-              <label class="field">
-                <span>宽度</span>
-                <input
-                  type="number"
-                  min="40"
-                  :value="selectedCell.width"
-                  :disabled="!isEditable"
-                  @change="updateSelectedNodeSize('width', ($event.target as HTMLInputElement).value)"
-                />
-              </label>
-
-              <label class="field">
-                <span>高度</span>
-                <input
-                  type="number"
-                  min="40"
-                  :value="selectedCell.height"
-                  :disabled="!isEditable"
-                  @change="updateSelectedNodeSize('height', ($event.target as HTMLInputElement).value)"
-                />
-              </label>
-            </div>
-
-            <p class="field-meta">形状类型: {{ selectedCell.shape }}</p>
-
             <div v-if="!selectedCell.isRefBlock" class="field x6-cell-content-field">
-              <span>内容</span>
+              <span>内容绑定</span>
               <X6CellContentPanel
                 :cell-id="selectedCell.id"
                 cell-kind="node"
@@ -3769,6 +4515,8 @@ defineExpose({
                 :current-page-id="workspaceStore.currentPageId"
                 @update:binding="updateSelectedCellContentBinding"
               />
+            </div>
+              </template>
             </div>
           </template>
 
@@ -3893,35 +4641,52 @@ defineExpose({
 }
 
 .x6-editor--chrome-compact .x6-toolbar {
-  gap: 6px;
-  padding: 4px 8px;
+  gap: 4px;
+  padding: 2px 6px;
 }
 
 .x6-editor--chrome-compact .toolbar-group {
-  gap: 4px;
+  gap: 2px;
 }
 
 .x6-editor--chrome-compact .tool-button {
-  padding: 3px 8px;
+  padding: 2px 5px;
+  border: none;
   border-radius: 6px;
-  font-size: 12px;
+  font-size: 14px;
   font-weight: 600;
 }
 
 .x6-editor--chrome-compact .tool-button--icon {
-  padding: 3px 4px;
-  min-width: 26px;
-  font-size: 13px;
+  padding: 2px 3px;
+  min-width: 0;
+  font-size: 15px;
+}
+
+.x6-editor--chrome-compact .tool-button--shape {
+  gap: 1px;
+  padding: 2px 4px;
+  min-width: 0;
+  border-radius: 6px;
+}
+
+.x6-editor--chrome-compact .tool-button__icon {
+  width: 26px;
+  height: 26px;
+}
+
+.x6-editor--chrome-compact .tool-button__label {
+  font-size: 11px;
 }
 
 .x6-editor--chrome-compact .tool-button--mode {
-  min-width: 28px;
-  padding: 3px;
+  min-width: 0;
+  padding: 2px;
 }
 
 .x6-editor--chrome-compact .tool-button__mode-icon {
-  width: 14px;
-  height: 14px;
+  width: 16px;
+  height: 16px;
 }
 
 .x6-editor--chrome-compact .toolbar-group--interaction {
@@ -3930,7 +4695,8 @@ defineExpose({
 }
 
 .x6-editor--chrome-compact .toolbar-summary {
-  font-size: 11px;
+  font-size: 12px;
+  padding: 0 2px;
 }
 
 .x6-editor--mindmap .x6-workspace {
@@ -4532,6 +5298,50 @@ defineExpose({
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 10px;
+}
+
+.inspector-section {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.inspector-section + .inspector-section {
+  padding-top: 12px;
+  border-top: 1px dashed #e3e7ef;
+}
+
+.inspector-section__toggle {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0;
+  border: none;
+  background: none;
+  cursor: pointer;
+  font: inherit;
+}
+
+.inspector-section__caret {
+  width: 12px;
+  height: 12px;
+  flex-shrink: 0;
+  color: #9ca3af;
+  transition: transform 0.15s ease;
+}
+
+.inspector-section__caret--open {
+  transform: rotate(90deg);
+}
+
+.inspector-section__title {
+  font-size: 12px;
+  font-weight: 600;
+  color: #6b7280;
+}
+
+.inspector-section__toggle:hover .inspector-section__title {
+  color: #374151;
 }
 
 .inspector-source-row {

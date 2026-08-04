@@ -34,11 +34,16 @@ import {
   updateResourceWork,
   updateUrlClusterRule,
   fetchResourcePageTitle,
+  fetchResourceCrawledDocument,
+  crawlResourceWebPage,
+  deleteResourceCrawledDocument,
   supportsResourceExcerpts,
   supportsBookChapters,
+  supportsContentCrawling,
   WEB_LINK_RESOURCE_TYPE_CODE,
   DOCUMENT_RESOURCE_TYPE_CODE,
   type ResourceChapter,
+  type ResourceCrawledDocument,
   type ResourceExcerpt,
   type ResourceItem,
   type ResourceItemRelation,
@@ -76,6 +81,7 @@ import { useObjectModelStore } from '@/stores/objectModel';
 import { useWorkspaceStore } from '@/stores/workspace';
 import TreeListPanel from '@/components/tree/TreeListPanel.vue';
 import ResourcePositionLocatorField from '@/components/ResourcePositionLocatorField.vue';
+import ResourceCrawledDocumentDialog from '@/components/resource/ResourceCrawledDocumentDialog.vue';
 import { ElTree } from 'element-plus';
 import { topmostSelectedIds } from '@/utils/listSelection';
 import {
@@ -345,6 +351,15 @@ const itemFormType = computed(() => allTypes.value.find((type) => type.id === it
 const typeById = computed(() => new Map(allTypes.value.map((type) => [type.id, type])));
 const visibleResourceTypes = computed(() => allTypes.value.filter((type) => type.code !== WEB_LINK_RESOURCE_TYPE_CODE));
 const visibleResourceTypeIds = computed(() => new Set(visibleResourceTypes.value.map((type) => type.id)));
+/** 顶部类型筛选需覆盖网络链接类型（web-link 实体仅在选择该类型时显示，提供网页内容入口）。 */
+const typeFilterOptions = computed(() => allTypes.value);
+/** 实体表单类型选项：编辑 web-link 实体时保留当前类型，避免下拉框无匹配项。 */
+const itemFormTypeOptions = computed(() => {
+  if (itemForm.id && itemFormType.value?.code === WEB_LINK_RESOURCE_TYPE_CODE) {
+    return allTypes.value;
+  }
+  return visibleResourceTypes.value;
+});
 const worksForFilter = computed(() => {
   const visibleWorks = allWorks.value.filter((work) => visibleResourceTypeIds.value.has(work.typeId));
   if (!selectedTypeId.value) return visibleWorks;
@@ -1313,7 +1328,15 @@ async function refreshItems() {
       page: itemsPage.value,
       pageSize: DEFAULT_PAGE_SIZE,
     });
-    const visibleItems = result.items.filter((item) => visibleResourceTypeIds.value.has(item.typeId));
+    const selectedTypeCode = typeById.value.get(selectedTypeId.value)?.code;
+    const visibleItems = result.items.filter((item) => {
+      const typeCode = typeById.value.get(item.typeId)?.code;
+      if (typeCode !== WEB_LINK_RESOURCE_TYPE_CODE) {
+        return visibleResourceTypeIds.value.has(item.typeId);
+      }
+      // web-link 实体默认隐藏（由插入链接自动登记），仅在按网络链接类型筛选时显示
+      return selectedTypeCode === WEB_LINK_RESOURCE_TYPE_CODE;
+    });
     items.value = visibleItems;
     itemsTotal.value = Math.max(0, result.total - (result.items.length - visibleItems.length));
     itemsPage.value = result.page;
@@ -1966,6 +1989,98 @@ async function removeItemRelation(relation: ResourceItemRelation) {
   }
 }
 
+const crawledDoc = ref<ResourceCrawledDocument | null>(null);
+const crawledDocLoading = ref(false);
+const crawledDocCrawling = ref(false);
+const crawledDocDialogVisible = ref(false);
+
+async function loadCrawledDocument(itemId: string) {
+  crawledDoc.value = null;
+  crawledDocLoading.value = true;
+  try {
+    crawledDoc.value = (await fetchResourceCrawledDocument(itemId)) ?? null;
+  } catch (error) {
+    showError(error);
+    crawledDoc.value = null;
+  } finally {
+    crawledDocLoading.value = false;
+  }
+}
+
+async function crawlWebPage() {
+  if (!itemForm.id || crawledDocCrawling.value) return;
+  crawledDocCrawling.value = true;
+  try {
+    crawledDoc.value = (await crawlResourceWebPage(itemForm.id)) ?? null;
+    showSuccess('网页内容已爬取');
+  } catch (error) {
+    showError(error);
+  } finally {
+    crawledDocCrawling.value = false;
+  }
+}
+
+async function removeCrawledDocument() {
+  if (!itemForm.id) return;
+  try {
+    await confirmAction('确定删除已爬取的网页内容？', '删除网页内容');
+    await deleteResourceCrawledDocument(itemForm.id);
+    crawledDoc.value = null;
+    showSuccess('网页内容已删除');
+  } catch (error) {
+    showError(error);
+  }
+}
+
+/** 实体行直接入口：逐行爬取 loading 与查看弹窗（复用 crawledDocDialogVisible）。 */
+const rowCrawlingIds = ref(new Set<string>());
+
+/** web-link 实体或标识为 http(s) 网址的实体（如 document）支持爬取网页内容。 */
+function itemSupportsCrawling(item: ResourceItem): boolean {
+  return supportsContentCrawling(typeById.value.get(item.typeId)?.code, item.sourceUrl, item.identityValue);
+}
+
+const itemFormSupportsCrawling = computed(() => (
+  itemForm.id
+    ? supportsContentCrawling(itemFormType.value?.code, itemForm.sourceUrl, itemForm.identityValue)
+    : false
+));
+
+async function crawlItemFromRow(item: ResourceItem) {
+  if (!itemSupportsCrawling(item) || rowCrawlingIds.value.has(item.id)) return;
+  const next = new Set(rowCrawlingIds.value);
+  next.add(item.id);
+  rowCrawlingIds.value = next;
+  try {
+    const doc = (await crawlResourceWebPage(item.id)) ?? null;
+    if (itemForm.id === item.id) {
+      crawledDoc.value = doc;
+    }
+    showSuccess('内容已爬取');
+  } catch (error) {
+    showError(error);
+  } finally {
+    const done = new Set(rowCrawlingIds.value);
+    done.delete(item.id);
+    rowCrawlingIds.value = done;
+  }
+}
+
+async function viewCrawledContentFromRow(item: ResourceItem) {
+  if (!itemSupportsCrawling(item)) return;
+  try {
+    const doc = (await fetchResourceCrawledDocument(item.id)) ?? null;
+    if (!doc) {
+      ElMessage.warning('尚未爬取内容，请先点击「爬取内容」');
+      return;
+    }
+    crawledDoc.value = doc;
+    crawledDocDialogVisible.value = true;
+  } catch (error) {
+    showError(error);
+  }
+}
+
 function openCreateItem() {
   resetItemForm();
   itemRelations.value = [];
@@ -1981,6 +2096,10 @@ function clearItemPanel() {
   relationForm.toItemId = '';
   relationForm.note = '';
   relationForm.relationType = 'translation';
+  crawledDoc.value = null;
+  crawledDocLoading.value = false;
+  crawledDocCrawling.value = false;
+  crawledDocDialogVisible.value = false;
 }
 
 function editItem(item: ResourceItem) {
@@ -2001,6 +2120,9 @@ function editItem(item: ResourceItem) {
   activeTab.value = 'items';
   itemPanelVisible.value = true;
   void loadItemRelations(item.id);
+  if (typeById.value.get(item.typeId)?.code === WEB_LINK_RESOURCE_TYPE_CODE) {
+    void loadCrawledDocument(item.id);
+  }
 }
 
 function openLinkWorkDialog(item: ResourceItem) {
@@ -2536,7 +2658,7 @@ watch(
         <el-form-item label="类型">
           <el-select v-model="selectedTypeId" clearable placeholder="全部类型" style="width: 200px" @change="onTypeFilterChange">
             <el-option
-              v-for="type in visibleResourceTypes"
+              v-for="type in typeFilterOptions"
               :key="type.id"
               :label="`${type.icon || '·'} ${type.name}`"
               :value="type.id"
@@ -2902,6 +3024,8 @@ watch(
                 <el-space v-else wrap>
                   <el-button v-if="supportsBookChapterItem(row)" size="small" @click.stop="openChapterPanel(row)">章节</el-button>
                   <el-button v-if="supportsExcerptItem(row)" size="small" @click.stop="openExcerptPanel(row)">节选</el-button>
+                  <el-button v-if="itemSupportsCrawling(row)" size="small" :loading="rowCrawlingIds.has(row.id)" @click.stop="crawlItemFromRow(row)">爬取内容</el-button>
+                  <el-button v-if="itemSupportsCrawling(row)" size="small" @click.stop="viewCrawledContentFromRow(row)">查看内容</el-button>
                   <el-button size="small" @click.stop="editItem(row)">编辑</el-button>
                   <el-button size="small" @click.stop="openLinkWorkDialog(row)">关联归类</el-button>
                   <el-button size="small" @click.stop="resetItemAuto(row)">重置自动</el-button>
@@ -3346,7 +3470,7 @@ watch(
         <el-form class="item-form resource-form" label-position="top" @submit.prevent="saveItem">
           <el-form-item label="类型" required>
             <el-select v-model="itemForm.typeId" placeholder="选择类型" style="width: 100%" @change="itemForm.workId = ''">
-              <el-option v-for="type in visibleResourceTypes" :key="type.id" :label="type.name" :value="type.id" />
+              <el-option v-for="type in itemFormTypeOptions" :key="type.id" :label="type.name" :value="type.id" />
             </el-select>
           </el-form-item>
           <el-form-item label="归类 Work">
@@ -3436,6 +3560,21 @@ watch(
             <el-input v-model="itemForm.note" type="textarea" :rows="4" maxlength="1024" />
           </el-form-item>
           <template v-if="itemForm.id">
+            <template v-if="itemFormSupportsCrawling">
+              <el-divider content-position="left">网页内容</el-divider>
+              <div v-loading="crawledDocLoading" class="crawled-doc-section">
+                <p class="crawled-doc-section__meta">
+                  {{ crawledDoc ? `上次爬取：${formatDateTime(crawledDoc.crawledAt || '')}` : '尚未爬取' }}
+                </p>
+                <el-space wrap>
+                  <el-button type="primary" :loading="crawledDocCrawling" @click="crawlWebPage">
+                    {{ crawledDoc ? '重新爬取' : '爬取网页' }}
+                  </el-button>
+                  <el-button :disabled="!crawledDoc || crawledDocCrawling" @click="crawledDocDialogVisible = true">查看</el-button>
+                  <el-button type="danger" plain :disabled="!crawledDoc || crawledDocCrawling" @click="removeCrawledDocument">删除</el-button>
+                </el-space>
+              </div>
+            </template>
             <el-divider content-position="left">实体关系</el-divider>
             <el-table :data="itemRelations" size="small" empty-text="暂无关系">
               <el-table-column label="关系" width="100" prop="relationType" />
@@ -3471,6 +3610,11 @@ watch(
         </el-form>
       </div>
     </el-dialog>
+
+    <ResourceCrawledDocumentDialog
+      v-model="crawledDocDialogVisible"
+      :doc="crawledDoc"
+    />
 
     <el-dialog
       v-model="excerptPanelVisible"
@@ -4693,5 +4837,18 @@ watch(
   .identity-field-row {
     grid-template-columns: 1fr;
   }
+}
+
+.crawled-doc-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 4px 0 8px;
+}
+
+.crawled-doc-section__meta {
+  margin: 0;
+  font-size: 12px;
+  color: #64748b;
 }
 </style>

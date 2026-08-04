@@ -62,3 +62,7 @@ npm run test:e2e
 AI Agent 的 OpenAI-compatible 接入信息完全在 `系统设置` 页面（`AI` 模块）管理。后端会把 API Key 写入通用密钥库并使用应用级 AES-GCM 加密；本地开发使用后端配置文件中的开发默认加密密钥，生产部署应通过 `TU_SECRET_ENCRYPTION_KEY` 覆盖。
 
 `系统设置` 页面的 `AI` 模块还会展示 `Agent 记录`：学习计划等业务型 AI 生成会记录完整 system/user prompt、请求体、原始响应、解析输出、耗时和模型返回的 token usage；连接测试不会写入记录。mock 数据源下生成学习计划也会写入本地 mock 记录，便于调试页面展示。`系统设置` 的 `编辑器` 模块提供「文本选择工具栏」等编辑器开关，通过 `GET/PUT /api/editor-preferences` 持久化。
+
+## 资源管理：网页内容爬取
+
+网络链接（web-link）类型资源实体的属性面板提供「网页内容」区块：可爬取源 URL 正文（后端经 tu-rag-service 的 Playwright 渲染抓取并转 Markdown）、重新爬取覆盖、弹窗只读查看与删除。爬取结果独立存储于 `resource_crawled_document`，不创建知识库页面；删除资源实体时级联清空。backend 模式依赖 `CRAWL_SERVICE_URL`（默认 http://localhost:19080）；mock 模式在本地存储中合成示例文档。

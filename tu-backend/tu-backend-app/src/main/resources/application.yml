@@ -59,6 +59,12 @@ rag:
   enabled: ${RAG_ENABLED:true}
   service-url: ${RAG_SERVICE_URL:http://localhost:19080}
 
+crawl:
+  enabled: ${CRAWL_ENABLED:true}
+  service-url: ${CRAWL_SERVICE_URL:http://localhost:19080}
+  # Must exceed the Python-side crawl timeout (CRAWL_TIMEOUT_SECONDS, default 45s).
+  timeout: ${CRAWL_TIMEOUT:120s}
+
 integration:
   service-url: ${INTEGRATION_SERVICE_URL:http://localhost:18100}
 

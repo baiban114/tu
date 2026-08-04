@@ -1,14 +1,36 @@
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from urllib.parse import urlparse
+
 from fastapi import FastAPI, HTTPException
 
+from .crawler import CrawlError, page_crawler
 from .embedding import embed_text
 from .qdrant import QdrantStore, point_id
-from .schemas import RagDeleteRequest, RagIndexRequest, RagQueryRequest, RagQueryResponse, RagSource
+from .schemas import (
+    CrawlRequest,
+    CrawlResponse,
+    RagDeleteRequest,
+    RagIndexRequest,
+    RagQueryRequest,
+    RagQueryResponse,
+    RagSource,
+)
 from .settings import settings
 from .text import chunk_text, source_excerpt
 
-app = FastAPI(title="tu-rag-service")
+
+@asynccontextmanager
+async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+    try:
+        yield
+    finally:
+        await page_crawler.close()
+
+
+app = FastAPI(title="tu-rag-service", lifespan=lifespan)
 store = QdrantStore(settings.qdrant_url, settings.qdrant_collection, settings.vector_size)
 
 
@@ -82,3 +104,27 @@ async def query(request: RagQueryRequest) -> RagQueryResponse:
         title = source.title or source.blockId
         answer_lines.append(f"{idx}. {title}: {source_excerpt(source.content)}")
     return RagQueryResponse(answer="\n".join(answer_lines), sources=sources)
+
+
+@app.post("/internal/crawl/fetch", response_model=CrawlResponse)
+async def crawl_fetch(request: CrawlRequest) -> CrawlResponse:
+    url = request.url.strip()
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise HTTPException(status_code=422, detail="仅支持 http/https 链接")
+
+    timeout_seconds = request.timeoutSeconds or settings.crawl_timeout_seconds
+    try:
+        result = await page_crawler.fetch_markdown(url, timeout_seconds, settings.crawl_max_markdown_chars)
+    except CrawlError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
+    return CrawlResponse(
+        status=result.status,
+        finalUrl=result.final_url,
+        title=result.title,
+        markdown=result.markdown,
+        charCount=result.char_count,
+        truncated=result.truncated,
+        crawledAt=result.crawled_at,
+    )

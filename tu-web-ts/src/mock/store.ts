@@ -52,6 +52,7 @@ import type {
   ResourceExcerpt,
   ResourcePdfRegionNote,
   ResourceChapter,
+  ResourceCrawledDocument,
   ResourceItem,
   ResourceItemRelation,
   ResourceType,
@@ -84,6 +85,7 @@ interface MockState {
   resourceItems: ResourceItem[];
   resourceChapters: ResourceChapter[];
   resourceExcerpts: ResourceExcerpt[];
+  resourceCrawledDocuments: ResourceCrawledDocument[];
   resourcePdfRegionNotes: ResourcePdfRegionNote[];
   urlClusterRules: UrlClusterRule[];
   resourceItemRelations: ResourceItemRelation[];
@@ -348,6 +350,7 @@ const initialState: MockState = {
       sortOrder: 1,
     },
   ],
+  resourceCrawledDocuments: [],
   resourcePdfRegionNotes: [],
   contentTreeHours: {},
 };
@@ -378,6 +381,9 @@ function loadState(): MockState {
       resourceItems: Array.isArray(parsed.resourceItems) ? parsed.resourceItems : cloneState(initialState.resourceItems),
       resourceChapters: Array.isArray(parsed.resourceChapters) ? parsed.resourceChapters : cloneState(initialState.resourceChapters),
       resourceExcerpts: Array.isArray(parsed.resourceExcerpts) ? parsed.resourceExcerpts : cloneState(initialState.resourceExcerpts),
+      resourceCrawledDocuments: Array.isArray(parsed.resourceCrawledDocuments)
+        ? parsed.resourceCrawledDocuments
+        : cloneState(initialState.resourceCrawledDocuments),
       resourcePdfRegionNotes: Array.isArray(parsed.resourcePdfRegionNotes)
         ? parsed.resourcePdfRegionNotes
         : cloneState(initialState.resourcePdfRegionNotes),
@@ -1021,8 +1027,71 @@ export function removeResourceItemMock(id: string): void {
   state.resourceChapters = state.resourceChapters.filter((chapter) => chapter.resourceItemId !== id);
   state.resourceExcerpts = state.resourceExcerpts.filter((excerpt) => excerpt.resourceItemId !== id);
   state.resourcePdfRegionNotes = state.resourcePdfRegionNotes.filter((note) => note.resourceItemId !== id);
+  state.resourceCrawledDocuments = state.resourceCrawledDocuments.filter(
+    (doc) => doc.resourceItemId !== id,
+  );
   state.resourceItemRelations = state.resourceItemRelations.filter(
     (relation) => relation.fromItemId !== id && relation.toItemId !== id,
+  );
+  persistState();
+}
+
+export function fetchResourceCrawledDocumentMock(resourceItemId: string): ResourceCrawledDocument | null {
+  const doc = state.resourceCrawledDocuments.find((item) => item.resourceItemId === resourceItemId);
+  return doc ? cloneState(doc) : null;
+}
+
+export function crawlResourceWebPageMock(resourceItemId: string): ResourceCrawledDocument {
+  const item = state.resourceItems.find((candidate) => candidate.id === resourceItemId);
+  if (!item) throw new Error(`Resource item not found: ${resourceItemId}`);
+  const type = getResourceTypeOrThrow(item.typeId);
+  const sourceUrl = (item.sourceUrl ?? item.identityValue ?? '').trim();
+  if (type.code !== 'web-link' && !/^https?:\/\//i.test(sourceUrl)) {
+    throw new Error('Crawled documents require a web-link resource or a valid http(s) url');
+  }
+  if (!sourceUrl) throw new Error('Resource item source URL required');
+
+  const now = new Date().toISOString();
+  const existing = state.resourceCrawledDocuments.find(
+    (candidate) => candidate.resourceItemId === resourceItemId,
+  );
+  const doc: ResourceCrawledDocument = existing ?? {
+    id: nextId('rcd'),
+    resourceItemId,
+    sourceUrl,
+    title: item.title,
+    content: '',
+    crawledAt: now,
+    updatedAt: now,
+  };
+  doc.sourceUrl = sourceUrl;
+  doc.title = item.title;
+  doc.crawledAt = now;
+  doc.updatedAt = now;
+  doc.content = [
+    `# ${item.title}`,
+    '',
+    `> 来源：${sourceUrl}`,
+    '',
+    '这是 mock 模式合成的网页内容示例，真实环境由 Playwright 爬取页面并转换为 Markdown。',
+    '',
+    '## 段落示例',
+    '',
+    '- 列表项一：正文提取保留链接与表格；',
+    '- 列表项二：图片、字体、视频在爬取时被拦截以提速。',
+    '',
+    '```text',
+    'const demo = "crawled-markdown";',
+    '```',
+  ].join('\n');
+  if (!existing) state.resourceCrawledDocuments.push(doc);
+  persistState();
+  return cloneState(doc);
+}
+
+export function deleteResourceCrawledDocumentMock(resourceItemId: string): void {
+  state.resourceCrawledDocuments = state.resourceCrawledDocuments.filter(
+    (doc) => doc.resourceItemId !== resourceItemId,
   );
   persistState();
 }

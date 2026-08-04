@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import type { JSONContent } from '@tiptap/core'
 import { ElMessage } from 'element-plus'
 import TuEditor from '@/components/TuEditor.vue'
+import ExpandedDocumentDialog from '@/components/ExpandedDocumentDialog.vue'
 import BlockPicker from '@/components/BlockPicker.vue'
 import type { ReferenceTarget } from '@/components/BlockPicker.vue'
 import type { PageContent, PageItem, TextAnnotation } from '@/api/types'
@@ -51,6 +52,19 @@ const boundLabel = computed(() => {
     || props.binding.boundPageId
     || '已绑定文档'
 })
+
+const showExpandedDialog = ref(false)
+/** Enlarged dialog banner title — mirrors the resource-document window banner. */
+const expandedTitle = computed(() => (bound.value
+  ? (props.binding.boundPageTitle?.trim() || props.binding.boundPageId || '已绑定文档')
+  : `${subjectNoun.value}内容`))
+const expandedTag = computed(() => (bound.value ? '绑定文档' : '画板内容'))
+const expandedEditTag = computed(() => (props.editable ? '可编辑' : '只读'))
+
+function openExpandedDialog() {
+  if (loading.value || loadError.value) return
+  showExpandedDialog.value = true
+}
 
 function clearSaveTimer() {
   if (saveTimer != null) {
@@ -241,6 +255,19 @@ onBeforeUnmount(() => {
       </p>
     </div>
 
+    <div class="x6-cell-content__pane-toolbar">
+      <span class="x6-cell-content__pane-label">{{ subjectNoun }}内容编辑器</span>
+      <button
+        type="button"
+        class="x6-cell-content__bind-btn"
+        :disabled="loading || !!loadError"
+        title="以文档大窗口展示该内容"
+        @click="openExpandedDialog"
+      >
+        放大
+      </button>
+    </div>
+
     <div class="x6-cell-content__editor-pane">
       <div
         v-if="loading"
@@ -253,6 +280,19 @@ onBeforeUnmount(() => {
         class="x6-cell-content__placeholder x6-cell-content__placeholder--error"
       >
         {{ loadError }}
+      </div>
+      <div
+        v-else-if="showExpandedDialog"
+        class="x6-cell-content__placeholder x6-cell-content__placeholder--column"
+      >
+        <span>已在放大窗口中展示</span>
+        <button
+          type="button"
+          class="x6-cell-content__bind-btn"
+          @click="showExpandedDialog = false"
+        >
+          返回小窗
+        </button>
       </div>
       <TuEditor
         v-else
@@ -271,6 +311,19 @@ onBeforeUnmount(() => {
       :current-page-id="currentPageId"
       @update:visible="showPagePicker = $event"
       @select="onPagePickerSelect"
+    />
+
+    <ExpandedDocumentDialog
+      v-model:visible="showExpandedDialog"
+      :title="expandedTitle"
+      :dialog-title="`${subjectNoun}内容`"
+      :tags="[expandedTag, expandedEditTag]"
+      :document="editorDocument"
+      :editable="editable"
+      :loading="loading"
+      :error="loadError"
+      :editor-key="`expanded:${cellId}:${binding.boundPageId || 'abstract'}`"
+      @content-change="onDocumentChange"
     />
   </div>
 </template>
@@ -341,6 +394,19 @@ onBeforeUnmount(() => {
   color: #94a3b8;
 }
 
+.x6-cell-content__pane-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.x6-cell-content__pane-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: #64748b;
+}
+
 .x6-cell-content__editor-pane {
   height: 220px;
   min-height: 220px;
@@ -366,6 +432,11 @@ onBeforeUnmount(() => {
 
 .x6-cell-content__placeholder--error {
   color: #b91c1c;
+}
+
+.x6-cell-content__placeholder--column {
+  flex-direction: column;
+  gap: 8px;
 }
 
 .x6-cell-content__editor {

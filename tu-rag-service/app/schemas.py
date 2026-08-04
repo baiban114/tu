@@ -47,3 +47,18 @@ class RagSource(BaseModel):
 class RagQueryResponse(BaseModel):
     answer: str
     sources: list[RagSource] = Field(default_factory=list)
+
+
+class CrawlRequest(BaseModel):
+    url: str
+    timeoutSeconds: int | None = None
+
+
+class CrawlResponse(BaseModel):
+    status: int
+    finalUrl: str
+    title: str
+    markdown: str
+    charCount: int
+    truncated: bool
+    crawledAt: str
