@@ -199,10 +199,15 @@ test('group/ungroup wraps multi-selected nodes and member clicks prefer the grou
   await expect(groupContainer).toHaveClass(/x6-node-selected/)
   await expect(page.locator('.x6-inspector').getByText('当前选中的是组合容器（含 2 个成员）')).toBeVisible()
 
-  // 单击组内成员 → 优先选中最外层组合容器
+  // 选中组合后再点其中的成员 → 钻取选中该成员本身
   await startNode.click()
+  await expect(startNode).toHaveClass(/x6-node-selected/)
+  await expect(groupContainer).not.toHaveClass(/x6-node-selected/)
+
+  // 组合未选中时单击成员 → 优先选中最外层组合容器
+  await processNode.click()
   await expect(groupContainer).toHaveClass(/x6-node-selected/)
-  await expect(startNode).not.toHaveClass(/x6-node-selected/)
+  await expect(processNode).not.toHaveClass(/x6-node-selected/)
 
   // Alt+单击成员 → 仅选中该成员，组合容器退出选区（Ctrl+单击保留给多选）
   await startNode.click({ modifiers: ['Alt'] })
@@ -256,7 +261,7 @@ test('dragging a solo-selected member moves only it; dragging the selected group
   await groupButton.click()
   await expect(groupContainer).toHaveCount(1)
 
-  // Alt+单击选中单个成员 → 单独拖动它，组合容器保持不动
+  // Alt+单击选中单个成员 → 单独拖动它，边框随成员收束，其余成员不动
   await page.locator(startNode).click({ modifiers: ['Alt'] })
   await expect(page.locator(startNode)).toHaveClass(/x6-node-selected/)
   await expect(groupContainer).not.toHaveClass(/x6-node-selected/)
@@ -267,12 +272,12 @@ test('dragging a solo-selected member moves only it; dragging the selected group
   const startAfter = await boardNodeTranslate(page, startNode)
   const containerAfter = await boardNodeTranslate(page, groupContainerSel)
   const processAfter = await boardNodeTranslate(page, processNode)
-  // 仅被选中的成员发生了位移
+  // 被选中的成员发生了位移
   expect(startAfter.x - startBefore.x).not.toBe(0)
   expect(startAfter.y - startBefore.y).not.toBe(0)
-  // 组合容器与未选中成员保持不动
-  expect(Math.abs(containerAfter.x - containerBefore.x)).toBeLessThan(1)
-  expect(Math.abs(containerAfter.y - containerBefore.y)).toBeLessThan(1)
+  // 边框随成员收束：容器左上角仍 = 成员包围盒左上角 - padding（此处 start 右移，minX 增大）
+  expect(containerAfter.x - containerBefore.x).toBeCloseTo(startAfter.x - startBefore.x, 0)
+  // 未被选中的成员保持不动
   expect(Math.abs(processAfter.x - processBefore.x)).toBeLessThan(1)
   expect(Math.abs(processAfter.y - processBefore.y)).toBeLessThan(1)
 
@@ -295,4 +300,64 @@ test('dragging a solo-selected member moves only it; dragging the selected group
   expect(startAfter2.y - startBefore2.y).toBeCloseTo(gdy, 0)
   expect(processAfter2.x - processBefore2.x).toBeCloseTo(gdx, 0)
   expect(processAfter2.y - processBefore2.y).toBeCloseTo(gdy, 0)
+})
+
+test('group border preset switches in inspector and the frame auto-fits members', async ({ page }) => {
+  await openFreshBoard(page)
+
+  const startNode = '.x6-node[data-cell-id="x6-start-node"]'
+  const processNode = '.x6-node[data-cell-id="x6-process-node"]'
+  const groupContainer = page.locator('.x6-node[data-shape="board-group"]')
+  const groupButton = page.locator('.tool-button', { hasText: '组合' })
+  const borderSelect = page.locator('.x6-inspector .field', { hasText: '组合边框' }).locator('select')
+  const containerRect = groupContainer.locator('rect').first()
+
+  // 建立组合，默认紧贴边界（无虚线）
+  await page.locator(startNode).click()
+  await page.locator(processNode).click({ modifiers: ['Control'] })
+  await groupButton.click()
+  await expect(groupContainer).toHaveCount(1)
+
+  const dash = await containerRect.getAttribute('stroke-dasharray')
+  expect(!dash || dash === 'none').toBeTruthy()
+
+  // 展开「样式」区，露出组合边框预设选择
+  await page.locator('.x6-inspector .inspector-section__toggle', { hasText: '样式' }).click()
+  await expect(borderSelect).toBeVisible()
+
+  const rectSize = await groupContainer.evaluate((el) => {
+    const box = el.getBoundingClientRect()
+    return { width: box.width, height: box.height }
+  })
+
+  // 切到高亮边框：出现虚线
+  await borderSelect.selectOption('highlight')
+  await expect(containerRect).toHaveAttribute('stroke-dasharray', '6 4')
+  const highlightSize = await groupContainer.evaluate((el) => {
+    const box = el.getBoundingClientRect()
+    return { width: box.width, height: box.height }
+  })
+  // 高亮内缩边距更大 → 边框更大
+  expect(highlightSize.width).toBeGreaterThan(rectSize.width)
+  expect(highlightSize.height).toBeGreaterThan(rectSize.height)
+
+  // 切回紧贴边界
+  await borderSelect.selectOption('tight')
+  await expect(containerRect).not.toHaveAttribute('stroke-dasharray', '6 4')
+
+  // Alt+单击选中成员并拖动放大组合范围 → 边框自动扩展（不再收在旧范围）
+  await page.locator(startNode).click({ modifiers: ['Alt'] })
+  await expect(page.locator(startNode)).toHaveClass(/x6-node-selected/)
+  const containerBefore = await boardNodeTranslate(page, '.x6-node[data-shape="board-group"]')
+  const startBefore = await boardNodeTranslate(page, startNode)
+  const processBefore = await boardNodeTranslate(page, processNode)
+  await dragNodeBy(page, startNode, 40, 40)
+  const containerAfter = await boardNodeTranslate(page, '.x6-node[data-shape="board-group"]')
+  const startAfter = await boardNodeTranslate(page, startNode)
+  const processAfter = await boardNodeTranslate(page, processNode)
+  // 成员右移 → 容器左上角随成员前进（紧贴成员包围盒的左边界）
+  expect(containerAfter.x - containerBefore.x).toBeCloseTo(startAfter.x - startBefore.x, 0)
+  // 未被选中的成员不动，且容器仍包住它
+  expect(Math.abs(processAfter.x - containerBefore.x)).toBeGreaterThan(0)
+  expect(Math.abs(processAfter.x - processBefore.x)).toBeLessThan(1)
 })

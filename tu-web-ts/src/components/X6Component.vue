@@ -123,6 +123,7 @@ import {
   collectMindmapDescendantIds,
   ensureMindmapConnectorRegistered,
   MINDMAP_CONNECTOR_NAME,
+  EDGE_Z_INDEX,
   MINDMAP_DRAG_PREVIEW_EDGE_ID,
   MINDMAP_DRAG_PREVIEW_OPTION,
   type NodePreset,
@@ -187,6 +188,8 @@ type SelectedCellState =
       isGroup: boolean;
       /** 组合容器的直接成员节点数 */
       groupSize: number;
+      /** 组合边框预设样式 */
+      boardGroupBorder: BoardGroupBorderPreset;
     }
   | {
       kind: 'edge';
@@ -1411,6 +1414,7 @@ function refreshSelectedCellState() {
         contentBinding: readCellContentBinding(nodeData),
         isGroup: nodeData.boardGroup === true,
         groupSize: nodeData.boardGroup === true ? (cell.getChildren() ?? []).length : 0,
+        boardGroupBorder: nodeData.boardGroup === true ? getBoardGroupBorderPreset(cell as Node) : 'tight',
       };
     } else if (graph.isEdge(cell)) {
       const router = cell.getRouter();
@@ -2174,8 +2178,111 @@ function copySelection() {
 // additive multi-select modifier.)
 
 let boardGroupDragState: { memberId: string; rootId: string; last: { x: number; y: number } } | null = null;
+// Whether the outermost group container was selected at node:mousedown. Captured
+// before X6's Selection plugin re-resolves selection on the click, so node:click
+// can tell a "drill in to the already-selected group's member" click from a
+// "first click on a member selects its group" click.
+let boardGroupMousedownRootSelected = false;
 
 const BOARD_GROUP_SHAPE = 'board-group';
+
+type BoardGroupBorderPreset = 'tight' | 'highlight';
+
+interface BoardGroupBorderPresetDef {
+  label: string;
+  /** 容器的内缩边距（成员包围盒四周扩展量） */
+  padding: number;
+  body: Record<string, string | number>;
+}
+
+const BOARD_GROUP_BORDER_PRESETS: Record<BoardGroupBorderPreset, BoardGroupBorderPresetDef> = {
+  // 默认：紧贴成员四方边界（transparent fill 保证容器空白区可点击选中）
+  tight: {
+    label: '紧贴边界',
+    padding: 8,
+    body: {
+      fill: 'transparent',
+      stroke: '#91a7ff',
+      strokeWidth: 1,
+      strokeDasharray: 'none',
+      rx: 8,
+      ry: 8,
+    },
+  },
+  // 原有虚线边框样式
+  highlight: {
+    label: '高亮边框',
+    padding: 16,
+    body: {
+      fill: 'rgba(22, 119, 255, 0.05)',
+      stroke: '#91a7ff',
+      strokeWidth: 1.5,
+      strokeDasharray: '6 4',
+      rx: 12,
+      ry: 12,
+    },
+  },
+};
+
+function normalizeBoardGroupBorderPreset(value: unknown): BoardGroupBorderPreset {
+  return value === 'highlight' ? 'highlight' : 'tight';
+}
+
+function getBoardGroupBorderPreset(node: Node): BoardGroupBorderPreset {
+  return normalizeBoardGroupBorderPreset(node.getData<Record<string, any>>()?.boardGroupBorder);
+}
+
+/** Apply the preset's body attrs (fill/stroke/dash/radius) onto the container node. */
+function applyBoardGroupBorderPreset(container: Node) {
+  const preset = BOARD_GROUP_BORDER_PRESETS[getBoardGroupBorderPreset(container)];
+  container.attr('body', preset.body);
+}
+
+/**
+ * Recompute a group container's position/size so its frame hugs the union bbox
+ * of its members (plus the preset padding). Called whenever a member moves or
+ * resizes so the border follows the elements.
+ */
+function fitBoardGroupContainer(container: Node) {
+  const g = graph;
+  if (!g || !isBoardGroupNode(container)) return;
+  const members = (container.getChildren() ?? []).filter(
+    (cell): cell is Node => g.isNode(cell),
+  );
+  if (!members.length) return;
+
+  const padding = BOARD_GROUP_BORDER_PRESETS[getBoardGroupBorderPreset(container)].padding;
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  members.forEach((node) => {
+    const box = node.getBBox();
+    minX = Math.min(minX, box.x);
+    minY = Math.min(minY, box.y);
+    maxX = Math.max(maxX, box.x + box.width);
+    maxY = Math.max(maxY, box.y + box.height);
+  });
+  if (!Number.isFinite(minX)) return;
+
+  const x = minX - padding;
+  const y = minY - padding;
+  const width = maxX - minX + padding * 2;
+  const height = maxY - minY + padding * 2;
+
+  g.batchUpdate(() => {
+    container.setPosition(x, y);
+    container.resize(width, height);
+  });
+}
+
+/** After a member changes geometry, re-fit the board group that contains it. */
+function refitBoardGroupForMember(node: Node) {
+  const parent = node.getParent();
+  if (parent && graph?.isNode(parent) && isBoardGroupNode(parent as Node)) {
+    fitBoardGroupContainer(parent as Node);
+  }
+}
 
 // X6 v3 does not apply instance-level `markup` passed to addNode, so the
 // dashed container and its `data-board-group` marker must come from a
@@ -2278,7 +2385,7 @@ function groupSelection() {
   ) as Node[];
   if (members.length < 2) return;
 
-  const padding = 16;
+  const padding = BOARD_GROUP_BORDER_PRESETS.tight.padding;
   let minX = Infinity;
   let minY = Infinity;
   let maxX = -Infinity;
@@ -2317,8 +2424,9 @@ function groupSelection() {
       width: maxX - minX + padding * 2,
       height: maxY - minY + padding * 2,
       zIndex: backZIndex - 1,
-      data: { boardGroup: true },
+      data: { boardGroup: true, boardGroupBorder: 'tight' },
     });
+    applyBoardGroupBorderPreset(container!);
     members.forEach((node) => container!.embed(node));
     g.resetSelection([container!]);
   });
@@ -2945,6 +3053,23 @@ function centerGraph() {
   graph.centerContent();
 }
 
+/** Switch the selected group container's border preset and re-fit the frame. */
+function updateSelectedGroupBorderPreset(preset: BoardGroupBorderPreset) {
+  if (!graph || !selectedCell.value || selectedCell.value.kind !== 'node' || !selectedCell.value.isGroup) return;
+  const node = graph.getCellById(selectedCell.value.id);
+  if (!node || !graph.isNode(node) || !isBoardGroupNode(node as Node)) return;
+  const container = node as Node;
+  container.updateData({
+    ...(container.getData<Record<string, any>>() ?? {}),
+    boardGroup: true,
+    boardGroupBorder: normalizeBoardGroupBorderPreset(preset),
+  });
+  applyBoardGroupBorderPreset(container);
+  fitBoardGroupContainer(container);
+  refreshSelectedCellState();
+  scheduleSync();
+}
+
 function updateSelectedNodeLabel(value: string) {
   if (!graph || !selectedCell.value || selectedCell.value.kind !== 'node') return;
   const node = graph.getCellById(selectedCell.value.id);
@@ -3341,6 +3466,10 @@ function bindGraphEvents() {
   graph.on('node:mousedown', ({ node }) => {
     startUserInteraction();
     pendingNodeInternalClickId = null;
+    boardGroupMousedownRootSelected = !isMindmap.value
+      && !!graph
+      && findBoardGroupRoot(node) !== node
+      && graph.isSelected(findBoardGroupRoot(node));
     beginBoardGroupDrag(node);
 
     if (!isEditable.value) return;
@@ -3412,6 +3541,13 @@ function bindGraphEvents() {
 
   graph.on('node:change:position', ({ node }) => {
     updateBoardGroupDrag(node, node.getPosition());
+    // Follow solo member moves so the group border hugs the members. Skipped
+    // while dragging the whole group as a unit (container already translates).
+    if (!boardGroupDragState) refitBoardGroupForMember(node);
+  });
+
+  graph.on('node:change:size', ({ node }) => {
+    if (!boardGroupDragState) refitBoardGroupForMember(node);
   });
 
   graph.on('node:moved', ({ node }) => {
@@ -3504,7 +3640,8 @@ function bindGraphEvents() {
     }
 
     // Grouped members select their outermost group container on click;
-    // Alt+click bypasses the group and selects the member itself.
+    // clicking a member of an already-selected group drills in to select the
+    // member itself. Alt+click bypasses the group and selects the member directly.
     // Ctrl/⌘+click keeps its reserved multi-select meaning (member is toggled
     // by X6's Selection plugin), so we skip the group redirect entirely.
     if (!isMindmap.value && graph && !e.ctrlKey && !e.metaKey) {
@@ -3516,6 +3653,9 @@ function bindGraphEvents() {
             .getSelectedCells()
             .filter((cell) => cell.id !== groupRoot.id && cell.id !== node.id);
           graph.resetSelection([...others, node]);
+        } else if (boardGroupMousedownRootSelected) {
+          // Group already selected → clicking a member drills in to select it alone.
+          graph.resetSelection([node]);
         } else {
           graph.resetSelection([groupRoot]);
         }
@@ -3562,6 +3702,16 @@ function bindGraphEvents() {
   graph.model.on('cell:change:target', () => scheduleSync());
   graph.model.on('cell:change:vertices', () => scheduleSync());
   graph.model.on('cell:change:data', () => scheduleSync());
+  graph.model.on('cell:added', ({ cell }) => {
+    // Keep edges on the highest z-axis so lines always render above nodes,
+    // regardless of add order. Drag preview edge stays one level above.
+    if (!graph?.isEdge(cell)) return;
+    if (cell.id === MINDMAP_DRAG_PREVIEW_EDGE_ID) {
+      cell.setZIndex(EDGE_Z_INDEX + 1);
+    } else {
+      cell.setZIndex(EDGE_Z_INDEX);
+    }
+  });
   graph.model.on('cell:added', syncTaskFlowEdgeState);
   graph.model.on('cell:removed', syncTaskFlowEdgeState);
   graph.model.on('cell:change:source', syncTaskFlowEdgeState);
@@ -4301,6 +4451,18 @@ defineExpose({
                 <option value="round">圆角矩形</option>
                 <option value="ellipse">椭圆</option>
                 <option value="diamond">菱形</option>
+              </select>
+            </label>
+
+            <label v-if="selectedCell.isGroup" class="field">
+              <span>组合边框</span>
+              <select
+                :value="selectedCell.boardGroupBorder"
+                :disabled="!isEditable"
+                @change="updateSelectedGroupBorderPreset(($event.target as HTMLSelectElement).value as BoardGroupBorderPreset)"
+              >
+                <option value="tight">紧贴边界</option>
+                <option value="highlight">高亮边框</option>
               </select>
             </label>
 

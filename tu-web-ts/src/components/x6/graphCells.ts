@@ -5,6 +5,10 @@ import { createMindmapPorts, createNodePorts, getMindmapEdgePorts } from './port
 
 export type NodePreset = 'rect' | 'round' | 'ellipse' | 'diamond' | 'umlClass';
 
+// Edges render above every node. X6 auto-increments node zIndex on insert,
+// so keep this far above any realistic node count.
+export const EDGE_Z_INDEX = 500000;
+
 export function createEdgeMetadata(edge: Partial<CellData> = {}, overrides?: Partial<CellData>): CellData {
   const edgeAttrs = (edge.attrs && typeof edge.attrs === 'object')
     ? edge.attrs as Record<string, unknown>
@@ -41,7 +45,7 @@ export function createEdgeMetadata(edge: Partial<CellData> = {}, overrides?: Par
     shape: 'edge',
     router: { name: 'orth' },
     connector: { name: 'rounded' },
-    zIndex: 0,
+    zIndex: EDGE_Z_INDEX,
     ...edgeRest,
     ...overrideRest,
     attrs,

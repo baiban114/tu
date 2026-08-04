@@ -1,5 +1,5 @@
 import type { Graph, Node } from '@antv/x6';
-import { createMindmapEdgeMetadata } from './graphCells';
+import { createMindmapEdgeMetadata, EDGE_Z_INDEX } from './graphCells';
 import { applyMindmapEdgeConnector } from './mindmapConnector';
 import {
   MINDMAP_DRAG_PREVIEW_EDGE_ID,
@@ -198,7 +198,7 @@ function upsertMindmapDragPreviewEdge(
     existing.setTarget({ cell: preview.childId, port: ports.targetPort }, edgeOptions);
     applyMindmapEdgeConnector(existing, { preview: true, branchSide: preview.side });
     existing.attr({ line: previewLineAttrs }, edgeOptions);
-    existing.setZIndex(10, edgeOptions);
+    existing.setZIndex(EDGE_Z_INDEX + 1, edgeOptions);
     return;
   }
 
@@ -210,7 +210,7 @@ function upsertMindmapDragPreviewEdge(
     attrs: {
       line: previewLineAttrs,
     },
-    zIndex: 10,
+    zIndex: EDGE_Z_INDEX + 1,
   }, edgeOptions);
 
   const previewEdge = graph.getCellById(MINDMAP_DRAG_PREVIEW_EDGE_ID);
