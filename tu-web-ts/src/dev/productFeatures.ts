@@ -194,6 +194,14 @@ export const productFeatureCatalog: ProductFeature[] = [
     owner: 'Workspace',
   },
   {
+    id: 'workspace-views-tag-content',
+    module: '工作区',
+    name: '侧栏视图 · 标签检索',
+    description: '视图目录「标签检索」在主内容区按标签检索被标记的块（nodeView）与章节，分页按更新时间倒序；行展开以只读原格式内联预览章节或块。',
+    status: 'testing',
+    owner: 'Workspace',
+  },
+  {
     id: 'knowledge-point-document-display',
     module: '知识关联',
     name: '知识点展示在文档',

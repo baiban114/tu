@@ -2,7 +2,7 @@
 export type WorkspaceSidebarSource = 'knowledgeBase' | 'views'
 
 /** Built-in / future view kinds layered on KB + resource evidence. */
-export type WorkspaceViewKind = 'learning-plan'
+export type WorkspaceViewKind = 'learning-plan' | 'tag-content'
 
 export interface WorkspaceViewDefinition {
   id: string

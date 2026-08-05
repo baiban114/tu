@@ -231,6 +231,40 @@ test('group/ungroup wraps multi-selected nodes and member clicks prefer the grou
   await expect(processNode).toBeVisible()
 })
 
+test('deleting a selected group container with the Delete key dissolves it without crashing', async ({ page }) => {
+  await openFreshBoard(page)
+
+  const startNode = page.locator('.x6-node[data-cell-id="x6-start-node"]')
+  const processNode = page.locator('.x6-node[data-cell-id="x6-process-node"]')
+  const groupContainer = page.locator('.x6-node[data-board-group="true"], .x6-node:has(g[data-board-group="true"])')
+  const groupButton = page.locator('.tool-button', { hasText: '组合' })
+
+  await startNode.click()
+  await processNode.click({ modifiers: ['Control'] })
+  await groupButton.click()
+  await expect(groupContainer).toHaveCount(1)
+
+  // 选中容器后按 Delete：容器移除，成员保留（等价于取消组合）
+  await groupContainer.click({ position: { x: 6, y: 6 } })
+  await expect(groupContainer).toHaveClass(/x6-node-selected/)
+  await page.keyboard.press('Delete')
+  await expect(groupContainer).toHaveCount(0)
+  await expect(startNode).toBeVisible()
+  await expect(processNode).toBeVisible()
+
+  // 组合回退：多选成员后再次组合，删除后组内剩余不足 2 成员的组自动解散
+  await startNode.click()
+  await processNode.click({ modifiers: ['Control'] })
+  await groupButton.click()
+  await expect(groupContainer).toHaveCount(1)
+  // 钻取选中单个成员并删除 → 组内只剩 1 个成员，自动解散且不报错
+  await startNode.click()
+  await expect(startNode).toHaveClass(/x6-node-selected/)
+  await page.keyboard.press('Backspace')
+  await expect(groupContainer).toHaveCount(0)
+  await expect(processNode).toBeVisible()
+})
+
 async function boardNodeTranslate(page: Page, selector: string): Promise<{ x: number; y: number }> {
   const t = await page.locator(selector).getAttribute('transform')
   const m = /translate\(([-\d.]+),\s*([-\d.]+)\)/.exec(t ?? '')

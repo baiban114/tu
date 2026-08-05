@@ -70,6 +70,7 @@ export const useWorkspaceViewsStore = defineStore('workspaceViews', () => {
   ))
   const isViewsMode = computed(() => sidebarSource.value === 'views')
   const isLearningPlanView = computed(() => currentView.value?.kind === 'learning-plan')
+  const isTagContentView = computed(() => currentView.value?.kind === 'tag-content')
   const busy = computed(() => learningPlanLoading.value || routeGenerating.value)
 
   function persistSource() {
@@ -412,6 +413,7 @@ export const useWorkspaceViewsStore = defineStore('workspaceViews', () => {
     currentView,
     isViewsMode,
     isLearningPlanView,
+    isTagContentView,
     busy,
     setSidebarSource,
     selectView,

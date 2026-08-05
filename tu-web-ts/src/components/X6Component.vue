@@ -2339,7 +2339,11 @@ function findBoardGroupRoot(node: Node): Node {
 
 /** Detach all members from the container and remove the container itself (members survive). */
 function dissolveBoardGroup(container: Node) {
-  container.getChildren().forEach((child) => {
+  // getChildren() returns null when the container is empty or was already
+  // detached (e.g. nested groups selected together: dissolving a child group
+  // removes it from this container's children store before we get here).
+  const children = container.getChildren() ?? [];
+  children.forEach((child) => {
     container.unembed(child);
   });
   container.remove();
@@ -2448,7 +2452,7 @@ function ungroupSelection() {
   const members: Node[] = [];
   g.batchUpdate(() => {
     containers.forEach((container) => {
-      container.getChildren().forEach((child) => {
+      (container.getChildren() ?? []).forEach((child) => {
         if (g.isNode(child)) members.push(child as Node);
       });
       dissolveBoardGroup(container);

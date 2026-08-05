@@ -52,3 +52,34 @@
 - `src/components/workspaceViews/LearningPlanViewPanel.vue` — 虚拟表 UI  
 - `src/components/workspaceViews/LearningPlanRouteTable.vue` — 共用路线表  
 - `src/components/workspaceViews/LearningRouteChatDialog.vue` — AI 路线 Hybrid 弹窗  
+
+## 5. 标签检索视图
+
+**入口：** 侧栏 → 视图 →「标签检索」
+
+在**主内容区**展示。按指定的标签检索该知识库中被标记的内容，分两类作用域：
+
+| 作用域 | 含义 | 来源 |
+|--------|------|------|
+| `section` | 文档单元（h1–h6 章节） | `metadata.sectionTags`，key 为 `local:{blockId}` / `ref-group:{id}` / `ref-child:{id}` 等 |
+| `block` | 块 / nodeView（richtext 段落、x6 画板、表格等） | 块的 metadata 标签 |
+
+**匹配：** 按标签 `label` 规范化后（`normalizeTagLabel`）相等；一次检索只针对一个选定标签。
+
+**展示：** 分页表格（默认 10/页，`DEFAULT_PAGE_SIZE`），按 `updatedAt` 倒序。行可**展开**以只读原格式内联预览被标记内容：
+
+- `section`：提取该 heading 节点及其后兄弟，直到下一个同级或更高级标题，合成只读 Tiptap 文档渲染
+- `block`：提取该块单个节点为只读文档渲染
+
+标题列优先取章节标题 / 块首行，缺失回退标签 label。「打开页面」切回知识库模式并定位到该页。
+
+**数据源：** 后端聚合 `GET /api/kbs/{kbId}/tags`（标签池）与 `GET /api/kbs/{kbId}/tagged-content?tagLabel=&page=&pageSize=`；mock 走 `collectKbTagsMock` / `searchTaggedContentMock`。时间戳 mock 用 `pageUpdatedAt`，后端用 `page_content.updated_at`。
+
+**代码位置：**
+
+- `src/api/taggedContent.ts` — API 客户端
+- `src/components/workspaceViews/TagContentViewPanel.vue` — 主区面板
+- `src/components/workspaceViews/TaggedContentExpander.vue` — 行展开只读渲染
+- `src/utils/taggedContentExpansion.ts` — 章节 / 块提取
+- `src/mock/taggedContent.ts` + `src/mock/store.ts` — mock 实现
+- 后端 `com.tu.backend.tag`（controller / service / DTO）  

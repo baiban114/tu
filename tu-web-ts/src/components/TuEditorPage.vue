@@ -4064,13 +4064,9 @@ const handleSaveAnnotation = async (payload: { note: string; tags: BlockTag[] })
   if (existing) {
     const idx = annotations.findIndex((item) => item.id === existing.id)
     if (idx >= 0) {
-      if (note) {
-        annotations[idx] = { ...existing, note, updatedAt: now }
-      } else {
-        annotations = annotations.filter((item) => item.id !== existing.id)
-      }
+      annotations[idx] = { ...existing, note, updatedAt: now }
     }
-  } else if (note) {
+  } else if (note || pendingNoteSelectedText.value || pendingNoteSpannedBlockIds.value.length > 0) {
     const pdfRegion = pendingNotePdfRegion.value
     if (pdfRegion) {
       annotations.push({
@@ -4175,6 +4171,7 @@ const resolveAnnotationAnchorRect = (
 }
 
 const handleAnnotationClick = (payload: { annotationId: string; annotationIds?: string[]; event: MouseEvent }) => {
+  console.log('[DEBUG handleAnnotationClick] id=', payload.annotationId)
   const annotations = getBlockAnnotations()
   const ids = payload.annotationIds?.length ? payload.annotationIds : [payload.annotationId]
   const idSet = new Set(ids)
@@ -4371,6 +4368,13 @@ const handleDeleteAnnotation = async (annotation?: TextAnnotation) => {
     notePopoverAnchor.value = null
     notePopoverRelationAnchor.value = null
   }
+}
+
+const handleRemoveAnnotationFromEditor = () => {
+  const target = editingAnnotation.value
+  if (!target) return
+  resetTextMarkingPending()
+  void handleDeleteAnnotation(target)
 }
 
 // --- Paste URL detection ---
@@ -4965,6 +4969,7 @@ onBeforeUnmount(() => {
       :available-tags="availableTags"
       @save="handleSaveAnnotation"
       @cancel="resetTextMarkingPending"
+      @remove="handleRemoveAnnotationFromEditor"
     />
 
     <!-- 笔记弹窗 -->

@@ -12,9 +12,9 @@ import type {
 } from '@/api/types';
 import { tipTapToBlocks } from '@/editor/converters';
 import { resolvePageDocument } from '@/editor/pageDocument';
-import { collectBlockTags } from '@/utils/blockMetadata';
+import { collectBlockTags, getBlockTags, normalizeTagLabel } from '@/utils/blockMetadata';
 import { getPageTags, mergeTagPools } from '@/utils/pageMetadata';
-import { collectSectionTagsFromMetadata } from '@/utils/sectionMetadata';
+import { collectSectionTagsFromMetadata, sectionTagsMapFromMetadata } from '@/utils/sectionMetadata';
 import { collectTextTagSpanTags } from '@/utils/textTagSpanMetadata';
 import type { ReferenceItem, ListReferencesParams, ListReferencesResult } from '@/api/reference';
 import type {
@@ -74,7 +74,9 @@ import type {
   ListContentCommentsParams,
 } from '@/api/comment';
 import type { PageResponse } from '@/api/aiRuns';
+import type { TaggedContentItem } from '@/api/taggedContent';
 import { DEFAULT_PAGE_SIZE } from '@/constants/pagination';
+import type { PageResult } from '@/constants/pagination';
 
 interface MockState {
   knowledgeBases: KnowledgeBase[];
@@ -92,6 +94,7 @@ interface MockState {
   kbResourceLinks: KbResourceLink[];
   contentComments: ContentComment[];
   contentTreeHours: Record<string, number | null>;
+  pageUpdatedAt: Record<string, string>;
 }
 
 const STORAGE_KEY = 'tu:mock-state';
@@ -353,6 +356,7 @@ const initialState: MockState = {
   resourceCrawledDocuments: [],
   resourcePdfRegionNotes: [],
   contentTreeHours: {},
+  pageUpdatedAt: {},
 };
 
 function cloneState<T>(value: T): T {
@@ -394,6 +398,9 @@ function loadState(): MockState {
       contentTreeHours: parsed.contentTreeHours && typeof parsed.contentTreeHours === 'object'
         ? parsed.contentTreeHours
         : cloneState(initialState.contentTreeHours),
+      pageUpdatedAt: parsed.pageUpdatedAt && typeof parsed.pageUpdatedAt === 'object'
+        ? parsed.pageUpdatedAt
+        : {},
     };
   } catch {
     return cloneState(initialState);
@@ -401,6 +408,11 @@ function loadState(): MockState {
 }
 
 let state: MockState = loadState();
+
+/** Access the current mock state (read-only view for auxiliary mock modules). */
+export function getMockState(): MockState {
+  return state;
+}
 
 function persistState(): void {
   if (typeof window !== 'undefined') {
@@ -1919,6 +1931,7 @@ export function getPageContentMock(pageId: string): PageContent {
 export function savePageContentMock(pageId: string, content: PageContent): void {
   getPageOrThrow(pageId);
   state.contents[pageId] = cloneState(content);
+  state.pageUpdatedAt[pageId] = new Date().toISOString();
   persistState();
 }
 
@@ -1943,6 +1956,8 @@ export function createPageMock(
     pageType: normalizedPageType,
   };
   state.pages.push(page);
+  const now = new Date().toISOString();
+  state.pageUpdatedAt[page.id] = now;
   const initialContent = createInitialPageContent(normalizedPageType, title);
   state.contents[page.id] = initialContent
     ? cloneState(initialContent)
@@ -2465,4 +2480,132 @@ export function collectKbTagsMock(kbId: string): BlockTag[] {
     }
   }
   return mergeTagPools(pools);
+}
+
+function mockResolveSectionBlockId(sectionKey: string): string {
+  if (sectionKey.startsWith('local:')) return sectionKey.slice('local:'.length);
+  if (sectionKey.startsWith('ref-group:')) return sectionKey.slice('ref-group:'.length);
+  if (sectionKey.startsWith('ref-child:')) {
+    const rest = sectionKey.slice('ref-child:'.length);
+    const colon = rest.indexOf(':');
+    return colon > 0 ? rest.slice(0, colon) : rest;
+  }
+  if (sectionKey.startsWith('heading-')) return sectionKey;
+  return sectionKey;
+}
+
+function mockHeadingTextFromBlocks(blocks: Block[], blockId: string): string {
+  for (const block of blocks) {
+    if (block.id === blockId) {
+      const line = (block.content ?? '')
+        .split('\n')
+        .map((item) => item.trim())
+        .find((item) => item && !item.startsWith('<!--tu:') && item.startsWith('#'));
+      return line ? line.replace(/^#{1,6}\s+/, '').trim() : '';
+    }
+    if (block.children) {
+      const nested = mockHeadingTextFromBlocks(block.children, blockId);
+      if (nested) return nested;
+    }
+  }
+  return '';
+}
+
+function mockFirstContentLine(content?: string): string {
+  if (!content) return '';
+  const line = content
+    .split('\n')
+    .map((item) => item.trim())
+    .find((item) => item && !item.startsWith('<!--tu:'));
+  if (!line) return '';
+  return line.replace(/^#{1,6}\s+/, '').trim();
+}
+
+function mockCollectBlockTagHits(
+  block: Block,
+  normalizedLabel: string,
+  pageId: string,
+  pageTitle: string,
+  updatedAt: string,
+  out: TaggedContentItem[],
+): void {
+  const matched = getBlockTags(block).filter((tag) => normalizeTagLabel(tag.label) === normalizedLabel);
+  if (matched.length > 0) {
+    const firstLine = mockFirstContentLine(block.content);
+    out.push({
+      id: `block:${pageId}:${block.id}`,
+      scope: 'block',
+      pageId,
+      pageTitle,
+      blockId: block.id,
+      sectionKey: null,
+      title: block.title?.trim() || firstLine || matched[0].label,
+      snippet: firstLine || block.title?.trim() || '',
+      matchedTags: cloneState(matched),
+      updatedAt,
+    });
+  }
+  for (const child of block.children ?? []) {
+    mockCollectBlockTagHits(child, normalizedLabel, pageId, pageTitle, updatedAt, out);
+  }
+}
+
+export function searchTaggedContentMock(
+  kbId: string,
+  tagLabel: string,
+  page: number,
+  pageSize: number,
+): PageResult<TaggedContentItem> {
+  const normalizedLabel = normalizeTagLabel(tagLabel);
+  const safePage = Math.max(0, page);
+  const safePageSize = Math.min(200, Math.max(1, pageSize || DEFAULT_PAGE_SIZE));
+  const all: TaggedContentItem[] = [];
+  if (!normalizedLabel) {
+    return { items: [], total: 0, page: safePage, pageSize: safePageSize };
+  }
+
+  for (const pageMeta of state.pages) {
+    if (pageMeta.kbId !== kbId) continue;
+    const pc = state.contents[pageMeta.id];
+    if (!pc) continue;
+    const updatedAt = state.pageUpdatedAt[pageMeta.id] ?? new Date(0).toISOString();
+    const blocks = pc.document?.type === 'doc'
+      ? tipTapToBlocks(resolvePageDocument(pc), [])
+      : pageContentToBlocks(pc);
+
+    const sectionTags = sectionTagsMapFromMetadata(pc.metadata);
+    for (const [sectionKey, tags] of Object.entries(sectionTags)) {
+      const matched = tags.filter((tag) => normalizeTagLabel(tag.label) === normalizedLabel);
+      if (matched.length === 0) continue;
+      const blockId = mockResolveSectionBlockId(sectionKey);
+      const heading = mockHeadingTextFromBlocks(blocks, blockId);
+      all.push({
+        id: `section:${pageMeta.id}:${sectionKey}`,
+        scope: 'section',
+        pageId: pageMeta.id,
+        pageTitle: pageMeta.title,
+        blockId,
+        sectionKey,
+        title: heading || matched[0].label,
+        snippet: heading,
+        matchedTags: cloneState(matched),
+        updatedAt,
+      });
+    }
+
+    for (const block of blocks) {
+      mockCollectBlockTagHits(block, normalizedLabel, pageMeta.id, pageMeta.title, updatedAt, all);
+    }
+  }
+
+  all.sort(
+    (a, b) => b.updatedAt.localeCompare(a.updatedAt)
+      || a.pageId.localeCompare(b.pageId)
+      || a.id.localeCompare(b.id),
+  );
+
+  const total = all.length;
+  const from = safePage * safePageSize;
+  const items = from >= total ? [] : all.slice(from, from + safePageSize);
+  return { items, total, page: safePage, pageSize: safePageSize };
 }

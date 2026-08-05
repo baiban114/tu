@@ -22,6 +22,7 @@ const props = withDefaults(defineProps<Props>(), {
 const emit = defineEmits<{
   (e: 'save', payload: { note: string; tags: BlockTag[] }): void;
   (e: 'cancel'): void;
+  (e: 'remove'): void;
 }>();
 
 const noteText = ref('');
@@ -61,8 +62,6 @@ const canCreateTag = computed(() => {
   return !props.availableTags.some((tag) => tag.label.toLowerCase() === normalized.toLowerCase())
     && !selectedKeys.value.has(normalized.toLowerCase());
 });
-
-const canSave = computed(() => noteText.value.trim().length > 0 || tags.value.length > 0);
 
 const editorTitle = computed(() => (props.annotation ? '编辑标注' : '添加标注'));
 
@@ -144,7 +143,6 @@ const handleTagKeydown = (event: KeyboardEvent) => {
 };
 
 const handleSave = () => {
-  if (!canSave.value) return;
   emit('save', {
     note: noteText.value.trim(),
     tags: [...tags.value],
@@ -254,11 +252,18 @@ const handleCandidatePageChange = (page: number) => {
         </div>
 
         <div class="note-editor-footer">
+          <button
+            v-if="annotation"
+            type="button"
+            class="note-editor-remove-btn"
+            @click="emit('remove')"
+          >
+            取消标注
+          </button>
           <button type="button" class="note-editor-cancel-btn" @click="emit('cancel')">取消</button>
           <button
             type="button"
             class="note-editor-save-btn"
-            :disabled="!canSave"
             @click="handleSave"
           >
             保存
@@ -443,6 +448,22 @@ const handleCandidatePageChange = (page: number) => {
   color: #595959;
   cursor: pointer;
   font-size: 13px;
+}
+
+.note-editor-remove-btn {
+  margin-right: auto;
+  padding: 6px 14px;
+  border: 1px solid #ffccc7;
+  border-radius: 6px;
+  background: #fff;
+  color: #d4380d;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.note-editor-remove-btn:hover {
+  border-color: #ffa39e;
+  background: #fff1f0;
 }
 
 .note-editor-save-btn {

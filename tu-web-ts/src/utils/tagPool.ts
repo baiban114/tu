@@ -1,8 +1,8 @@
 import type { Block, BlockTag } from '@/api/types'
-import { listAllBlocks } from '@/api/page'
+import { fetchKbTags } from '@/api/taggedContent'
 import { isMockDataSource } from '@/dev/dataSource'
 import { collectKbTagsMock } from '@/mock/store'
-import { collectBlockTags, collectTagsFromBlocksAndPage } from '@/utils/blockMetadata'
+import { collectTagsFromBlocksAndPage } from '@/utils/blockMetadata'
 import { mergeTagPools } from '@/utils/pageMetadata'
 
 export function collectAvailableTags(
@@ -22,7 +22,5 @@ export async function fetchKbTagPool(kbId: string | null | undefined): Promise<B
     return collectKbTagsMock(kbId)
   }
 
-  const items = await listAllBlocks()
-  const blocks = items.map((item) => item.block)
-  return collectBlockTags(blocks)
+  return fetchKbTags(kbId)
 }

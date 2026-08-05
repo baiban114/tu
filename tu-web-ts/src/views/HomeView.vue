@@ -8,6 +8,7 @@ import LeftPanel from '@/components/LeftPanel.vue';
 import CanvasPage from '@/components/CanvasPage.vue';
 import TuEditorPage from '@/components/TuEditorPage.vue';
 import KnowledgePointReadingPreview from '@/components/KnowledgePointReadingPreview.vue';
+import TagContentViewPanel from '@/components/workspaceViews/TagContentViewPanel.vue';
 import type { PageContent, PageType } from '@/api/types';
 import { useWorkspaceStore } from '@/stores/workspace';
 import { useWorkspaceViewsStore } from '@/stores/workspaceViews';
@@ -32,6 +33,11 @@ const showLearningPlanPointPreview = computed(() => (
   viewsStore.isViewsMode
   && viewsStore.isLearningPlanView
   && Boolean(store.currentKbId && viewsStore.selectedPointId)
+));
+
+const showTagContentView = computed(() => (
+  viewsStore.isViewsMode
+  && viewsStore.isTagContentView
 ));
 
 function closeLearningPlanPointPreview() {
@@ -302,7 +308,14 @@ watch(
         <AppHelpButton variant="topbar" :page-type="helpPageType" />
       </div>
       <div
-        v-if="showLearningPlanPointPreview"
+        v-if="showTagContentView"
+        class="content-tag-view"
+      >
+        <TagContentViewPanel />
+      </div>
+
+      <div
+        v-else-if="showLearningPlanPointPreview"
         class="content-scroll content-scroll--view-preview"
       >
         <KnowledgePointReadingPreview
@@ -516,6 +529,14 @@ watch(
 }
 
 .content-canvas {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.content-tag-view {
   flex: 1;
   min-height: 0;
   display: flex;

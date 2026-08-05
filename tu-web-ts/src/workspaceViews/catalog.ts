@@ -9,6 +9,13 @@ export const WORKSPACE_VIEW_CATALOG: WorkspaceViewDefinition[] = [
     description: '以当前学习目标为种子，沿 prerequisite 展开知识点全集，拼成可浏览的虚拟数据库。',
     icon: '🎯',
   },
+  {
+    id: 'view:tag-content',
+    kind: 'tag-content',
+    name: '标签检索',
+    description: '指定标签检索被标记的块（nodeView）与文档单元（章节），按更新时间倒序分页展示并支持展开预览原内容。',
+    icon: '🏷️',
+  },
 ]
 
 export function getWorkspaceViewById(id: string): WorkspaceViewDefinition | null {

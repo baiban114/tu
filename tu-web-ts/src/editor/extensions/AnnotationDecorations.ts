@@ -66,6 +66,8 @@ export const AnnotationDecorations = Extension.create<AnnotationDecorationsOptio
             const target = event.target as HTMLElement | null
             const annotationEl = target?.closest('[data-tu-annotation-id]') as HTMLElement | null
             const annotationId = annotationEl?.dataset.tuAnnotationId
+            const ps = annotationDecorationsKey.getState(view.state)
+            console.log('[DEBUG annhandler] pos=', pos, 'annotationId=', annotationId, 'clicked note=', ps?.annotations.find(a => a.id === annotationId)?.note)
             if (!annotationId) return false
             const pluginState = annotationDecorationsKey.getState(view.state)
             const clicked = pluginState?.annotations.find(annotation => annotation.id === annotationId)
