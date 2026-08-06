@@ -37,6 +37,16 @@ const TAGGED_PAGE_CONTENT = {
       'local:hs-design': [{ id: 'tag-design', label: '设计', color: '#1677ff' }],
       'local:hs-impl': [{ id: 'tag-impl', label: '实现', color: '#67c23a' }],
     },
+    textTagSpans: [
+      {
+        id: 'text-span-design-body',
+        tags: [{ id: 'tag-text-highlight', label: '摘录', color: '#e6a23c' }],
+        selectedText: '设计节正文',
+        contextBefore: '',
+        contextAfter: '',
+        unresolved: false,
+      },
+    ],
   },
 }
 
@@ -100,6 +110,22 @@ test('expands a section row to preview original content', async ({ page }) => {
   await page.locator('.tag-content-view__table').getByRole('button', { name: '展开当前行' }).first().click()
   await expect(page.locator('.tagged-content-expander')).toBeVisible({ timeout: 15_000 })
   await expect(page.locator('.tagged-content-expander').getByText('设计节正文')).toBeVisible()
+})
+
+test('selects a text-range tag and lists the marked document content', async ({ page }) => {
+  test.setTimeout(90_000)
+  await seedTaggedPage(page)
+  await openTagContentView(page)
+
+  await page.locator('.tag-content-view__select').click()
+  await page.getByRole('option', { name: '摘录' }).click()
+
+  await expect(page.locator('.tag-content-view__meta')).toContainText('命中 1 项')
+  await expect(page.locator('.tag-content-view__table .scope-chip--text')).toHaveText('文字')
+  await expect(page.locator('.tag-content-view__table .title-cell__title')).toContainText('设计节正文')
+
+  await page.locator('.tag-content-view__table').getByRole('button', { name: '展开当前行' }).click()
+  await expect(page.locator('.tagged-content-expander__text')).toHaveText('设计节正文')
 })
 
 test('open page navigates to the document', async ({ page }) => {

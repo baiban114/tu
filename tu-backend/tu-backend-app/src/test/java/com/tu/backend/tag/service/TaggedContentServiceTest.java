@@ -73,7 +73,8 @@ class TaggedContentServiceTest {
 
     private static final String METADATA = "{\"tags\":[{\"id\":\"pt\",\"label\":\"页面标签\"}],"
         + "\"sectionTags\":{\"local:b2\":[{\"id\":\"st\",\"label\":\"重点\",\"color\":\"#00f\"}]},"
-        + "\"textTagSpans\":[{\"id\":\"span1\",\"tags\":[{\"id\":\"ts\",\"label\":\"划词\"}]}]}";
+        + "\"textTagSpans\":[{\"id\":\"span1\",\"blockId\":\"b3\","
+        + "\"selectedText\":\"重点段落内容\",\"tags\":[{\"id\":\"ts\",\"label\":\"划词\"}]}]}";
 
     @Test
     void listKbTagsAggregatesAndDeduplicatesAllScopes() throws Exception {
@@ -115,6 +116,25 @@ class TaggedContentServiceTest {
             .filter(item -> "block".equals(item.scope())).findFirst().orElseThrow();
         assertThat(block.blockId()).isEqualTo("b3");
         assertThat(block.snippet()).contains("重点段落内容");
+    }
+
+    @Test
+    void testListTaggedContent_whenTextSpanMatches_returnsTextHit() throws Exception {
+        PageEntity page = page("p1", "kb1", "页面A");
+        when(pageRepository.findByKbIdOrderBySortOrderAscCreatedAtAsc("kb1")).thenReturn(List.of(page));
+        when(pageContentRepository.findById("p1")).thenReturn(
+            Optional.of(contentEntity("p1", v2PageJson(DOCUMENT, METADATA), LocalDateTime.of(2026, 2, 1, 0, 0)))
+        );
+
+        PageResponse<TaggedContentItemDto> response = service.listTaggedContent("kb1", "划词", 0, 10);
+
+        assertThat(response.total()).isEqualTo(1);
+        TaggedContentItemDto textHit = response.items().get(0);
+        assertThat(textHit.scope()).isEqualTo("text");
+        assertThat(textHit.blockId()).isEqualTo("b3");
+        assertThat(textHit.title()).isEqualTo("重点段落内容");
+        assertThat(textHit.snippet()).isEqualTo("重点段落内容");
+        assertThat(textHit.matchedTags()).extracting(TagPoolItemDto::label).containsExactly("划词");
     }
 
     @Test

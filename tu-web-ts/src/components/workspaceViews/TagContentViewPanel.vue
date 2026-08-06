@@ -32,6 +32,11 @@ const kbName = computed(() => (
 ))
 
 const kbId = computed(() => workspace.currentKbId ?? '')
+const scopeLabels: Record<TaggedContentItem['scope'], string> = {
+  section: '章节',
+  block: '块',
+  text: '文字',
+}
 
 async function loadTagPool() {
   if (!kbId.value) {
@@ -200,7 +205,7 @@ onBeforeUnmount(() => {
                   class="scope-chip"
                   :class="`scope-chip--${row.scope}`"
                 >
-                  {{ row.scope === 'section' ? '章节' : '块' }}
+                  {{ scopeLabels[row.scope as TaggedContentItem['scope']] }}
                 </span>
               </template>
             </el-table-column>
@@ -372,6 +377,11 @@ onBeforeUnmount(() => {
 .scope-chip--block {
   background: #ecf5ff;
   color: #409eff;
+}
+
+.scope-chip--text {
+  background: #f0f9eb;
+  color: #529b2e;
 }
 
 .tag-chips {

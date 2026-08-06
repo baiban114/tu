@@ -56,10 +56,18 @@ public class TaggedContentService {
 
     private record PageTagContext(
         List<BlockTag> pageTags,
-        List<BlockTag> textSpanTags,
+        List<TextTagSpan> textTagSpans,
         Map<String, List<BlockTag>> sectionTags,
         JsonNode document,
         List<JsonNode> topLevelBlocks
+    ) {
+    }
+
+    private record TextTagSpan(
+        String id,
+        String blockId,
+        String selectedText,
+        List<BlockTag> tags
     ) {
     }
 
@@ -73,7 +81,7 @@ public class TaggedContentService {
         for (PageEntity page : pageRepository.findByKbIdOrderBySortOrderAscCreatedAtAsc(kbId)) {
             PageTagContext ctx = loadContext(page.getId());
             collectPageTags(ctx.pageTags(), pool);
-            collectPageTags(ctx.textSpanTags(), pool);
+            collectTextTagSpanTags(ctx.textTagSpans(), pool);
             collectSectionTags(ctx.sectionTags(), pool);
             collectNodeTags(ctx.document(), ctx.topLevelBlocks(), pool);
         }
@@ -107,6 +115,13 @@ public class TaggedContentService {
                     continue;
                 }
                 all.add(toSectionItem(page, ctx, entry.getKey(), matched, updatedAt));
+            }
+
+            for (TextTagSpan textTagSpan : ctx.textTagSpans()) {
+                List<BlockTag> matched = matchingTags(textTagSpan.tags(), normalizedLabel);
+                if (!matched.isEmpty()) {
+                    all.add(toTextItem(page, textTagSpan, matched, updatedAt));
+                }
             }
 
             for (BlockTagHit hit : collectBlockHits(ctx.document(), ctx.topLevelBlocks(), normalizedLabel)) {
@@ -176,6 +191,31 @@ public class TaggedContentService {
         );
     }
 
+    private TaggedContentItemDto toTextItem(
+        PageEntity page,
+        TextTagSpan textTagSpan,
+        List<BlockTag> matched,
+        LocalDateTime updatedAt
+    ) {
+        String selectedText = textTagSpan.selectedText().trim();
+        String title = selectedText.isEmpty() ? matched.get(0).label() : clip(selectedText);
+        String spanId = textTagSpan.id().isEmpty()
+            ? Integer.toUnsignedString((textTagSpan.blockId() + selectedText).hashCode())
+            : textTagSpan.id();
+        return new TaggedContentItemDto(
+            "text:" + page.getId() + ":" + spanId,
+            "text",
+            page.getId(),
+            page.getTitle(),
+            textTagSpan.blockId().isEmpty() ? null : textTagSpan.blockId(),
+            null,
+            title,
+            clip(selectedText),
+            toTagPoolItems(matched),
+            updatedAt
+        );
+    }
+
     // ─── context loading ─────────────────────────────────────────────────────
 
     private PageTagContext loadContext(String pageId) {
@@ -191,7 +231,7 @@ public class TaggedContentService {
             JsonNode pageMeta = pageRichText != null ? pageRichText.get("metadata") : null;
 
             List<BlockTag> pageTags = readTags(pageMeta, "tags");
-            List<BlockTag> textSpanTags = readTextSpanTags(pageMeta);
+            List<TextTagSpan> textTagSpans = readTextTagSpans(pageMeta);
             Map<String, List<BlockTag>> sectionTags = readSectionTags(pageMeta);
 
             JsonNode document = null;
@@ -210,7 +250,7 @@ public class TaggedContentService {
                     }
                 }
             }
-            return new PageTagContext(pageTags, textSpanTags, sectionTags, document, topLevelBlocks);
+            return new PageTagContext(pageTags, textTagSpans, sectionTags, document, topLevelBlocks);
         } catch (Exception ex) {
             log.warn("skip unreadable page content for tag indexing: {}", pageId, ex);
             return new PageTagContext(List.of(), List.of(), Map.of(), null, List.of());
@@ -367,8 +407,8 @@ public class TaggedContentService {
         return readTags(block.get("metadata"), "tags");
     }
 
-    private List<BlockTag> readTextSpanTags(JsonNode pageMeta) {
-        List<BlockTag> result = new ArrayList<>();
+    private List<TextTagSpan> readTextTagSpans(JsonNode pageMeta) {
+        List<TextTagSpan> result = new ArrayList<>();
         if (pageMeta == null || !pageMeta.has("textTagSpans")) {
             return result;
         }
@@ -377,7 +417,16 @@ public class TaggedContentService {
             return result;
         }
         for (JsonNode span : array) {
-            result.addAll(readTags(span, "tags"));
+            List<BlockTag> tags = readTags(span, "tags");
+            if (tags.isEmpty()) {
+                continue;
+            }
+            result.add(new TextTagSpan(
+                span.path("id").asText(""),
+                span.path("blockId").asText(""),
+                span.path("selectedText").asText(""),
+                tags
+            ));
         }
         return result;
     }
@@ -608,6 +657,12 @@ public class TaggedContentService {
     private void collectSectionTags(Map<String, List<BlockTag>> sectionTags, Map<String, TagPoolItemDto> pool) {
         for (List<BlockTag> tags : sectionTags.values()) {
             collectPageTags(tags, pool);
+        }
+    }
+
+    private void collectTextTagSpanTags(List<TextTagSpan> textTagSpans, Map<String, TagPoolItemDto> pool) {
+        for (TextTagSpan textTagSpan : textTagSpans) {
+            collectPageTags(textTagSpan.tags(), pool);
         }
     }
 

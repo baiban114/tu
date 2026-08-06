@@ -3,6 +3,7 @@ import type { JSONContent } from '@tiptap/core'
 import type { TaggedContentItem } from '@/api/taggedContent'
 import { getBlockTags, normalizeTagLabel } from '@/utils/blockMetadata'
 import { sectionTagsMapFromMetadata } from '@/utils/sectionMetadata'
+import { getTextTagSpans } from '@/utils/textTagSpanMetadata'
 import { tipTapToBlocks } from '@/editor/converters'
 import { resolvePageDocument } from '@/editor/pageDocument'
 import { DEFAULT_PAGE_SIZE, type PageResult } from '@/constants/pagination'
@@ -135,6 +136,24 @@ export function searchTaggedContentMock(
         sectionKey,
         title: heading || matched[0].label,
         snippet: heading,
+        matchedTags: matched,
+        updatedAt,
+      })
+    }
+
+    for (const span of getTextTagSpans(pc.metadata)) {
+      const matched = matchTags(span.tags, normalizedLabel)
+      if (matched.length === 0) continue
+      const selectedText = span.selectedText.trim()
+      all.push({
+        id: `text:${pageMeta.id}:${span.id}`,
+        scope: 'text',
+        pageId: pageMeta.id,
+        pageTitle: pageMeta.title,
+        blockId: span.blockId ?? null,
+        sectionKey: null,
+        title: selectedText.slice(0, 120) || matched[0].label,
+        snippet: selectedText.slice(0, 120),
         matchedTags: matched,
         updatedAt,
       })

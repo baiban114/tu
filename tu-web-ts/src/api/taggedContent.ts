@@ -6,8 +6,8 @@ import { searchTaggedContentMock } from '@/mock/taggedContent';
 import type { BlockTag } from './types';
 import type { PageResult } from '@/constants/pagination';
 
-/** A tagged content item scope: block/nodeView vs heading section (unit). */
-export type TaggedContentScope = 'block' | 'section';
+/** A tagged content item scope: block/nodeView, heading section, or selected text range. */
+export type TaggedContentScope = 'block' | 'section' | 'text';
 
 export interface TaggedContentItem {
   id: string;

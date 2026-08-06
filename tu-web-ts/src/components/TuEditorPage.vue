@@ -673,6 +673,7 @@ const pendingNoteSpannedBlockMetadata = ref<SpannedBlockInfo[]>([])
 const pendingNoteTags = ref<BlockTag[]>([])
 const pendingTextTagSpanId = ref('')
 const pendingNotePdfRegion = ref<PdfRegionAnchor | null>(null)
+const pendingNoteSectionKey = ref('')
 let annotationPersistTimer: ReturnType<typeof setTimeout> | null = null
 
 const urlHoverToolbarSuppressed = computed(() => (
@@ -3385,6 +3386,7 @@ const handleTextTagSpanClick = (spanId: string) => {
   pendingNoteSpannedBlockMetadata.value = []
   pendingNoteTags.value = [...span.tags]
   pendingTextTagSpanId.value = span.id
+  pendingNoteSectionKey.value = ''
   editingAnnotation.value = overlappingAnnotation ? { ...overlappingAnnotation } : undefined
   noteEditorVisible.value = true
 }
@@ -3432,6 +3434,7 @@ const openSectionAnnotationFromTocEntry = (entryId: string) => {
   if (entry.sourceType === 'local') {
     ensureLocalHeadingBlockId(entry)
     flat = collectFlatTocEntries(editor.state.doc, tocCollectContext.value)
+    entry = flat.find((item) => item.id === entryId) ?? entry
   }
 
   const payload = getTocEntryExcerptContent(editor.state.doc, flat, entryId, tocCollectContext.value)
@@ -3439,6 +3442,8 @@ const openSectionAnnotationFromTocEntry = (entryId: string) => {
 
   const blockIds = collectTocEntryBasisBlockIds(editor.state.doc, flat, entryId, tocCollectContext.value)
   if (blockIds.length === 0) return
+
+  const sectionKey = getSectionTagKey(entry)
 
   pendingNoteBlockId.value = ''
   pendingNoteSelectedText.value = payload.text
@@ -3448,8 +3453,9 @@ const openSectionAnnotationFromTocEntry = (entryId: string) => {
   pendingNoteTo.value = 0
   pendingNoteSpannedBlockIds.value = blockIds
   pendingNoteSpannedBlockMetadata.value = normalizeSpannedBlockMetadata(blockIds, [])
-  pendingNoteTags.value = []
+  pendingNoteTags.value = [...getSectionTags(localPageMetadata.value, sectionKey)]
   pendingTextTagSpanId.value = ''
+  pendingNoteSectionKey.value = sectionKey
   editingAnnotation.value = undefined
   noteEditorVisible.value = true
 }
@@ -3472,6 +3478,7 @@ const openBlockAnnotationFromGutter = (blockId: string) => {
   pendingNoteSpannedBlockMetadata.value = normalizeSpannedBlockMetadata(blockIds, [])
   pendingNoteTags.value = []
   pendingTextTagSpanId.value = ''
+  pendingNoteSectionKey.value = ''
   editingAnnotation.value = undefined
   noteEditorVisible.value = true
 }
@@ -3505,6 +3512,7 @@ const openRefInnerAnnotationFromGutter = (
   pendingNoteSpannedBlockMetadata.value = normalizeSpannedBlockMetadata(blockIds, [])
   pendingNoteTags.value = []
   pendingTextTagSpanId.value = ''
+  pendingNoteSectionKey.value = ''
   editingAnnotation.value = undefined
   noteEditorVisible.value = true
 }
@@ -3735,6 +3743,30 @@ const applyBlockTags = (blockId: string, tags: BlockTag[]) => {
   emitLocalContentChange()
 }
 
+const applySectionTags = (key: string, tags: BlockTag[]) => {
+  if (!key) return
+  let metadata = setSectionTagsInMetadata(localPageMetadata.value, key, tags)
+  const editor = tuEditorRef.value?.editor
+  if (editor) {
+    const flat = collectFlatTocEntries(editor.state.doc, tocCollectContext.value)
+    metadata = pruneOrphanSectionTags(
+      metadata,
+      collectValidSectionTagKeys(flat, editor.state.doc, metadata),
+    )
+    const entry = findLocalSectionEntryForTagKey(flat, editor.state.doc, key)
+    if (entry) {
+      metadata = setSectionTagAnchor(metadata, key, { text: entry.text, level: entry.level })
+      const blockId = key.slice('local:'.length)
+      if (syncHeadingBlockIdAtPos(entry.pos, blockId)) {
+        emitLocalContentChange()
+      }
+    }
+  }
+  localPageMetadata.value = metadata
+  emitLocalContentChange()
+  void refreshKbTagPool()
+}
+
 const updateBlockTags = (tags: BlockTag[]) => {
   tagEditorBlockTags.value = tags
   if (tagEditorState.value.scope === 'page') {
@@ -3752,28 +3784,7 @@ const updateBlockTags = (tags: BlockTag[]) => {
   }
 
   if (tagEditorState.value.scope === 'section') {
-    const key = tagEditorState.value.sectionKey
-    if (!key) return
-    let metadata = setSectionTagsInMetadata(localPageMetadata.value, key, tags)
-    const editor = tuEditorRef.value?.editor
-    if (editor) {
-      const flat = collectFlatTocEntries(editor.state.doc, tocCollectContext.value)
-      metadata = pruneOrphanSectionTags(
-        metadata,
-        collectValidSectionTagKeys(flat, editor.state.doc, metadata),
-      )
-      const entry = findLocalSectionEntryForTagKey(flat, editor.state.doc, key)
-      if (entry) {
-        metadata = setSectionTagAnchor(metadata, key, { text: entry.text, level: entry.level })
-        const blockId = key.slice('local:'.length)
-        if (syncHeadingBlockIdAtPos(entry.pos, blockId)) {
-          emitLocalContentChange()
-        }
-      }
-    }
-    localPageMetadata.value = metadata
-    emitLocalContentChange()
-    void refreshKbTagPool()
+    applySectionTags(tagEditorState.value.sectionKey, tags)
     return
   }
 
@@ -3846,12 +3857,17 @@ const handleAddNoteFromSelection = () => {
   pendingNoteTags.value = existingSpan ? [...existingSpan.tags] : []
   pendingTextTagSpanId.value = existingSpan?.id ?? ''
   pendingNotePdfRegion.value = null
+  pendingNoteSectionKey.value = ''
 
   editingAnnotation.value = undefined
   noteEditorVisible.value = true
 }
 
 const applyTextTagSpanFromMarking = (tags: BlockTag[]) => {
+  if (pendingNoteSectionKey.value) {
+    applySectionTags(pendingNoteSectionKey.value, tags)
+    return
+  }
   const normalizedTags = normalizeBlockTags(tags)
   const spanId = pendingTextTagSpanId.value
   let metadata = { ...localPageMetadata.value }
@@ -3915,6 +3931,7 @@ const resetTextMarkingPending = () => {
   pendingNoteTags.value = []
   pendingTextTagSpanId.value = ''
   pendingNotePdfRegion.value = null
+  pendingNoteSectionKey.value = ''
 }
 
 const handlePublishPdfRegionNote = (payload: PdfRegionAnchor) => {
@@ -3934,6 +3951,7 @@ const handlePublishPdfRegionNote = (payload: PdfRegionAnchor) => {
   pendingNoteSpannedBlockMetadata.value = []
   pendingNoteTags.value = []
   pendingTextTagSpanId.value = ''
+  pendingNoteSectionKey.value = ''
   editingAnnotation.value = undefined
   noteEditorVisible.value = true
 }
@@ -4114,6 +4132,7 @@ const handleSaveAnnotation = async (payload: { note: string; tags: BlockTag[] })
       scope,
       spannedBlockIds: hasSpannedBlocks ? pendingNoteSpannedBlockIds.value : undefined,
       spannedBlockMetadata,
+      sectionTagKey: pendingNoteSectionKey.value || undefined,
     })
     }
   }
@@ -4171,7 +4190,6 @@ const resolveAnnotationAnchorRect = (
 }
 
 const handleAnnotationClick = (payload: { annotationId: string; annotationIds?: string[]; event: MouseEvent }) => {
-  console.log('[DEBUG handleAnnotationClick] id=', payload.annotationId)
   const annotations = getBlockAnnotations()
   const ids = payload.annotationIds?.length ? payload.annotationIds : [payload.annotationId]
   const idSet = new Set(ids)
@@ -4288,6 +4306,26 @@ const handleEditAnnotation = (annotation?: TextAnnotation) => {
     pendingNoteSpannedBlockMetadata.value = []
     pendingNoteTags.value = []
     pendingTextTagSpanId.value = ''
+    pendingNoteSectionKey.value = ''
+    editingAnnotation.value = { ...target }
+    noteEditorVisible.value = true
+    notePopoverVisible.value = false
+    return
+  }
+
+  if (target.sectionTagKey) {
+    pendingNoteBlockId.value = ''
+    pendingNoteSelectedText.value = target.selectedText
+    pendingNoteContextBefore.value = target.contextBefore
+    pendingNoteContextAfter.value = target.contextAfter
+    pendingNoteFrom.value = 0
+    pendingNoteTo.value = 0
+    pendingNoteSpannedBlockIds.value = target.spannedBlockIds ?? []
+    pendingNoteSpannedBlockMetadata.value = target.spannedBlockMetadata ?? []
+    pendingNoteTags.value = [...getSectionTags(localPageMetadata.value, target.sectionTagKey)]
+    pendingTextTagSpanId.value = ''
+    pendingNotePdfRegion.value = null
+    pendingNoteSectionKey.value = target.sectionTagKey
     editingAnnotation.value = { ...target }
     noteEditorVisible.value = true
     notePopoverVisible.value = false
@@ -4309,6 +4347,7 @@ const handleEditAnnotation = (annotation?: TextAnnotation) => {
   pendingNoteTags.value = existingSpan ? [...existingSpan.tags] : []
   pendingTextTagSpanId.value = existingSpan?.id ?? ''
   pendingNotePdfRegion.value = null
+  pendingNoteSectionKey.value = ''
   editingAnnotation.value = { ...target }
   noteEditorVisible.value = true
   notePopoverVisible.value = false

@@ -66,8 +66,6 @@ export const AnnotationDecorations = Extension.create<AnnotationDecorationsOptio
             const target = event.target as HTMLElement | null
             const annotationEl = target?.closest('[data-tu-annotation-id]') as HTMLElement | null
             const annotationId = annotationEl?.dataset.tuAnnotationId
-            const ps = annotationDecorationsKey.getState(view.state)
-            console.log('[DEBUG annhandler] pos=', pos, 'annotationId=', annotationId, 'clicked note=', ps?.annotations.find(a => a.id === annotationId)?.note)
             if (!annotationId) return false
             const pluginState = annotationDecorationsKey.getState(view.state)
             const clicked = pluginState?.annotations.find(annotation => annotation.id === annotationId)
@@ -89,6 +87,24 @@ export const AnnotationDecorations = Extension.create<AnnotationDecorationsOptio
               event,
             })
             return true
+          },
+          // Fallback for annotations whose decoration span maps to no doc position
+          // (e.g. blank-note pure-highlight annotations): ProseMirror's posAtCoords
+          // returns null for them, so handleClick is never invoked. Open via the
+          // DOM click event instead. Returning true also swallows the default click.
+          handleDOMEvents: {
+            click: (_view: EditorView, event: MouseEvent) => {
+              const target = event.target as HTMLElement | null
+              const annotationEl = target?.closest('[data-tu-annotation-id]') as HTMLElement | null
+              const annotationId = annotationEl?.dataset.tuAnnotationId
+              if (!annotationId) return false
+              extension.options.onAnnotationClick({
+                annotationId,
+                annotationIds: [annotationId],
+                event,
+              })
+              return true
+            },
           },
         },
       }),

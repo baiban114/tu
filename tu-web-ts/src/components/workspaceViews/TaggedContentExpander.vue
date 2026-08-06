@@ -33,6 +33,10 @@ const renderBlocks = computed(() => {
     const doc = extractBlockDocument(props.content, props.item.blockId)
     return doc ? documentToBlocks(doc) : []
   }
+  if (props.item.scope === 'text' && props.item.blockId) {
+    const doc = extractBlockDocument(props.content, props.item.blockId)
+    return doc ? documentToBlocks(doc) : []
+  }
   return []
 })
 
@@ -58,6 +62,12 @@ watch(
       class="tagged-content-expander__status"
     >
       内容加载失败或不可用
+    </div>
+    <div
+      v-else-if="item.scope === 'text' && item.snippet && renderBlocks.length === 0"
+      class="tagged-content-expander__text"
+    >
+      {{ item.snippet }}
     </div>
     <div
       v-else-if="renderBlocks.length === 0"
@@ -93,5 +103,15 @@ watch(
   text-align: center;
   font-size: 12px;
   color: #c0c4cc;
+}
+
+.tagged-content-expander__text {
+  padding: 10px 12px;
+  border-left: 3px solid #67c23a;
+  background: #f0f9eb;
+  color: #303133;
+  font-size: 13px;
+  line-height: 1.6;
+  white-space: pre-wrap;
 }
 </style>

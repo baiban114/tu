@@ -137,6 +137,8 @@ export interface TextAnnotation {
   basisBinding?: HeadingSourceBinding;
   /** 标记来源；缺省视为 user */
   markerSource?: KnowledgeMarkerSource;
+  /** 节手柄「添加标注（本节）」打标签时绑定的节级标签 key（getSectionTagKey） */
+  sectionTagKey?: string;
 }
 
 export interface BlockMetadata {
