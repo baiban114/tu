@@ -219,6 +219,22 @@ export function resolveInsertedContentDelta(
   }
 }
 
+/**
+ * True when an insert delta replaces essentially the entire document (spans all
+ * but the terminal 2 positions). Used to skip the load-time `setContent` hydration
+ * (async page open from an empty editor), which would otherwise be offered as a
+ * reuse-mark over the whole document and select all text on entry. A genuine user
+ * paste/bulk-insert produces a localized delta and is not affected.
+ */
+export function insertCoversWholeDocument(
+  delta: InsertedContentDelta | null,
+  docSize: number,
+): boolean {
+  if (!delta) return false
+  const span = Math.max(0, delta.to - delta.from)
+  return docSize > 0 && span >= docSize - 2
+}
+
 export interface ReuseMarkOfferPolicy {
   isPaste: boolean
   /** Non-paste bulk inserts (drop / insertContent) must reach this length. Default 8. */

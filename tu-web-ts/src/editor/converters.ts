@@ -916,8 +916,15 @@ export function parseInlineMarkdown(
       continue
     }
 
-    const linkMatch = remaining.match(/^\[([^\]]+)\]\(([^)\s]+)(?:\s+(?:"([^"]*)"|'([^']*)'))?\)/)
+    const linkMatch = remaining.match(/^\[([^\]]*)\]\(([^)\s]+)(?:\s+(?:"([^"]*)"|'([^']*)'))?\)/)
     if (linkMatch) {
+      // ProseMirror cannot represent an empty text node. Keep an empty-label link as
+      // editable markdown source so href suggestions can fill its label first.
+      if (!linkMatch[1]) {
+        parts.push({ type: 'text', text: linkMatch[0] })
+        remaining = remaining.slice(linkMatch[0].length)
+        continue
+      }
       const href = linkMatch[2]
       const title = (linkMatch[3] || linkMatch[4] || '').trim() || undefined
       const linkAttrs: Record<string, unknown> = { href }

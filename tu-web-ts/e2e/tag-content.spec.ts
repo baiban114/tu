@@ -141,3 +141,26 @@ test('open page navigates to the document', async ({ page }) => {
   await expect(page.locator('.tu-editor-page .ProseMirror')).toBeVisible({ timeout: 15_000 })
   await expect(page.locator('.tu-editor-page .ProseMirror').getByText('设计节正文')).toBeVisible()
 })
+
+test('remembers last-viewed tag and restores it on reopen (direct load)', async ({ page }) => {
+  test.setTimeout(90_000)
+  await seedTaggedPage(page)
+  await openTagContentView(page)
+
+  // Select a tag so it gets persisted as the "last viewed" tag.
+  await page.locator('.tag-content-view__select').click()
+  await page.getByRole('option', { name: '实现' }).click()
+  await expect(page.locator('.tag-content-view__table .title-cell__title', { hasText: '实现节' })).toBeVisible()
+
+  // Leave the tag view, then reopen the page source feed / view.
+  await page.locator('.source-switch__btn', { hasText: '知识库' }).click()
+  await expect(page.locator('.tag-content-view')).toBeHidden()
+
+  await page.locator('.source-switch__btn', { hasText: '视图' }).click()
+  await page.locator('.kb-item', { hasText: '标签检索' }).click()
+
+  // Last-viewed tag is auto-restored and results load directly without manual selection.
+  await expect(page.locator('.tag-content-view .el-select__placeholder')).toHaveText('实现')
+  await expect(page.locator('.tag-content-view__table .title-cell__title', { hasText: '实现节' })).toBeVisible({ timeout: 15_000 })
+  await expect(page.locator('.tag-content-view__meta')).toContainText('命中 1 项')
+})

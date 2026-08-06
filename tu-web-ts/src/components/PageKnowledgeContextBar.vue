@@ -13,6 +13,26 @@ import PageTagsBar from '@/components/PageTagsBar.vue';
 
 const PREVIEW_LIMIT = 5;
 
+const META_EXPAND_KEY_PREFIX = 'tu:page-meta-expanded:';
+
+function readMetaExpanded(pageId: string): boolean {
+  if (!pageId) return false;
+  try {
+    return localStorage.getItem(META_EXPAND_KEY_PREFIX + pageId) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function persistMetaExpanded(pageId: string, expanded: boolean) {
+  if (!pageId) return;
+  try {
+    localStorage.setItem(META_EXPAND_KEY_PREFIX + pageId, expanded ? '1' : '0');
+  } catch {
+    // ignore
+  }
+}
+
 const props = withDefaults(defineProps<{
   kbId?: string;
   pageId: string;
@@ -41,7 +61,7 @@ const emit = defineEmits<{
 }>();
 
 const loading = ref(false);
-const expanded = ref(false);
+const expanded = ref(readMetaExpanded(props.pageId));
 const pagePoints = ref<KnowledgePoint[]>([]);
 const prerequisites = ref<KnowledgePoint[]>([]);
 const successors = ref<KnowledgePoint[]>([]);
@@ -119,10 +139,12 @@ function onPrerequisitesPageChange(page: number) {
 
 function expand() {
   expanded.value = true;
+  persistMetaExpanded(props.pageId, true);
 }
 
 function toggleExpanded() {
   expanded.value = !expanded.value;
+  persistMetaExpanded(props.pageId, expanded.value);
 }
 
 function editPrerequisites() {
@@ -137,7 +159,7 @@ function onPrerequisiteGroupClick() {
 watch(
   () => props.pageId,
   () => {
-    expanded.value = false;
+    expanded.value = readMetaExpanded(props.pageId);
   },
 );
 

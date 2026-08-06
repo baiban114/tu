@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue'
-import type { HeadingSourceBinding, KnowledgeAnchor, TextAnnotation } from '@/api/types'
+import type { BlockTag, HeadingSourceBinding, KnowledgeAnchor, TextAnnotation, TextTagSpan } from '@/api/types'
 import type { FloatingAnchorRect } from '@/composables/useAnchoredFloating'
 import { effectiveMarkerSource, externalResourceFromBinding } from '@/utils/headingSource'
 import KnowledgeRelationList from './KnowledgeRelationList.vue'
@@ -32,6 +32,8 @@ interface Props {
   zIndex?: number
   annotation: TextAnnotation | null
   annotations?: TextAnnotation[]
+  /** 文字标签：与标注按文本范围关联，同一标注单元多条笔记共享同一组标签。 */
+  textTagSpans?: TextTagSpan[]
   sourceBinding?: HeadingSourceBinding | null
   /** Badge on the shared resource meta panel for sourceBinding (来源 / 依据 / 资源节选). */
   sourceBadgeLabel?: string
@@ -45,6 +47,7 @@ interface Props {
 
 const props = withDefaults(defineProps<Props>(), {
   annotations: () => [],
+  textTagSpans: () => [],
   anchorRect: null,
   sourceBinding: null,
   sourceBadgeLabel: '来源',
@@ -78,6 +81,38 @@ const displayedAnnotations = computed(() => {
       : []
   return [...source].sort((a, b) => (b.updatedAt || b.createdAt || 0) - (a.updatedAt || a.createdAt || 0))
 })
+
+/**
+ * 每个标注对应的文字标签。标签以文本范围（标注单元）存储于 textTagSpans，
+ * 同一范围内无论几条笔记都共享同一组标签，因此按单元去重后只在首条笔记上展示。
+ */
+const annotationTags = computed(() => {
+  const map = new Map<string, BlockTag[]>()
+  const seenUnits = new Set<string>()
+  for (const item of displayedAnnotations.value) {
+    const unitKey = (typeof item.from === 'number' && typeof item.to === 'number')
+      ? `${item.from}:${item.to}`
+      : `text:${item.selectedText ?? ''}`
+    if (seenUnits.has(unitKey)) continue
+    seenUnits.add(unitKey)
+    const merged = tagsForAnnotation(item)
+    if (merged.length > 0) map.set(item.id, merged)
+  }
+  return map
+})
+
+function tagsForAnnotation(annotation: TextAnnotation): BlockTag[] {
+  if (typeof annotation.from !== 'number' || typeof annotation.to !== 'number') return []
+  const merged: BlockTag[] = []
+  for (const span of props.textTagSpans) {
+    if (typeof span.from !== 'number' || typeof span.to !== 'number') continue
+    if (span.to <= annotation.from || annotation.to <= span.from) continue
+    for (const tag of span.tags) {
+      if (!merged.some((t) => t.label.toLowerCase() === tag.label.toLowerCase())) merged.push(tag)
+    }
+  }
+  return merged
+}
 
 const hasSourceBinding = computed(() => !!props.sourceBinding?.resourceItemId)
 
@@ -164,10 +199,9 @@ function clampHorizontal(
     maxLeft = Math.min(maxLeft, anchor.right - width)
   }
   if (minLeft > maxLeft) {
-    if (anchor && anchor.width > 0) {
-      return Math.max(VIEWPORT_PADDING, Math.min(anchor.left, viewportWidth - width - VIEWPORT_PADDING))
-    }
-    return Math.max(VIEWPORT_PADDING, Math.min(left, maxLeft))
+    // Popover wider than anchor — follow the mouse click position
+    // (clamped to viewport) instead of snapping to the anchor's left edge.
+    return Math.max(VIEWPORT_PADDING, Math.min(left, viewportWidth - width - VIEWPORT_PADDING))
   }
   return Math.min(Math.max(minLeft, left), maxLeft)
 }
@@ -313,6 +347,15 @@ watch(
               {{ item.note }}
             </div>
 
+            <div v-if="annotationTags.get(item.id)?.length" class="note-popover__tags">
+              <span
+                v-for="tag in annotationTags.get(item.id)"
+                :key="tag.id"
+                class="tag-chip"
+                :style="{ '--tag-chip-color': tag.color || '#1677ff' }"
+              >{{ tag.label }}</span>
+            </div>
+
             <div class="note-popover__actions">
               <button
                 v-if="(item.kind === 'basis' || item.kind === 'excerpt') && item.basisBinding"
@@ -394,7 +437,7 @@ watch(
   display: flex;
   flex-direction: column;
   width: min(360px, calc(100vw - 24px));
-  max-height: min(420px, calc(100vh - 24px));
+  max-height: min(480px, calc(100dvh - 48px));
   overflow: hidden;
   border: 1px solid var(--el-border-color-light);
   border-radius: 10px;
@@ -430,9 +473,10 @@ watch(
 
 .note-popover__list {
   display: flex;
-  flex: 1;
+  flex: 0 0 260px;
   flex-direction: column;
   gap: 8px;
+  /* 笔记内容为可变长度：固定高度，保证其他内容与父容器尺寸稳定；溢出时列表内滚动 */
   min-height: 0;
   padding: 10px 12px 12px;
   overflow-y: auto;
@@ -593,6 +637,27 @@ watch(
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   margin-bottom: 8px;
+}
+
+.note-popover__tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.tag-chip {
+  --tag-chip-color: #1677ff;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--tag-chip-color) 30%, white);
+  background: color-mix(in srgb, var(--tag-chip-color) 12%, white);
+  color: color-mix(in srgb, var(--tag-chip-color) 85%, black);
+  padding: 2px 10px;
+  font-size: 12px;
+  line-height: 1.4;
 }
 
 .note-popover__actions {

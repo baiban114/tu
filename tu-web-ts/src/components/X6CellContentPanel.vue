@@ -58,8 +58,15 @@ const showExpandedDialog = ref(false)
 const expandedTitle = computed(() => (bound.value
   ? (props.binding.boundPageTitle?.trim() || props.binding.boundPageId || '已绑定文档')
   : `${subjectNoun.value}内容`))
-const expandedTag = computed(() => (bound.value ? '绑定文档' : '画板内容'))
-const expandedEditTag = computed(() => (props.editable ? '可编辑' : '只读'))
+/**
+ * Expanded dialog banner tags.
+ * 编辑状态下不显示任何标签（保持界面简洁）；
+ * 只读状态下仅显示「只读」标签，提示当前为只读视图。
+ */
+const dialogTags = computed<string[]>(() => {
+  if (props.editable) return []
+  return ['只读']
+})
 
 function openExpandedDialog() {
   if (loading.value || loadError.value) return
@@ -317,7 +324,7 @@ onBeforeUnmount(() => {
       v-model:visible="showExpandedDialog"
       :title="expandedTitle"
       :dialog-title="`${subjectNoun}内容`"
-      :tags="[expandedTag, expandedEditTag]"
+      :tags="dialogTags"
       :document="editorDocument"
       :editable="editable"
       :loading="loading"

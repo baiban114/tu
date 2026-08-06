@@ -12,6 +12,31 @@ import { useWorkspaceViewsStore } from '@/stores/workspaceViews'
 import { fetchKbTagPool } from '@/utils/tagPool'
 import TaggedContentExpander from './TaggedContentExpander.vue'
 
+const LAST_TAG_KEY = 'tu:tag-content-view:last-tag'
+
+function readLastTagLabel(kbId: string): string {
+  try {
+    const raw = localStorage.getItem(LAST_TAG_KEY)
+    if (!raw) return ''
+    const map = JSON.parse(raw) as Record<string, string>
+    return typeof map[kbId] === 'string' ? map[kbId] : ''
+  } catch {
+    return ''
+  }
+}
+
+function persistLastTagLabel(kbId: string, label: string) {
+  try {
+    const raw = localStorage.getItem(LAST_TAG_KEY)
+    const map = raw ? JSON.parse(raw) as Record<string, string> : {}
+    if (label) map[kbId] = label
+    else delete map[kbId]
+    localStorage.setItem(LAST_TAG_KEY, JSON.stringify(map))
+  } catch {
+    // ignore
+  }
+}
+
 const workspace = useWorkspaceStore()
 const viewsStore = useWorkspaceViewsStore()
 const router = useRouter()
@@ -46,11 +71,23 @@ async function loadTagPool() {
   poolLoading.value = true
   try {
     tagPool.value = await fetchKbTagPool(kbId.value)
+    restoreLastTag()
   } catch {
     tagPool.value = []
   } finally {
     poolLoading.value = false
   }
+}
+
+function restoreLastTag() {
+  if (selectedTagLabel.value) return
+  const cached = readLastTagLabel(kbId.value)
+  if (!cached) return
+  const exists = tagPool.value.some((tag) => tag.label.toLowerCase() === cached.toLowerCase())
+  if (!exists) return
+  selectedTagLabel.value = cached
+  page.value = 0
+  void loadResults()
 }
 
 async function loadResults() {
@@ -80,6 +117,7 @@ async function loadResults() {
 async function onTagChange(label: string) {
   selectedTagLabel.value = label
   page.value = 0
+  persistLastTagLabel(kbId.value, label)
   await loadResults()
 }
 

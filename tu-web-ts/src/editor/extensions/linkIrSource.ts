@@ -17,11 +17,11 @@ export const LINK_IR_META = 'tuLinkIr'
 export const LINK_IR_SKIP_EXPAND_META = 'tuLinkIrSkipExpand'
 
 const COLLAPSE_RE =
-  /^\[([^\]]+)\]\(([^)\s]+)(?:\s+(?:"([^"]*)"|'([^']*)'))?\)$/
+  /^\[([^\]]*)\]\(([^)\s]+)(?:\s+(?:"([^"]*)"|'([^']*)'))?\)$/
 
 /** Find complete markdown links inside a textblock (not anchored to caret end). */
 const FIND_IN_BLOCK_RE =
-  /\[([^\]]+)\]\(([^)\s]+)(?:\s+(?:"([^"]*)"|'([^']*)'))?\)/g
+  /\[([^\]]*)\]\(([^)\s]+)(?:\s+(?:"([^"]*)"|'([^']*)'))?\)/g
 
 export interface LinkIrSourceState {
   from: number
@@ -55,7 +55,7 @@ export function parseMarkdownLinkSource(text: string): {
   const label = match[1]?.trim() ?? ''
   const href = match[2]?.trim() ?? ''
   const title = (match[3] || match[4] || '').trim() || null
-  if (!label || !href) return null
+  if (!href) return null
   return { label, href, title }
 }
 
@@ -416,6 +416,10 @@ function buildCollapseTransaction(
   if (!parsed || !isAllowedHref(parsed.href)) {
     return tr
   }
+
+  // Empty text nodes are invalid in ProseMirror. Keep `[](query)` as source text
+  // until a suggestion supplies the link label.
+  if (!parsed.label) return tr
 
   tr.replaceWith(active.from, active.to, state.schema.text(parsed.label))
   tr.addMark(

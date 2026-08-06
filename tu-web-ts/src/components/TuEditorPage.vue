@@ -176,6 +176,7 @@ import {
   resolveInsertedContentDelta,
   shouldOfferReuseMarkForContentAddition,
   rangeTouchesExistingResourceMeta,
+  insertCoversWholeDocument,
 } from '@/editor/reuseMarkContentLifecycle'
 
 type TocItem = TocTreeItem
@@ -1013,7 +1014,7 @@ const {
   placement: 'below',
   offset: 8,
   floatingWidth: 360,
-  floatingHeight: 420,
+  floatingHeight: 480,
 })
 
 // --- Watchers ---
@@ -1800,6 +1801,12 @@ function tryOfferReuseMarkAfterTransaction(editor: Editor, tr: Transaction) {
   if (!shouldOfferReuseMarkForContentAddition(delta, { isPaste: isPasteTransaction(tr) })) {
     return
   }
+
+  // A load-time `setContent` (async page open) replaces the whole document from an
+  // empty/near-empty editor, so the delta spans essentially the entire doc. That is
+  // content hydration, not a user paste/bulk-insert — offering reuse-mark here would
+  // select the whole document. Skip any delta that covers nearly the whole document.
+  if (insertCoversWholeDocument(delta, editor.state.doc.content.size)) return
 
   // Pasting again into a paragraph/blockquote that already shows excerpt/basis meta
   // must not re-trigger the auto-mark toolbar.
@@ -3366,29 +3373,35 @@ const handleTextTagSpanClick = (spanId: string) => {
   const span = getTextTagSpans(localPageMetadata.value).find((item) => item.id === spanId)
   if (!span) return
 
+  // 点击标签高亮只打开展示弹窗（+该单元的标签），编辑从展示弹窗进入。
+  // 同一标注单元可能有多条笔记，全部收集到展示弹窗，避免两个弹窗同时出现。
   const rangeFrom = typeof span.from === 'number' ? span.from : selectionFrom.value
   const rangeTo = typeof span.to === 'number' ? span.to : selectionTo.value
-  const overlappingAnnotation = localAnnotations.value.find((annotation) => (
+  const overlapping = localAnnotations.value.filter((annotation) => (
     annotation.kind !== 'basis'
     && typeof annotation.from === 'number'
     && typeof annotation.to === 'number'
     && annotation.from < rangeTo
     && rangeFrom < annotation.to
   ))
+  const sorted = sortAnnotationsByTimeDesc(overlapping)
+  const annotation = sorted[0] ?? null
+  if (!annotation) return
 
-  pendingNoteBlockId.value = ''
-  pendingNoteSelectedText.value = span.selectedText
-  pendingNoteContextBefore.value = span.contextBefore
-  pendingNoteContextAfter.value = span.contextAfter
-  pendingNoteFrom.value = rangeFrom
-  pendingNoteTo.value = rangeTo
-  pendingNoteSpannedBlockIds.value = []
-  pendingNoteSpannedBlockMetadata.value = []
-  pendingNoteTags.value = [...span.tags]
-  pendingTextTagSpanId.value = span.id
-  pendingNoteSectionKey.value = ''
-  editingAnnotation.value = overlappingAnnotation ? { ...overlappingAnnotation } : undefined
-  noteEditorVisible.value = true
+  noteEditorVisible.value = false
+  notePopoverAnnotation.value = annotation
+  notePopoverAnnotations.value = sorted.length ? sorted : [annotation]
+  notePopoverSourceBinding.value = null
+  notePopoverHeadingTitle.value = ''
+  notePopoverRelationAnchor.value = null
+  const highlightRect = document
+    .querySelector<HTMLElement>(`[data-tu-text-tag-span-id="${CSS.escape(spanId)}"]`)
+    ?.getBoundingClientRect()
+  const fallback = highlightRect
+    ?? rectFromPoint(window.innerWidth / 2, window.innerHeight / 2)
+  notePopoverAnchor.value = resolveAnnotationAnchorRect(annotation, fallback)
+  notePopoverVisible.value = true
+  updateNotePopoverPosition()
 }
 
 const handleTextTagSpansMapped = (spans: TextTagSpan[]) => {
@@ -4201,11 +4214,10 @@ const handleAnnotationClick = (payload: { annotationId: string; annotationIds?: 
   notePopoverSourceBinding.value = null
   notePopoverHeadingTitle.value = ''
   notePopoverRelationAnchor.value = null
-  const highlightRect = (payload.event.target as HTMLElement | null)
-    ?.closest('[data-tu-annotation-id]')
-    ?.getBoundingClientRect()
-  const fallback = highlightRect ?? rectFromPoint(payload.event.clientX, payload.event.clientY)
-  notePopoverAnchor.value = resolveAnnotationAnchorRect(annotation, fallback)
+  // 文字标注：以鼠标点击位置为锚点（横向跟随点击，而非高亮框最左缘）。
+  // 块/复合标注仍以块矩形定位。
+  const clickPoint = rectFromPoint(payload.event.clientX, payload.event.clientY)
+  notePopoverAnchor.value = resolveAnnotationAnchorRect(annotation, clickPoint)
   notePopoverVisible.value = true
   updateNotePopoverPosition()
 }
@@ -5016,6 +5028,7 @@ onBeforeUnmount(() => {
       :visible="notePopoverVisible"
       :annotation="notePopoverAnnotation"
       :annotations="notePopoverAnnotations"
+      :text-tag-spans="currentTextTagSpans"
       :source-binding="notePopoverSourceBinding"
       :source-badge-label="notePopoverSourceBadgeLabel"
       :heading-title="notePopoverHeadingTitle"
