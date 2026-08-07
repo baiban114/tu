@@ -1,4 +1,4 @@
-﻿import type { Block, EmbeddedObject, HeadingSourceBinding, PageContent } from '@/api/types'
+import type { Block, EmbeddedObject, HeadingSourceBinding, PageContent } from '@/api/types'
 import type { JSONContent } from '@tiptap/core'
 import {
   HEADING_SOURCE_COMMENT_RE,
@@ -552,7 +552,7 @@ function injectCodeBlockPlaceholders(nodes: JSONContent[], blocks: JSONContent[]
   })
 }
 
-function parseMarkdown(markdown: string): JSONContent[] {
+export function parseMarkdown(markdown: string): JSONContent[] {
   if (!markdown.trim()) return []
 
   const { markdown: withoutFences, blocks } = extractFencedCodeBlocks(markdown)
@@ -561,6 +561,62 @@ function parseMarkdown(markdown: string): JSONContent[] {
 
 function createLineBlockId(): string {
   return `block-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+}
+
+/** Split a GFM pipe-table row into cells, keeping `|` inside inline code intact. */
+function splitTableRow(line: string): string[] {
+  let s = line.trim()
+  if (s.startsWith('|')) s = s.slice(1)
+  if (s.endsWith('|')) s = s.slice(0, -1)
+  const cells: string[] = []
+  let current = ''
+  let inCode = false
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i]
+    if (ch === '`') inCode = !inCode
+    if (ch === '|' && !inCode) {
+      cells.push(current)
+      current = ''
+    } else {
+      current += ch
+    }
+  }
+  cells.push(current)
+  return cells.map((c) => c.trim())
+}
+
+/** Whether a line is a GFM table separator row like `| :--- | ---: | :---: |`. */
+function isTableSeparatorRow(line: string): boolean {
+  const trimmed = line.trim()
+  if (!trimmed.includes('|')) return false
+  const body = trimmed.replace(/^\|/, '').replace(/\|$/, '').trim()
+  if (!body) return false
+  const cells = body.split('|').map((c) => c.trim())
+  return cells.length > 0 && cells.every((c) => /^:?-+:?$/.test(c))
+}
+
+/** Parse a GFM pipe table block into a `tableBlock` node, or null if not a table. */
+function tryParseGfmTable(paragraph: string): JSONContent | null {
+  const lines = paragraph.split('\n').map((l) => l.trim())
+  if (lines.length < 2) return null
+  if (!lines[0].includes('|') || !isTableSeparatorRow(lines[1])) return null
+  const headers = splitTableRow(lines[0])
+  if (headers.length < 2) return null
+  const rows: string[][] = []
+  for (let i = 2; i < lines.length; i++) {
+    const line = lines[i]
+    if (!line) continue
+    // A non-table trailing line means this block is not a standalone table.
+    if (!line.includes('|')) return null
+    rows.push(splitTableRow(line))
+  }
+  return {
+    type: 'tableBlock',
+    attrs: {
+      blockId: createLineBlockId(),
+      tableData: { textMode: 'plain', headers, rows },
+    },
+  }
 }
 
 function parseMarkdownBlocks(markdown: string): JSONContent[] {
@@ -572,6 +628,13 @@ function parseMarkdownBlocks(markdown: string): JSONContent[] {
   for (const para of paragraphs) {
     if (!para.trim()) {
       nodes.push({ type: 'paragraph' })
+      continue
+    }
+
+    // GFM pipe table
+    const gfmTable = tryParseGfmTable(para)
+    if (gfmTable) {
+      nodes.push(gfmTable)
       continue
     }
 

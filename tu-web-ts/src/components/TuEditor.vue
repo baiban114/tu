@@ -107,6 +107,7 @@ import { getTocSectionBoundaryPos } from '@/utils/toc/tocSections'
 import { resolveFoldSectionEntryIdAtPos } from '@/utils/toc/resolveFoldSectionEntry'
 import type { ResolvedPos } from '@tiptap/pm/model'
 import { EDITOR_SECTION_HANDLE_KEY } from '@/editor/editorSectionHandleBridge'
+import { parseMarkdown } from '@/editor/converters'
 
 interface Props {
   /** Tiptap document JSON（schema v2 主路径） */
@@ -2033,6 +2034,32 @@ function findClipboardImageFile(clipboard: DataTransfer | null): File | null {
   return findClipboardImageFileOnly(clipboard)
 }
 
+/**
+ * Whether pasted plain text contains recognizable markdown structure so it should
+ * be parsed as markdown on paste (tables, headings, lists, fenced code) rather
+ * than inserted literally. GFM tables require a separator row, so plain prose
+ * with stray `|` is left untouched.
+ */
+function looksLikeMarkdown(text: string): boolean {
+  if (!text.trim()) return false
+  const lines = text.split('\n')
+  // GFM table: a row followed by a separator row (`| --- | :---: | ---: |`).
+  for (let i = 0; i + 1 < lines.length; i++) {
+    const header = lines[i]?.trim() ?? ''
+    const separator = lines[i + 1]?.trim() ?? ''
+    if (header.includes('|') && /^\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$/.test(separator)) {
+      return true
+    }
+  }
+  // Fenced code block.
+  if (/^```/m.test(text)) return true
+  // ATX heading.
+  if (/^#{1,6}\s/m.test(text)) return true
+  // Unordered / ordered / task list markers.
+  if (/^(\s*[-*+]\s|\s*\d+[.)]\s|\s*[-*]\s*\[[ xX]\]\s)/m.test(text)) return true
+  return false
+}
+
 function writePageMetaToClipboard(view: { state: { doc: import('@tiptap/pm/model').Node; selection: { from: number; to: number } } }, event: Event) {
   const clipboardEvent = event as ClipboardEvent
   if (!clipboardEvent.clipboardData) return
@@ -2163,6 +2190,16 @@ const editor = useEditor({
           return true
         }
         return false
+      }
+
+      // Plain-text markdown paste: render markdown structures (GFM tables,
+      // headings, lists, fenced code) as blocks instead of literal text.
+      if (plain.trim() && looksLikeMarkdown(plain)) {
+        const json = parseMarkdown(plain)
+        if (json.length > 0) {
+          const ok = editor.value.chain().focus().insertContent(json).run()
+          if (ok) return true
+        }
       }
 
       const imageFile = findClipboardImageFile(event.clipboardData)

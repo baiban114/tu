@@ -9,17 +9,21 @@ import CanvasPage from '@/components/CanvasPage.vue';
 import TuEditorPage from '@/components/TuEditorPage.vue';
 import KnowledgePointReadingPreview from '@/components/KnowledgePointReadingPreview.vue';
 import TagContentViewPanel from '@/components/workspaceViews/TagContentViewPanel.vue';
+import LocalFileViewer from '@/components/LocalFileViewer.vue';
 import type { PageContent, PageType } from '@/api/types';
 import { useWorkspaceStore } from '@/stores/workspace';
 import { useWorkspaceViewsStore } from '@/stores/workspaceViews';
+import { useLocalFileStore } from '@/stores/localFile';
 import {
   loadWorkspaceScrollTop,
   saveWorkspaceScrollTop,
 } from '@/utils/workspaceScroll';
 import type { KnowledgeAnchorNavigateHandlers } from '@/utils/knowledgeAnchor';
+import { getInitialOpenFile, onOpenLocalFile } from '@/desktop/tauriBridge';
 
 const store = useWorkspaceStore();
 const viewsStore = useWorkspaceViewsStore();
+const localFileStore = useLocalFileStore();
 const route = useRoute();
 const router = useRouter();
 
@@ -58,11 +62,40 @@ onMounted(() => {
   void initializeWorkspace();
 });
 
+let unsubscribeOpenLocalFile: (() => void) | null = null;
+
 async function initializeWorkspace() {
-  await store.reloadWorkspace();
-  await applyRouteSelection();
+  // 优先初始化 Tauri 本地文件桥接（不依赖后端，确保双击 md 能立即响应）
+  await initLocalFileBridge();
+
+  // 再初始化 workspace（可能因后端不可达而失败，不影响本地文件查看）
+  try {
+    await store.reloadWorkspace();
+    await applyRouteSelection();
+  } catch (error) {
+    console.warn('[HomeView] Workspace initialization failed, continuing:', error);
+  }
+
   await nextTick();
   void restoreContentScroll();
+}
+
+/** Tauri 桌面端：监听双击 .md 文件打开事件，并拾取启动时的初始文件参数。 */
+async function initLocalFileBridge() {
+  // 监听单实例转发的文件打开事件（应用已运行时再次双击 .md）
+  unsubscribeOpenLocalFile = onOpenLocalFile((filePath) => {
+    void localFileStore.openFile(filePath);
+  });
+
+  // 拾取启动时的初始文件参数（应用通过文件关联启动）
+  try {
+    const initialFile = await getInitialOpenFile();
+    if (initialFile) {
+      await localFileStore.openFile(initialFile);
+    }
+  } catch (error) {
+    console.warn('[HomeView] Failed to pick up initial local file:', error);
+  }
 }
 
 async function applyRouteSelection() {
@@ -223,6 +256,10 @@ onBeforeUnmount(() => {
     clearTimeout(scrollSaveTimer);
     scrollSaveTimer = null;
   }
+  if (unsubscribeOpenLocalFile) {
+    unsubscribeOpenLocalFile();
+    unsubscribeOpenLocalFile = null;
+  }
 });
 
 function onContentChange(content: PageContent) {
@@ -248,6 +285,22 @@ watch(
   () => {
     if (!(showDocumentPage.value || showResourceDocument.value)) return;
     void nextTick(() => restoreContentScroll());
+  },
+);
+
+/**
+ * 用户在左侧栏主动切换知识库页面时，关闭本地文件视图并冲刷未保存内容。
+ * oldId === null 表示是初始化期间的首次赋值，不视为用户主动切换。
+ */
+watch(
+  () => store.currentPageId,
+  (newId, oldId) => {
+    if (!localFileStore.isActive) return;
+    if (!newId || newId === oldId) return;
+    if (oldId === null) return; // 初始化期间不关闭
+    void localFileStore.flushSave().finally(() => {
+      localFileStore.closeFile();
+    });
   },
 );
 </script>
@@ -307,8 +360,12 @@ watch(
         </button>
         <AppHelpButton variant="topbar" :page-type="helpPageType" />
       </div>
+      <LocalFileViewer
+        v-if="localFileStore.isActive"
+        class="content-scroll"
+      />
       <div
-        v-if="showTagContentView"
+        v-else-if="showTagContentView"
         class="content-tag-view"
       >
         <TagContentViewPanel />
