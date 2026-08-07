@@ -74,9 +74,7 @@ const hasKnowledgeContent = computed(() =>
   || successors.value.length > 0,
 );
 
-const hasTags = computed(() =>
-  props.tags.length > 0 || props.filterTags.length > 0,
-);
+const hasTags = computed(() => props.tags.length > 0);
 
 const hasContent = computed(() => hasKnowledgeContent.value || hasTags.value);
 

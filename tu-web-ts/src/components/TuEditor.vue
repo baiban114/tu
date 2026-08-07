@@ -1,4 +1,4 @@
-﻿<script setup lang="ts">
+<script setup lang="ts">
 import { watch, onBeforeUnmount, onMounted, nextTick, ref, computed, provide, inject, type ComputedRef } from 'vue'
 import type { CSSProperties } from 'vue'
 import { useEditor, EditorContent } from '@tiptap/vue-3'
@@ -3501,10 +3501,6 @@ defineExpose({
 
 .tu-editor-wrapper :deep(.tu-tiptap-annotation--ai) {
   outline: 1px dashed #1677ff;
-}
-
-.tu-editor-wrapper :deep(.tu-tiptap-annotation--basis.tu-tiptap-annotation--ai) {
-  box-shadow: 0 0 0 2px rgba(22, 119, 255, 0.35) !important;
 }
 
 .tu-editor-wrapper :deep(.tu-editor-content ul),

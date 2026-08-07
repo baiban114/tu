@@ -312,17 +312,7 @@ function createDecorations(doc: ProseMirrorNode, annotations: TextAnnotation[]):
         : unitRole
           ? `tu-tiptap-annotation tu-tiptap-annotation--unit-role tu-tiptap-annotation--unit-role-${unitRole}`
           : 'tu-tiptap-annotation'
-    const boxShadow = isBasis
-      ? 'box-shadow:0 0 0 2px rgba(76,175,80,0.45)'
-      : isExcerpt
-        ? 'box-shadow:0 0 0 2px rgba(3,105,161,0.35)'
-        : unitRole === 'system'
-          ? 'box-shadow:0 0 0 2px rgba(96,125,139,0.4)'
-          : unitRole === 'problem'
-            ? 'box-shadow:0 0 0 2px rgba(255,152,0,0.4)'
-            : unitRole === 'solution'
-              ? 'box-shadow:0 0 0 2px rgba(0,150,136,0.4)'
-              : 'box-shadow:0 0 0 2px rgba(255,193,7,0.55)'
+    const annotationColor = annotation.color || defaultColor
 
     decorations.push(Decoration.inline(from, to, {
       class: [
@@ -333,11 +323,13 @@ function createDecorations(doc: ProseMirrorNode, annotations: TextAnnotation[]):
       'data-tu-annotation-ai': annotation.markerSource === 'ai' ? '1' : undefined,
       'data-tu-unit-role': unitRole || undefined,
       style: [
-        `--tu-annotation-color:${annotation.color || defaultColor}`,
-        `background:${annotation.color || defaultColor}`,
-        boxShadow,
+        `--tu-annotation-color:${annotationColor}`,
+        'background:transparent',
+        'text-decoration:underline',
+        `text-decoration-color:${annotationColor}`,
+        'text-decoration-thickness:2px',
+        'text-underline-offset:2px',
         'cursor:pointer',
-        'border-radius:3px',
       ].join(';'),
     }))
   }

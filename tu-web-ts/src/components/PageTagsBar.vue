@@ -10,12 +10,19 @@ interface Props {
   filterTags?: BlockTag[]
   activeFilter?: BlockTag | null
   editable?: boolean
+  /**
+   * 标签点击行为：
+   * - 'filter'（默认）：点击标签进行过滤查看，再次点击取消过滤
+   * - 'edit'：点击标签打开编辑弹窗（用于无内容过滤场景，如画板页面）
+   */
+  chipClickMode?: 'filter' | 'edit'
 }
 
 const props = withDefaults(defineProps<Props>(), {
   filterTags: () => [],
   activeFilter: null,
   editable: true,
+  chipClickMode: 'filter',
 })
 
 const emit = defineEmits<{
@@ -43,9 +50,12 @@ const filterTagKeys = computed(() => {
   return keys
 })
 
+// 文档元数据区域只展示页面元数据标签（props.tags），
+// 不再混入正文中收集的内容标签（filterTags）。
+// filterTags 仅用于判断某个元数据标签是否同时出现在正文中（样式区分）。
 const displayTags = computed(() => {
   const byKey = new Map<string, BlockTag>()
-  for (const tag of [...props.tags, ...props.filterTags]) {
+  for (const tag of props.tags) {
     const key = normalizeTagLabel(tag.label).toLowerCase() || tag.id
     if (!byKey.has(key)) byKey.set(key, tag)
   }
@@ -81,12 +91,18 @@ function onRemove(event: MouseEvent, tag: BlockTag) {
 }
 
 function onChipClick(tag: BlockTag) {
-  if (isFilterTag(tag)) {
-    if (isActive(tag)) emit('clear-filter')
-    else emit('select-filter', tag)
+  // 'edit' 模式：点击标签直接打开编辑弹窗（画板等无内容过滤的场景）
+  if (props.chipClickMode === 'edit') {
+    if (props.editable) emit('edit')
     return
   }
-  if (props.editable) emit('edit')
+  // 'filter' 模式：统一所有标签点击为"查看该标签"（过滤高亮）。
+  // 编辑标签请使用"+ 标签"按钮。
+  if (isActive(tag)) {
+    emit('clear-filter')
+  } else {
+    emit('select-filter', tag)
+  }
 }
 </script>
 
@@ -132,7 +148,7 @@ function onChipClick(tag: BlockTag) {
       class="page-tags-bar__add"
       @click.stop="emit('edit')"
     >
-      {{ displayTags.length > 0 ? '+ 标签' : '+ 添加标签' }}
+      {{ displayTags.length > 0 ? '编辑' : '添加标签' }}
     </button>
   </div>
 </template>

@@ -101,6 +101,7 @@ onBeforeUnmount(() => {
       <PageTagsBar
         :tags="pageTags"
         editable
+        chip-click-mode="edit"
         @edit="openPageTagEditor"
         @remove="removePageTag"
       />
