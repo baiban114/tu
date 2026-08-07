@@ -1,0 +1,15 @@
+{
+  "name": "tu-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "tu 桌面端打包壳（Tauri v2），与 web 端开发完全隔离。",
+  "scripts": {
+    "build": "node scripts/build-desktop.mjs",
+    "dev": "node scripts/dev-desktop.mjs",
+    "tauri": "tauri",
+    "icon": "tauri icon"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2"
+  }
+}

@@ -1,0 +1,9 @@
+# Tauri 桌面端构建产物（与 web 端完全隔离）
+node_modules/
+src-tauri/target/
+src-tauri/gen/
+src-tauri/Cargo.lock
+
+# 本地图标生成产物（由 `npx tauri icon` 生成，不入库）
+# 如需入库自定义图标，请删除下行并手动提交 icons/ 目录
+src-tauri/icons/
