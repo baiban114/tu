@@ -23,6 +23,7 @@ import {
 } from '@/editor/pasteHtmlContent'
 import {
   isHeadingPasteContext,
+  normalizePastedPlainText,
   pastePlainTextInHeading,
 } from '@/editor/pasteInTextblock'
 import {
@@ -2181,6 +2182,19 @@ const editor = useEditor({
       const html = event.clipboardData?.getData('text/html') ?? ''
       const plain = event.clipboardData?.getData('text/plain') ?? ''
       const pageMeta = parsePageClipboardMeta(event.clipboardData?.getData(TU_PAGE_META_MIME))
+
+      // Paste inside a code block must stay inside the block as plain code text.
+      // Skip the markdown-first / HTML block-inserting paths below, which would
+      // otherwise drop the pasted content into new blocks after the code block.
+      const codeBlockSelection = editor.value.state.selection.$from
+      if (codeBlockSelection.parent.type.spec.code) {
+        const text = normalizePastedPlainText(plain)
+        if (text) {
+          editor.value.view.dispatch(editor.value.state.tr.insertText(text))
+          return true
+        }
+        return false
+      }
 
       if (isHeadingPasteContext(editor.value) && plain && !html.trim()) {
         pastePlainTextInHeading(editor.value, plain)

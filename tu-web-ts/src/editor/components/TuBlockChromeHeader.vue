@@ -81,6 +81,7 @@ function onHeaderDragStart(event: DragEvent) {
         data-node-view-no-drag
         draggable="false"
         :placeholder="titlePlaceholder"
+        :title="title"
         @mousedown.stop
         @click.stop
         @dragstart.stop.prevent
@@ -155,6 +156,7 @@ function onHeaderDragStart(event: DragEvent) {
 
 .tu-block-chrome-header__title {
   min-width: 0;
+  max-width: 30%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -166,7 +168,7 @@ function onHeaderDragStart(event: DragEvent) {
 .tu-block-chrome-header__title-input {
   flex: 1;
   min-width: 0;
-  max-width: 100%;
+  max-width: 30%;
   margin: 0;
   padding: 2px 6px;
   border: 1px solid transparent;
@@ -178,6 +180,9 @@ function onHeaderDragStart(event: DragEvent) {
   font-weight: 600;
   line-height: 1.4;
   outline: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .tu-block-chrome-header__title-input:hover {

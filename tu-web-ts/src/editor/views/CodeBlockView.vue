@@ -14,6 +14,12 @@ const props = defineProps(nodeViewProps)
 
 const currentLanguage = computed(() => codeBlockSelectValue(props.node.attrs.language))
 
+const title = computed(() => String(props.node.attrs.title || ''))
+
+function onTitleChange(next: string) {
+  props.updateAttributes({ title: next.trim() })
+}
+
 const codeLanguageClass = computed(() => {
   const lang = normalizeCodeBlockLanguage(props.node.attrs.language)
   return lang ? `language-${lang}` : ''
@@ -26,7 +32,12 @@ const codeLanguageClass = computed(() => {
     :class="{ 'tu-code-block-view--selected': selected }"
   >
     <div class="tu-code-block-view__shell">
-      <TuBlockChromeHeader type-label="代码块">
+      <TuBlockChromeHeader
+        :title="title"
+        title-editable
+        title-placeholder="代码块名称"
+        @title-change="onTitleChange"
+      >
         <template #trailing>
           <ElSelect
             :model-value="currentLanguage"

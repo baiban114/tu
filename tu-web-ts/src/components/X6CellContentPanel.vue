@@ -263,7 +263,7 @@ onBeforeUnmount(() => {
     </div>
 
     <div class="x6-cell-content__pane-toolbar">
-      <span class="x6-cell-content__pane-label">{{ subjectNoun }}内容编辑器</span>
+      <span class="x6-cell-content__pane-label">内容</span>
       <button
         type="button"
         class="x6-cell-content__bind-btn"

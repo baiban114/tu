@@ -106,12 +106,17 @@ export function createCodeBlockBoundaryShortcuts(nodeName = CODE_BLOCK_NAME) {
       const { $from, empty } = state.selection
       if (!empty || $from.parent.type.name !== nodeName) return false
 
+      // An effectively empty code block should be deleted on Backspace no
+      // matter where the cursor sits (its content is a single zero-width
+      // placeholder char, so the cursor may sit before or after it).
+      if (isCodeBlockEffectivelyEmpty($from.parent.textContent)) {
+        return editor.commands.deleteNode(nodeName)
+      }
+
       const isAtStart = $from.parentOffset === 0
       if (!isAtStart) return false
 
-      if (!isCodeBlockEffectivelyEmpty($from.parent.textContent)) return false
-
-      return editor.commands.deleteNode(nodeName)
+      return false
     },
   }
 }

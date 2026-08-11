@@ -22,6 +22,17 @@ function shouldStopCodeBlockChromeEvent(event: Event): boolean {
 export const CodeBlockNode = CodeBlock.extend({
   name: 'codeBlock',
 
+  addAttributes() {
+    return {
+      ...this.parent?.(),
+      title: {
+        default: '',
+        parseHTML: (element) => element.getAttribute('data-title') || '',
+        renderHTML: (attributes) => (attributes.title ? { 'data-title': attributes.title } : {}),
+      },
+    }
+  },
+
   addNodeView() {
     return VueNodeViewRenderer(CodeBlockView, {
       stopEvent: ({ event }) => shouldStopCodeBlockChromeEvent(event),

@@ -126,6 +126,10 @@ import {
   EDGE_Z_INDEX,
   MINDMAP_DRAG_PREVIEW_EDGE_ID,
   MINDMAP_DRAG_PREVIEW_OPTION,
+  BOARD_SOURCE_ARROWHEAD_TOOL,
+  BOARD_TARGET_ARROWHEAD_TOOL,
+  ensureSnappingArrowheadToolsRegistered,
+  snapFreeEdgeTerminals,
   type NodePreset,
 } from '@/components/x6';
 
@@ -1528,8 +1532,9 @@ function syncEdgeTools() {
     }
     const items: Array<{ name: string; args?: Record<string, unknown> }> = [
       { name: 'vertices' },
-      { name: 'source-arrowhead' },
-      { name: 'target-arrowhead' },
+      // 画板使用吸附箭头：拖拽端点吸附到节点边界，避免产生悬空自由点端点。
+      { name: isMindmap.value ? 'source-arrowhead' : BOARD_SOURCE_ARROWHEAD_TOOL },
+      { name: isMindmap.value ? 'target-arrowhead' : BOARD_TARGET_ARROWHEAD_TOOL },
     ];
     // Mindmap: delete via selection + Delete/toolbar, not an on-edge remove button.
     if (!isMindmap.value) {
@@ -1594,16 +1599,18 @@ function applyGraphData(data?: GraphData, fitView = false) {
   if (!graph) return;
 
   const normalized = normalizeGraphData(data);
+  // 画板：把历史遗留的「悬空」自由点端点吸附回最近节点边界，统一端点样式。
+  const normalizedData = isMindmap.value ? normalized : snapFreeEdgeTerminals(normalized);
   const incomingUml = (data as Record<string, any> | undefined)?.uml;
   if (incomingUml) {
     objectModelStore.replaceModel(incomingUml);
   }
-  const structuralSnapshot = JSON.stringify(stripVolatileCellContent(normalized));
-  const snapshot = JSON.stringify(normalized);
+  const structuralSnapshot = JSON.stringify(stripVolatileCellContent(normalizedData));
+  const snapshot = JSON.stringify(normalizedData);
 
   // Same topology: only patch cell content bindings, keep selection/hit targets.
   if (structuralSnapshot === lastStructuralSnapshot && graph.getCellCount() > 0) {
-    patchCellContentFromGraphData(normalized);
+    patchCellContentFromGraphData(normalizedData);
     lastSerializedSnapshot = snapshot;
     refreshSelectedCellState();
     return;
@@ -1623,7 +1630,7 @@ function applyGraphData(data?: GraphData, fitView = false) {
   }
   lastSerializedSnapshot = snapshot;
   lastStructuralSnapshot = structuralSnapshot;
-  graph.fromJSON({ cells: normalized.cells ?? [] });
+  graph.fromJSON({ cells: normalizedData.cells ?? [] });
   graph.cleanSelection();
   graph.getEdges().forEach((edge) => ensureEdgeHitTarget(edge));
   syncTaskFlowEdgeState();
@@ -3897,6 +3904,7 @@ function initGraph() {
   );
 
   ensureBoardGroupShape();
+  ensureSnappingArrowheadToolsRegistered();
   attachMindmapDirection(graph, props.graphData);
   bindKeyboardShortcuts();
   bindGraphEvents();
@@ -4239,20 +4247,19 @@ defineExpose({
         <span class="toolbar-summary">{{ zoomPercent }}%</span>
       </div>
     </div>
-    <div
-      v-if="(toolbarEnabled && !toolbarVisible) || (inspectorEnabled && !inspectorVisible)"
-      class="x6-restore-bar"
-      :class="{ 'x6-restore-bar--floating': !toolbarEnabled }"
-    >
-      <button v-if="toolbarEnabled && !toolbarVisible" type="button" class="x6-restore-button" title="显示工具栏" @click="toolbarVisible = true">
-        ⊞ 工具栏
-      </button>
-      <button v-if="inspectorEnabled && !inspectorVisible" type="button" class="x6-restore-button" title="显示侧边栏" @click="inspectorVisible = true">
-        ⊞ 侧边栏
-      </button>
-    </div>
 
     <div class="x6-workspace" :class="{ 'x6-workspace--no-inspector': !inspectorEnabled || !inspectorVisible }">
+      <div
+        v-if="(toolbarEnabled && !toolbarVisible) || (inspectorEnabled && !inspectorVisible)"
+        class="x6-restore-bar x6-restore-bar--floating"
+      >
+        <button v-if="toolbarEnabled && !toolbarVisible" type="button" class="x6-restore-button" title="显示工具栏" @click="toolbarVisible = true">
+          ⊞ 工具栏
+        </button>
+        <button v-if="inspectorEnabled && !inspectorVisible" type="button" class="x6-restore-button" title="显示侧边栏" @click="inspectorVisible = true">
+          ⊞ 侧边栏
+        </button>
+      </div>
       <div
         ref="stageRef"
         class="x6-stage"
@@ -4904,6 +4911,9 @@ defineExpose({
   top: 8px;
   right: 8px;
   z-index: 30;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
   padding: 0;
   border: none;
   background: transparent;
@@ -5091,6 +5101,7 @@ defineExpose({
 }
 
 .x6-workspace {
+  position: relative;
   display: grid;
   grid-template-columns: minmax(0, 1fr) 260px;
   min-height: 560px;
