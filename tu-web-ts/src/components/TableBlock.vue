@@ -331,14 +331,6 @@ function addColumn() {
   insertColumnFromToolbar('after');
 }
 
-function selectRow(rowIndex: number) {
-  emit('active');
-  selectedRow.value = rowIndex;
-  selectedColumn.value = null;
-  hoveredRow.value = rowIndex;
-  activeCell.value = null;
-}
-
 function selectColumn(columnIndex: number) {
   emit('active');
   selectedColumn.value = columnIndex;
@@ -408,16 +400,6 @@ onBeforeUnmount(() => {
   window.removeEventListener('click', closeColumnMenu);
   window.removeEventListener('keydown', closeColumnMenuOnEscape);
 });
-
-function handleRowHeaderFocusout(event: FocusEvent, rowIndex: number) {
-  const current = event.currentTarget as HTMLElement;
-  window.setTimeout(() => {
-    if (current.contains(document.activeElement)) return;
-    if (selectedRow.value === rowIndex) {
-      selectedRow.value = null;
-    }
-  }, 0);
-}
 
 function handleColumnHeaderFocusout(event: FocusEvent, columnIndex: number) {
   const current = event.currentTarget as HTMLElement;
@@ -514,18 +496,6 @@ function handleHeaderMouseMove(event: MouseEvent, column: number) {
   setHoverBorder(event, direction ? { row: null, column, direction } : null);
 }
 
-function handleRowHeaderMouseMove(event: MouseEvent, row: number) {
-  hoveredRow.value = row;
-  const target = event.currentTarget as HTMLElement;
-  const rect = target.getBoundingClientRect();
-  const y = event.clientY - rect.top;
-  const edge = 10;
-  let direction: BorderDirection | null = null;
-  if (y <= edge) direction = 'top';
-  else if (rect.height - y <= edge) direction = 'bottom';
-  setHoverBorder(event, direction ? { row, column: null, direction } : null);
-}
-
 function isColumnActive(columnIndex: number): boolean {
   return hoveredColumn.value === columnIndex || activeCell.value?.column === columnIndex;
 }
@@ -557,14 +527,6 @@ function headerBorderClass(columnIndex: number): Record<string, boolean> {
   return {
     'table-block__cell-wrap--insert-left': border?.row == null && border?.column === columnIndex && border.direction === 'left',
     'table-block__cell-wrap--insert-right': border?.row == null && border?.column === columnIndex && border.direction === 'right',
-  };
-}
-
-function rowHeaderBorderClass(rowIndex: number): Record<string, boolean> {
-  const border = hoverBorder.value;
-  return {
-    'table-block__cell-wrap--insert-top': border?.column == null && border?.row === rowIndex && border.direction === 'top',
-    'table-block__cell-wrap--insert-bottom': border?.column == null && border?.row === rowIndex && border.direction === 'bottom',
   };
 }
 
@@ -702,9 +664,6 @@ defineExpose({
       <table>
         <thead>
           <tr>
-            <th v-if="editable" class="table-block__corner-cell">
-              <span>表格</span>
-            </th>
             <th
               v-for="(header, columnIndex) in normalizedData.headers"
               :key="columnIndex"
@@ -731,14 +690,6 @@ defineExpose({
                 />
                 <span v-else>{{ header }}</span>
                 <button
-                  v-if="editable && activeColumnForToolbar === columnIndex"
-                  type="button"
-                  class="table-block__column-menu-button"
-                  @click.stop="openColumnMenu($event, columnIndex)"
-                >
-                  列
-                </button>
-                <button
                   v-if="editable"
                   type="button"
                   class="table-block__resize-handle table-block__resize-handle--column"
@@ -758,18 +709,6 @@ defineExpose({
             }"
             @mouseenter="hoveredRow = rowIndex"
           >
-            <th
-              v-if="editable"
-              class="table-block__row-handle-cell"
-              tabindex="0"
-              @mousemove="handleRowHeaderMouseMove($event, rowIndex)"
-              @click="selectRow(rowIndex)"
-              @focusout="handleRowHeaderFocusout($event, rowIndex)"
-            >
-              <div class="table-block__row-handle-wrap" :class="rowHeaderBorderClass(rowIndex)">
-                <button type="button" @click.stop="selectRow(rowIndex)">行 {{ rowIndex + 1 }}</button>
-              </div>
-            </th>
             <td
               v-for="(cell, columnIndex) in row"
               :key="columnIndex"
@@ -822,20 +761,6 @@ defineExpose({
           </tr>
         </tbody>
       </table>
-    </div>
-
-    <div v-if="editable && activeRowForToolbar != null" class="table-block__floating-toolbar">
-      <span>第 {{ activeRowForToolbar + 1 }} 行</span>
-      <button type="button" @click="insertRow(activeRowForToolbar)">上方插入</button>
-      <button type="button" @click="insertRow(activeRowForToolbar + 1)">下方插入</button>
-      <button type="button" :disabled="normalizedData.rows.length <= 1" @click="removeRow(activeRowForToolbar)">删除行</button>
-    </div>
-
-    <div v-if="editable && activeColumnForToolbar != null" class="table-block__floating-toolbar">
-      <span>第 {{ activeColumnForToolbar + 1 }} 列</span>
-      <button type="button" @click="insertColumn(activeColumnForToolbar)">左侧插入</button>
-      <button type="button" @click="insertColumn(activeColumnForToolbar + 1)">右侧插入</button>
-      <button type="button" :disabled="normalizedData.headers.length <= 1" @click="removeColumn(activeColumnForToolbar)">删除列</button>
     </div>
 
     <div v-if="editable" class="table-block__toolbar">
@@ -916,35 +841,21 @@ tbody tr:last-child th {
   border-bottom: 0;
 }
 
-.table-block__corner-cell,
-.table-block__header-cell,
-.table-block__row-handle-cell {
+.table-block__header-cell {
   background: #f6f8fa;
 }
 
-.table-block__header-cell,
-.table-block__row-handle-cell {
+.table-block__header-cell {
   cursor: pointer;
 }
 
-.table-block__corner-cell,
-.table-block__row-handle-cell {
-  width: 76px;
-  min-width: 76px;
-  color: #57606a;
-  font-size: 12px;
-  text-align: center;
-}
-
 .table-block__header-cell--active,
-.table-block__row--active .table-block__row-handle-cell,
 .table-block__cell--row-active,
 .table-block__cell--column-active {
   background: #f0f7ff;
 }
 
 .table-block__header-cell--selected,
-.table-block__row--selected .table-block__row-handle-cell,
 .table-block__cell--row-selected,
 .table-block__cell--column-selected {
   background: #c6e4ff;
@@ -955,17 +866,8 @@ tbody tr:last-child th {
 }
 
 .table-block__header-wrap,
-.table-block__row-handle-wrap,
 .table-block__cell-wrap {
   position: relative;
-  min-height: 38px;
-}
-
-.table-block__row-handle-wrap {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  height: 100%;
   min-height: 38px;
 }
 
@@ -1011,10 +913,7 @@ span {
   overflow: visible;
 }
 
-.table-block__row-handle-cell button,
-.table-block__column-menu-button,
-.table-block__toolbar button,
-.table-block__floating-toolbar button {
+.table-block__toolbar button {
   border: 1px solid #d0d7de;
   border-radius: 6px;
   background: #fff;
@@ -1028,12 +927,6 @@ button:disabled {
   cursor: not-allowed;
   color: #8c959f;
   background: #f6f8fa;
-}
-
-.table-block__column-menu-button {
-  position: absolute;
-  top: 6px;
-  right: 6px;
 }
 
 .table-block__cell-wrap--insert-top::before,
@@ -1109,27 +1002,11 @@ button:disabled {
   background: linear-gradient(to bottom, transparent 3px, #1677ff 3px, #1677ff 5px, transparent 5px);
 }
 
-.table-block__floating-toolbar,
 .table-block__toolbar {
   display: flex;
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
-}
-
-.table-block__floating-toolbar {
-  align-self: flex-start;
-  padding: 6px;
-  border: 1px solid #d0d7de;
-  border-radius: 8px;
-  background: #fff;
-  box-shadow: 0 8px 24px rgba(31, 35, 40, 0.12);
-}
-
-.table-block__floating-toolbar span {
-  padding: 0 4px;
-  color: #57606a;
-  font-size: 12px;
 }
 
 .table-block__mode-control {
