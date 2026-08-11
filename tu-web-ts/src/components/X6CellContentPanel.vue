@@ -24,11 +24,14 @@ const props = withDefaults(defineProps<{
   editable?: boolean
   pages?: PageItem[]
   currentPageId?: string | null
+  /** Cell label / edge text — used as the preferred title when creating a new document. */
+  cellLabel?: string
 }>(), {
   cellKind: 'edge',
   editable: true,
   pages: () => [],
   currentPageId: null,
+  cellLabel: '',
 })
 
 const emit = defineEmits<{
@@ -210,6 +213,63 @@ function unbindPage() {
   })
 }
 
+const creating = ref(false)
+
+/** Walk a TipTap JSON node tree and collect visible text. */
+function collectDocumentText(node: JSONContent | null | undefined): string {
+  if (!node) return ''
+  if (typeof node.text === 'string') return node.text
+  return (node.content ?? []).map(collectDocumentText).join('')
+}
+
+/**
+ * Derive a document title for the “create new document” action.
+ * Priority: cell label → first non-empty line of the cell content → fallback.
+ */
+function deriveNewDocumentTitle(): string {
+  const label = props.cellLabel?.trim()
+  if (label) return label
+  const text = collectDocumentText(editorDocument.value).trim()
+  const firstLine = text.split('\n').map((line) => line.trim()).find(Boolean)
+  return firstLine || '新文档'
+}
+
+/**
+ * 将当前节点/连线创建为新文档：在当前画板所在页的同级别正下方新建一篇文档，
+ * 以当前内容作为初始正文，并自动绑定。绑定后两侧内容同源、皆可编辑。
+ */
+async function createNewDocument() {
+  if (!props.editable || creating.value) return
+  const sourcePageId = props.currentPageId || workspaceStore.currentPageId
+  if (!sourcePageId) {
+    ElMessage.warning('未找到当前画板所在页面')
+    return
+  }
+  creating.value = true
+  try {
+    const title = deriveNewDocumentTitle()
+    const document = editorDocument.value?.type === 'doc'
+      ? editorDocument.value
+      : emptyCellContentDocument()
+    const initialContent = toV2PageContent(document, [], undefined)
+    const page = await workspaceStore.createSiblingDocumentBelow(
+      sourcePageId,
+      title,
+      initialContent,
+    )
+    emit('update:binding', {
+      ...props.binding,
+      boundPageId: page.id,
+      boundPageTitle: page.title,
+    })
+  } catch (error) {
+    const message = error instanceof Error ? error.message : `创建${subjectNoun.value}文档失败`
+    ElMessage.error(message)
+  } finally {
+    creating.value = false
+  }
+}
+
 watch(
   () => [props.cellId, props.binding.boundPageId] as const,
   () => {
@@ -246,6 +306,16 @@ onBeforeUnmount(() => {
           {{ bound ? '更换' : '选择' }}
         </button>
         <button
+          v-if="!bound"
+          type="button"
+          class="x6-cell-content__bind-btn"
+          :disabled="!editable || creating"
+          :title="`将当前${cellKind === 'node' ? '节点' : '连线'}创建为新文档：在画板所在页同级正下方新建并自动绑定`"
+          @click="createNewDocument"
+        >
+          {{ creating ? '创建中…' : '新建' }}
+        </button>
+        <button
           v-if="bound"
           type="button"
           class="x6-cell-content__bind-btn x6-cell-content__bind-btn--muted"
@@ -258,7 +328,7 @@ onBeforeUnmount(() => {
       <p class="x6-cell-content__hint">
         {{ bound
           ? '已绑定：下方编辑器直接读写该文档正文（与页面同一份内容）。'
-          : `未绑定：下方为${subjectNoun}自带的抽象文档，仅保存在画板${cellKind === 'node' ? '节点' : '连线'}数据中。` }}
+          : `未绑定：下方为${subjectNoun}自带的抽象文档，仅保存在画板${cellKind === 'node' ? '节点' : '连线'}数据中。可「选择」已有文档或「新建」一篇文档并自动关联。` }}
       </p>
     </div>
 

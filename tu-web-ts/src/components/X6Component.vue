@@ -194,6 +194,8 @@ type SelectedCellState =
       groupSize: number;
       /** 组合边框预设样式 */
       boardGroupBorder: BoardGroupBorderPreset;
+      /** 当前 Z 轴层级（null 表示未设置，由 X6 自动分配） */
+      zIndex: number | null;
     }
   | {
       kind: 'edge';
@@ -203,6 +205,8 @@ type SelectedCellState =
       router: string;
       connector: string;
       contentBinding: CellContentBinding;
+      /** 当前 Z 轴层级（null 表示未设置，由 X6 自动分配） */
+      zIndex: number | null;
     };
 
 const props = withDefaults(defineProps<Props>(), {
@@ -338,6 +342,7 @@ const mindmapRefTocContext = createMindmapRefTocContext({
 const inspectorTab = ref<'inspector' | 'library'>('inspector');
 const inspectorNodeStyleOpen = ref(false);
 const inspectorNodeContentOpen = ref(true);
+const inspectorZAxisOpen = ref(true);
 const toolbarVisible = ref(props.toolbarEnabled);
 const inspectorVisible = ref(props.inspectorEnabled && props.inspectorDefaultVisible);
 type CanvasInteractionMode = 'select' | 'pan';
@@ -1419,6 +1424,7 @@ function refreshSelectedCellState() {
         isGroup: nodeData.boardGroup === true,
         groupSize: nodeData.boardGroup === true ? (cell.getChildren() ?? []).length : 0,
         boardGroupBorder: nodeData.boardGroup === true ? getBoardGroupBorderPreset(cell as Node) : 'tight',
+        zIndex: cell.getZIndex() ?? null,
       };
     } else if (graph.isEdge(cell)) {
       const router = cell.getRouter();
@@ -1436,6 +1442,7 @@ function refreshSelectedCellState() {
         router: routerName,
         connector: connectorName,
         contentBinding: readCellContentBinding(edgeData),
+        zIndex: cell.getZIndex() ?? null,
       };
     }
   }
@@ -2555,6 +2562,42 @@ function handleDocumentPaste(event: ClipboardEvent) {
   else addPastedRichTextNode(text);
 }
 
+/**
+ * Document-level fallback for Ctrl/Cmd+C and Ctrl/Cmd+V. The graph's own
+ * keyboard binding (Mousetrap) only fires when the graph container has focus;
+ * when focus is elsewhere this routes the shortcut to the most recently
+ * interacted canvas so copying/pasting selected cells still works.
+ */
+function handleDocumentKeydownForBoard(e: KeyboardEvent) {
+  const modifier = e.ctrlKey || e.metaKey;
+  const key = e.key.toLowerCase();
+  if (!modifier || (key !== 'c' && key !== 'v')) return;
+
+  // Only the most recently interacted canvas should consume the shortcut.
+  if (!stageRef.value || getActiveX6Stage() !== stageRef.value) return;
+  if (!graph || !isEditable.value) return;
+  if (editingNodeId.value != null || edgeInlineEditing.value) return;
+
+  const target = e.target instanceof Element ? e.target : null;
+  // If the keydown originates inside the graph container, the graph's own
+  // keyboard binding already handles it — don't double-handle.
+  if (target && containerRef.value && containerRef.value.contains(target)) return;
+  // Never override native copy/paste inside text fields.
+  if (target && target.closest('input, textarea, [contenteditable="true"]')) return;
+
+  e.preventDefault();
+  if (key === 'c') {
+    copySelection();
+    return;
+  }
+  // key === 'v'
+  if (!isMindmap.value && graph.getSelectedCells().length === 0 && graph.isClipboardEmpty()) {
+    void readSystemClipboardIntoBoard();
+    return;
+  }
+  pasteSelection();
+}
+
 /** Fallback for ctrl+v handled by the graph keyboard binding (no native paste event). */
 async function readSystemClipboardIntoBoard() {
   if (!graph || !isEditable.value || isMindmap.value) return;
@@ -3233,6 +3276,42 @@ function updateSelectedEdgeConnector(value: string) {
   scheduleSync();
 }
 
+function bringSelectedToFront() {
+  if (!graph || !selectedCell.value) return;
+  const cell = graph.getCellById(selectedCell.value.id);
+  if (!cell) return;
+  cell.toFront();
+  selectedCell.value = {
+    ...selectedCell.value,
+    zIndex: cell.getZIndex() ?? null,
+  };
+  scheduleSync();
+}
+
+function sendSelectedToBack() {
+  if (!graph || !selectedCell.value) return;
+  const cell = graph.getCellById(selectedCell.value.id);
+  if (!cell) return;
+  cell.toBack();
+  selectedCell.value = {
+    ...selectedCell.value,
+    zIndex: cell.getZIndex() ?? null,
+  };
+  scheduleSync();
+}
+
+function updateSelectedZIndex(value: number) {
+  if (!graph || !selectedCell.value || Number.isNaN(value)) return;
+  const cell = graph.getCellById(selectedCell.value.id);
+  if (!cell) return;
+  cell.setZIndex(value);
+  selectedCell.value = {
+    ...selectedCell.value,
+    zIndex: value,
+  };
+  scheduleSync();
+}
+
 function updateSelectedCellContentBinding(binding: CellContentBinding) {
   if (!graph || !selectedCell.value) return;
   const cell = graph.getCellById(selectedCell.value.id);
@@ -3714,12 +3793,13 @@ function bindGraphEvents() {
   graph.model.on('cell:change:vertices', () => scheduleSync());
   graph.model.on('cell:change:data', () => scheduleSync());
   graph.model.on('cell:added', ({ cell }) => {
-    // Keep edges on the highest z-axis so lines always render above nodes,
-    // regardless of add order. Drag preview edge stays one level above.
+    // Edges default to a high z-axis so lines render above nodes.
+    // Edges loaded from JSON with an explicit zIndex (user-edited) are preserved.
+    // Drag preview edge stays one level above.
     if (!graph?.isEdge(cell)) return;
     if (cell.id === MINDMAP_DRAG_PREVIEW_EDGE_ID) {
       cell.setZIndex(EDGE_Z_INDEX + 1);
-    } else {
+    } else if (cell.getZIndex() == null) {
       cell.setZIndex(EDGE_Z_INDEX);
     }
   });
@@ -3929,6 +4009,7 @@ onMounted(() => {
       stageRef.value.addEventListener('focusin', markStageActiveForBoardPaste);
     }
     document.addEventListener('paste', handleDocumentPaste);
+    document.addEventListener('keydown', handleDocumentKeydownForBoard);
   });
 });
 
@@ -3946,6 +4027,7 @@ onBeforeUnmount(() => {
   unbindStageCtrlWheel();
   unbindSpacePanListeners();
   document.removeEventListener('paste', handleDocumentPaste);
+  document.removeEventListener('keydown', handleDocumentKeydownForBoard);
   if (stageRef.value) {
     stageRef.value.removeEventListener('pointerdown', markStageActiveForBoardPaste);
     stageRef.value.removeEventListener('focusin', markStageActiveForBoardPaste);
@@ -4686,6 +4768,7 @@ defineExpose({
                 :editable="isEditable"
                 :pages="workspaceStore.pageTree"
                 :current-page-id="workspaceStore.currentPageId"
+                :cell-label="selectedCell.label"
                 @update:binding="updateSelectedCellContentBinding"
               />
             </div>
@@ -4751,10 +4834,70 @@ defineExpose({
                 :editable="isEditable"
                 :pages="workspaceStore.pageTree"
                 :current-page-id="workspaceStore.currentPageId"
+                :cell-label="selectedCell.label"
                 @update:binding="updateSelectedCellContentBinding"
               />
             </div>
           </template>
+
+          <!-- Z 轴层级：节点和连线均可编辑 -->
+          <div v-if="selectedCell && !(selectedCell.kind === 'node' && selectedCell.isGroup)" class="inspector-section">
+            <button
+              type="button"
+              class="inspector-section__toggle"
+              :aria-expanded="inspectorZAxisOpen"
+              @click="inspectorZAxisOpen = !inspectorZAxisOpen"
+            >
+              <svg
+                class="inspector-section__caret"
+                :class="{ 'inspector-section__caret--open': inspectorZAxisOpen }"
+                viewBox="0 0 24 24"
+                aria-hidden="true"
+              >
+                <path
+                  d="M9 6l6 6-6 6"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2.4"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                />
+              </svg>
+              <span class="inspector-section__title">层级</span>
+            </button>
+
+            <template v-if="inspectorZAxisOpen">
+              <div class="field-row">
+                <button
+                  type="button"
+                  class="tool-button"
+                  :disabled="!isEditable"
+                  title="置于最顶层"
+                  @click="bringSelectedToFront"
+                >
+                  置顶
+                </button>
+                <button
+                  type="button"
+                  class="tool-button"
+                  :disabled="!isEditable"
+                  title="置于最底层"
+                  @click="sendSelectedToBack"
+                >
+                  置底
+                </button>
+              </div>
+              <label class="field">
+                <span>Z 值</span>
+                <input
+                  type="number"
+                  :value="selectedCell.zIndex ?? ''"
+                  :disabled="!isEditable"
+                  @change="updateSelectedZIndex(Number(($event.target as HTMLInputElement).value))"
+                />
+              </label>
+            </template>
+          </div>
         </div>
         </div>
 

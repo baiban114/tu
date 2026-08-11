@@ -1981,8 +1981,20 @@ export function movePageMock(
   newOrder: number,
 ): void {
   const page = getPageOrThrow(id);
+  const kbId = page.kbId;
   page.parentId = newParentId;
-  page.order = Math.max(0, newOrder);
+  // Resequence siblings under the target parent (mirrors backend
+  // `reorderAndResolveSortOrder`): insert the moved page at the requested
+  // index and renumber 0..n-1 so “directly below” ordering is exact.
+  const siblings = state.pages
+    .filter((p) => p.kbId === kbId && p.parentId === newParentId && p.id !== id)
+    .sort((a, b) => a.order - b.order || a.title.localeCompare(b.title));
+  const targetIndex = Math.min(Math.max(0, newOrder), siblings.length);
+  const reordered = [...siblings];
+  reordered.splice(targetIndex, 0, page);
+  reordered.forEach((p, i) => {
+    p.order = i;
+  });
   persistState();
 }
 

@@ -630,6 +630,33 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     return page;
   }
 
+  /**
+   * 在 `sourcePageId` 同级别正下方创建一篇新文档，并写入初始内容。
+   * 用于画板节点/连线「新建为文档」：新文档作为当前画板所在页的同级，紧随其后。
+   * 后端 movePage 会重排同级顺序，因此请求 order = sourcePage.order + 1 即可插入到正下方。
+   */
+  async function createSiblingDocumentBelow(
+    sourcePageId: string,
+    title: string,
+    initialContent?: PageContent | null,
+  ): Promise<PageItem> {
+    if (!currentKbId.value) {
+      throw new Error('未选择知识库');
+    }
+    const sourcePage = findPageInTree(pageTree.value, sourcePageId);
+    if (!sourcePage) {
+      throw new Error('未找到当前画板所在页面');
+    }
+    const parentId = sourcePage.parentId;
+    const page = await createPage(currentKbId.value, parentId, title, 'document');
+    await movePage(page.id, parentId, (sourcePage.order ?? 0) + 1);
+    if (initialContent) {
+      await savePageContent(page.id, initialContent);
+    }
+    pageTree.value = await getPageTree(currentKbId.value);
+    return findPageInTree(pageTree.value, page.id) ?? page;
+  }
+
   async function importMarkdownFile(file: File, options?: ImportMarkdownFileOptions) {
     if (!currentKbId.value) {
       throw new Error('Please select a knowledge base first.');
@@ -794,6 +821,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     renameKb,
     addPage,
     refreshPageTree,
+    createSiblingDocumentBelow,
     importMarkdownFile,
     importRoadmapJson,
     syncKnowledgeRoadmapToSource,

@@ -21,6 +21,9 @@ function shouldStopCodeBlockChromeEvent(event: Event): boolean {
 
 export const CodeBlockNode = CodeBlock.extend({
   name: 'codeBlock',
+  // Treat the NodeView boundary as closed so ProseMirror's gap cursor can sit
+  // directly before/after it at a document edge without inserting a paragraph.
+  isolating: true,
 
   addAttributes() {
     return {

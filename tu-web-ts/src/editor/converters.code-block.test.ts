@@ -38,4 +38,12 @@ describe('fenced code block markdown', () => {
     expect(codeBlock?.attrs?.language).toBeFalsy()
     expect(codeBlock?.content?.[0]?.text).toBe('plain code')
   })
+
+  it('roundtrips intentional blank lines at code boundaries', () => {
+    const source = '```typescript\n\nconst value = 1\n\n```'
+    const doc = pageContentToTipTap({ content: source, embeds: [], annotations: [] })
+
+    expect(doc.content?.[0]?.content?.[0]?.text).toBe('\nconst value = 1\n')
+    expect(tipTapToPageContent(doc).content).toBe(source)
+  })
 })

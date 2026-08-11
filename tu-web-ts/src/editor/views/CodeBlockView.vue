@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { nodeViewProps, NodeViewWrapper } from '@tiptap/vue-3'
+import { TextSelection } from '@tiptap/pm/state'
 import { ElOption, ElSelect } from 'element-plus'
 import TuBlockChromeHeader from '../components/TuBlockChromeHeader.vue'
 import {
@@ -24,12 +25,61 @@ const codeLanguageClass = computed(() => {
   const lang = normalizeCodeBlockLanguage(props.node.attrs.language)
   return lang ? `language-${lang}` : ''
 })
+
+/** Insert an empty paragraph before the code block and focus it. */
+function insertParagraphBefore() {
+  const pos = props.getPos()
+  if (pos == null) return
+  const tr = props.editor.state.tr.insert(pos, props.editor.state.schema.nodes.paragraph.create())
+  tr.setSelection(TextSelection.create(tr.doc, pos + 1))
+  props.editor.view.dispatch(tr)
+  props.editor.view.focus()
+}
+
+/** Move cursor to the first position inside the code block content. */
+function focusCodeBlockStart() {
+  const pos = props.getPos()
+  if (pos == null) return
+  const tr = props.editor.state.tr.setSelection(TextSelection.create(props.editor.state.doc, pos + 1))
+  props.editor.view.dispatch(tr)
+  props.editor.view.focus()
+}
+
+/**
+ * The title input lives outside ProseMirror's contenteditable, so bridge its
+ * Enter/ArrowDown keys explicitly. Code-content keys are handled by the
+ * extension shortcuts because their DOM event target is the ProseMirror root.
+ */
+function onKeydownCapture(event: KeyboardEvent) {
+  if (event.target instanceof HTMLInputElement) {
+    // Title input — intercept Enter and ArrowDown.
+    if (event.key === 'Enter') {
+      event.preventDefault()
+      event.stopPropagation()
+      const input = event.target
+      const next = input.value.trim()
+      if (next !== title.value.trim()) onTitleChange(next)
+      input.blur()
+      insertParagraphBefore()
+      return
+    }
+    if (event.key === 'ArrowDown') {
+      event.preventDefault()
+      event.stopPropagation()
+      event.target.blur()
+      focusCodeBlockStart()
+      return
+    }
+    return
+  }
+}
 </script>
 
 <template>
   <node-view-wrapper
     class="tu-code-block-view"
     :class="{ 'tu-code-block-view--selected': selected }"
+    @keydown.capture="onKeydownCapture"
   >
     <div class="tu-code-block-view__shell">
       <TuBlockChromeHeader

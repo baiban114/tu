@@ -1,4 +1,5 @@
 import { Plugin, PluginKey, TextSelection } from '@tiptap/pm/state'
+import { GapCursor } from '@tiptap/pm/gapcursor'
 import type { Node as ProseMirrorNode } from '@tiptap/pm/model'
 import type { EditorView, ViewMutationRecord } from '@tiptap/pm/view'
 import { codeBlockNodeText, CODE_BLOCK_EMPTY_CHAR, isCodeBlockEffectivelyEmpty } from '../utils/codeBlockText'
@@ -89,7 +90,29 @@ export function createCodeBlockSelectionPlugin() {
 }
 
 export function createCodeBlockBoundaryShortcuts(nodeName = CODE_BLOCK_NAME) {
+  const moveBeforeCodeBlock = (editor: import('@tiptap/core').Editor): boolean => {
+    const { state, view } = editor
+    const blockPos = state.selection.$from.before()
+    const $before = state.doc.resolve(blockPos)
+    const selection = blockPos === 0
+      ? new GapCursor($before)
+      : TextSelection.near($before, -1)
+    view.dispatch(state.tr.setSelection(selection))
+    return true
+  }
+
   return {
+    ArrowUp: ({ editor }: { editor: import('@tiptap/core').Editor }) => {
+      const { $from, empty } = editor.state.selection
+      if (!empty || $from.parent.type.name !== nodeName) return false
+      if ($from.parent.textContent.slice(0, $from.parentOffset).includes('\n')) return false
+      return moveBeforeCodeBlock(editor)
+    },
+    ArrowLeft: ({ editor }: { editor: import('@tiptap/core').Editor }) => {
+      const { $from, empty } = editor.state.selection
+      if (!empty || $from.parent.type.name !== nodeName || $from.parentOffset !== 0) return false
+      return moveBeforeCodeBlock(editor)
+    },
     Delete: ({ editor }: { editor: import('@tiptap/core').Editor }) => {
       const { state } = editor
       const { $from, empty } = state.selection

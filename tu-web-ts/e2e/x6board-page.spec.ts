@@ -395,3 +395,43 @@ test('group border preset switches in inspector and the frame auto-fits members'
   expect(Math.abs(processAfter.x - containerBefore.x)).toBeGreaterThan(0)
   expect(Math.abs(processAfter.x - processBefore.x)).toBeLessThan(1)
 })
+
+test('creates a new sibling document from a node via the content panel', async ({ page }) => {
+  await page.getByTitle('新建页面').click()
+  await page.getByRole('menuitem', { name: '画板' }).click()
+  await expect(page.locator('.x6-stage')).toBeVisible()
+
+  // 选中“开始”节点，「内容」属性区默认展开，「内容绑定」面板可见
+  await page.locator('.x6-node[data-cell-id="x6-start-node"]').click()
+  const bindSection = page.locator('.x6-cell-content__bind')
+  await expect(bindSection).toBeVisible()
+
+  // 未绑定态：显示「新建」按钮，提示含「未绑定」
+  const createBtn = bindSection.getByRole('button', { name: '新建', exact: true })
+  await expect(createBtn).toBeVisible()
+  await expect(bindSection.locator('.x6-cell-content__hint')).toContainText('未绑定')
+
+  await createBtn.click()
+
+  // 绑定态：按钮变为「更换」+「解除」，提示含「已绑定」
+  await expect(bindSection.getByRole('button', { name: '更换' })).toBeVisible()
+  await expect(bindSection.getByRole('button', { name: '解除' })).toBeVisible()
+  await expect(bindSection.locator('.x6-cell-content__hint')).toContainText('已绑定')
+
+  // 以节点标签“开始”为名的新文档出现在页面树
+  const newDocNode = page.locator('.page-tree .tree-node .node-label').filter({ hasText: '开始' })
+  await expect(newDocNode).toBeVisible()
+
+  // 新文档是画板页“未命名画板”的同级，且紧随其正下方
+  const topLabels = await page.evaluate(() => {
+    const top = Array.from(document.querySelectorAll('.page-tree > .el-tree-node'))
+    return top.map((n) => {
+      const content = n.querySelector(':scope > .el-tree-node__content')
+      return content?.querySelector('.node-label')?.textContent?.trim() ?? ''
+    })
+  })
+  const boardIdx = topLabels.findIndex((t) => t === '未命名画板')
+  const docIdx = topLabels.findIndex((t) => t === '开始')
+  expect(boardIdx).toBeGreaterThanOrEqual(0)
+  expect(docIdx).toBe(boardIdx + 1)
+})

@@ -3,6 +3,7 @@ import './assets/dialog-viewport.css'
 import './assets/code-block-highlight.css'
 import './styles/fold-bullet.css'
 import 'element-plus/dist/index.css'
+import 'prosemirror-gapcursor/style/gapcursor.css'
 
 import { createApp } from 'vue'
 import { createPinia } from 'pinia'
