@@ -2043,11 +2043,18 @@ function findClipboardImageFile(clipboard: DataTransfer | null): File | null {
 function looksLikeMarkdown(text: string): boolean {
   if (!text.trim()) return false
   const lines = text.split('\n')
-  // GFM table: a row followed by a separator row (`| --- | :---: | ---: |`).
+  // GFM table separator row: `| --- | :---: | ---: |` (tolerating surrounding spaces).
+  const isSeparatorRow = (line: string): boolean => {
+    const trimmed = line.trim()
+    if (!trimmed.includes('|')) return false
+    const body = trimmed.replace(/^\|/, '').replace(/\|$/, '').trim()
+    if (!body) return false
+    return body.split('|').every((cell) => /^:?-+:?$/.test(cell.trim()))
+  }
+  // GFM table: a row followed by a separator row.
   for (let i = 0; i + 1 < lines.length; i++) {
     const header = lines[i]?.trim() ?? ''
-    const separator = lines[i + 1]?.trim() ?? ''
-    if (header.includes('|') && /^\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$/.test(separator)) {
+    if (header.includes('|') && isSeparatorRow(lines[i + 1] ?? '')) {
       return true
     }
   }
@@ -2180,6 +2187,19 @@ const editor = useEditor({
         return true
       }
 
+      // Markdown-first: if the plain text is a strong markdown candidate (GFM table,
+      // fenced code, heading, list), parse it as markdown so it renders as blocks.
+      // This runs before the HTML path because many sources put the same text in a
+      // degenerate text/html wrapper, which would otherwise flatten the table to
+      // literal `| ... |` text. Prioritizing markdown makes pasted tables render.
+      if (plain.trim() && looksLikeMarkdown(plain)) {
+        const json = parseMarkdown(plain)
+        if (json.length > 0) {
+          const ok = editor.value.chain().focus().insertContent(json).run()
+          if (ok) return true
+        }
+      }
+
       if (html.trim() || (plain.trim() && /<[a-z][\s\S]*>/i.test(plain))) {
         const sourceHtml = html.trim()
           ? resolveClipboardHtmlSource(html, plain)
@@ -2190,16 +2210,6 @@ const editor = useEditor({
           return true
         }
         return false
-      }
-
-      // Plain-text markdown paste: render markdown structures (GFM tables,
-      // headings, lists, fenced code) as blocks instead of literal text.
-      if (plain.trim() && looksLikeMarkdown(plain)) {
-        const json = parseMarkdown(plain)
-        if (json.length > 0) {
-          const ok = editor.value.chain().focus().insertContent(json).run()
-          if (ok) return true
-        }
       }
 
       const imageFile = findClipboardImageFile(event.clipboardData)
