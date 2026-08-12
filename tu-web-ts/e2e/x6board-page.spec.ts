@@ -435,3 +435,34 @@ test('creates a new sibling document from a node via the content panel', async (
   expect(boardIdx).toBeGreaterThanOrEqual(0)
   expect(docIdx).toBe(boardIdx + 1)
 })
+
+test('arrow keys nudge the selected node by 1px and shift+arrow by 10px', async ({ page }) => {
+  await openFreshBoard(page)
+
+  const startNode = '.x6-node[data-cell-id="x6-start-node"]'
+  await page.locator(startNode).click()
+  await expect(page.locator(startNode)).toHaveClass(/x6-node-selected/)
+
+  const before = await boardNodeTranslate(page, startNode)
+
+  // 方向键：每次 1px
+  await page.keyboard.press('ArrowRight')
+  await expect.poll(() => boardNodeTranslate(page, startNode).then((p) => p.x)).toBeCloseTo(before.x + 1, 5)
+  await page.keyboard.press('ArrowDown')
+  await expect.poll(() => boardNodeTranslate(page, startNode).then((p) => p.y)).toBeCloseTo(before.y + 1, 5)
+
+  // Shift + 方向键：每次 10px
+  await page.keyboard.press('Shift+ArrowRight')
+  await expect.poll(() => boardNodeTranslate(page, startNode).then((p) => p.x)).toBeCloseTo(before.x + 11, 5)
+  await page.keyboard.press('Shift+ArrowDown')
+  await expect.poll(() => boardNodeTranslate(page, startNode).then((p) => p.y)).toBeCloseTo(before.y + 11, 5)
+
+  // 无选中节点时方向键不应移动画板（点击空白取消选择）
+  await page.locator('.x6-stage').click({ position: { x: 10, y: 10 } })
+  await expect(page.locator('.toolbar-summary', { hasText: '未选中对象' })).toBeVisible()
+  const afterDeselect = await boardNodeTranslate(page, startNode)
+  await page.keyboard.press('ArrowRight')
+  await page.waitForTimeout(60)
+  const afterIdle = await boardNodeTranslate(page, startNode)
+  expect(afterIdle.x).toBeCloseTo(afterDeselect.x, 5)
+})

@@ -51,6 +51,15 @@ export const useLocalFileStore = defineStore('localFile', () => {
   /** 待写入的下一个内容；非 null 表示有未落盘的修改 */
   let pendingContent: string | null = null;
 
+  /**
+   * 初始化抑制期：openFile 后短暂开启，期间 TuEditorPage 的自动初始化逻辑
+   *（reconcileSectionTagsOnLoad 等会修改 blockId 并触发 content-change）
+   * 产生的变更只更新基线，不写入文件。避免用户未编辑就覆盖原文件。
+   */
+  let suppressSave = false;
+  let suppressTimer: ReturnType<typeof setTimeout> | null = null;
+  const SUPPRESS_DURATION_MS = 3000;
+
   /** 是否正在查看本地文件（用于 HomeView 切换主内容区）。即使读取失败也保持 active，以显示错误状态 */
   const isActive = computed(() => filePath.value !== null);
 
@@ -123,6 +132,16 @@ export const useLocalFileStore = defineStore('localFile', () => {
       lastSavedContent.value = markdown;
       status.value = 'saved';
       console.log('[localFile] File loaded successfully, content length:', markdown.length);
+
+      // 启动初始化抑制期：TuEditorPage 挂载后 reconcileSectionTagsOnLoad 等会自动
+      // 触发 content-change（添加 blockId 等），这些不是用户编辑，不应写入文件。
+      suppressSave = true;
+      if (suppressTimer) clearTimeout(suppressTimer);
+      suppressTimer = setTimeout(() => {
+        suppressSave = false;
+        suppressTimer = null;
+        console.log('[localFile] Initial suppression period ended, save is now active');
+      }, SUPPRESS_DURATION_MS);
     } catch (e) {
       status.value = 'error';
       error.value = e instanceof Error ? e.message : '读取本地文件失败';
@@ -136,6 +155,11 @@ export const useLocalFileStore = defineStore('localFile', () => {
   /** 关闭本地文件视图，清空所有状态 */
   function closeFile(): void {
     clearSaveTimer();
+    if (suppressTimer) {
+      clearTimeout(suppressTimer);
+      suppressTimer = null;
+    }
+    suppressSave = false;
     filePath.value = null;
     fileName.value = '';
     pageContent.value = null;
@@ -147,7 +171,10 @@ export const useLocalFileStore = defineStore('localFile', () => {
 
   /**
    * 编辑器内容变化时调用：序列化为 markdown，debounce 后写回原文件。
-   * 与 workspace store 的 scheduleLocalFileSave 行为一致。
+   *
+   * 初始化抑制期内（openFile 后 3 秒）：TuEditorPage 的 reconcileSectionTagsOnLoad
+   * 等自动逻辑会修改 blockId 并触发 content-change，这不是用户编辑。
+   * 期间只更新内存基线（lastSavedContent），不写入文件，避免覆盖原文件。
    */
   function scheduleSave(content: PageContent): void {
     if (!filePath.value) return;
@@ -156,6 +183,15 @@ export const useLocalFileStore = defineStore('localFile', () => {
     pageContent.value = content;
 
     const markdown = serializePageContentToMarkdown(content);
+
+    // 初始化抑制期：更新基线但不触发文件写入
+    if (suppressSave) {
+      lastSavedContent.value = markdown;
+      pendingContent = null;
+      status.value = 'saved';
+      return;
+    }
+
     pendingContent = markdown;
 
     if (!isTauri()) {

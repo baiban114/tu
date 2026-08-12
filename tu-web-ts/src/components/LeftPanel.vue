@@ -53,6 +53,7 @@ const viewsStore = useWorkspaceViewsStore();
 const outlineCacheStore = useOutlineCacheStore();
 
 const treeRef = ref<InstanceType<typeof ElTree>>()
+const pageTreeScrollRef = ref<InstanceType<typeof ElScrollbar>>()
 const pageTreeFocusRef = ref<HTMLElement | null>(null)
 const allTreeExpanded = ref(false)
 const expandedNodeIds = ref<Set<string>>(new Set())
@@ -712,15 +713,41 @@ function onPageTreeHostPointerDown(event: PointerEvent) {
   closeKbContextMenu();
 }
 
+/** Scroll the tree so the given page node is centered in the scroll viewport. */
+function scrollTreeNodeToCenter(pageId: string | null) {
+  if (!pageId) return;
+  nextTick(() => {
+    const treeEl = treeRef.value?.$el as HTMLElement | undefined;
+    if (!treeEl) return;
+    const currentNode = treeEl.querySelector('.el-tree-node.is-current') as HTMLElement | null;
+    if (!currentNode) return;
+    const wrap = pageTreeScrollRef.value?.wrapRef as HTMLElement | undefined;
+    if (!wrap) return;
+    const wrapRect = wrap.getBoundingClientRect();
+    const nodeRect = currentNode.getBoundingClientRect();
+    const nodeOffset = nodeRect.top - wrapRect.top + wrap.scrollTop;
+    const target = nodeOffset - (wrapRect.height - nodeRect.height) / 2;
+    pageTreeScrollRef.value?.setScrollTop(Math.max(0, target));
+  });
+}
+
 async function onCreateChild(parentId: string, pageType: PageType = 'document') {
   closeContextMenu();
   await store.addPage(parentId, undefined, pageType);
   ElMessage.success(createSuccessMessage(pageType));
+  // Ensure parent is expanded so the new child is visible.
+  await nextTick();
+  const parentNode = treeRef.value?.getNode(parentId);
+  if (parentNode && !parentNode.expanded && !parentNode.isLeaf) {
+    parentNode.expand();
+  }
+  scrollTreeNodeToCenter(store.currentPageId);
 }
 
 async function onCreateRootPage(pageType: PageType) {
   await store.addPage(null, undefined, pageType);
   ElMessage.success(createSuccessMessage(pageType));
+  scrollTreeNodeToCenter(store.currentPageId);
 }
 
 function createSuccessMessage(pageType: PageType): string {
@@ -1060,7 +1087,7 @@ function collapseAllTree() {
         tabindex="-1"
         @pointerdown="onPageTreeHostPointerDown"
       >
-      <el-scrollbar class="page-tree-scroll">
+      <el-scrollbar ref="pageTreeScrollRef" class="page-tree-scroll">
         <el-tree
           ref="treeRef"
           v-if="displayPageTree.length > 0"

@@ -578,6 +578,25 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     pageTree.value = await getPageTree(currentKbId.value);
   }
 
+  /** Insert a page into the existing tree in-place (preserves expand/collapse state). */
+  function insertPageIntoTree(tree: PageItem[], page: PageItem): boolean {
+    if (!page.parentId) {
+      tree.push(page);
+      return true;
+    }
+    for (const node of tree) {
+      if (node.id === page.parentId) {
+        if (!node.children) node.children = [];
+        node.children.push(page);
+        return true;
+      }
+      if (node.children?.length && insertPageIntoTree(node.children, page)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   async function addPage(parentId: string | null, title?: string, pageType?: PageType) {
     if (!currentKbId.value) return;
     const defaultTitle = defaultTitleForPageType(pageType);
@@ -587,7 +606,12 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     if (initialContent) {
       await savePageContent(page.id, initialContent);
     }
-    await refreshPageTree();
+    // Insert into the existing tree to preserve other nodes' expand/collapse
+    // state. Fall back to full refresh if the parent can't be located.
+    const inserted = insertPageIntoTree(pageTree.value, page);
+    if (!inserted) {
+      await refreshPageTree();
+    }
     await selectPage(page.id);
   }
 

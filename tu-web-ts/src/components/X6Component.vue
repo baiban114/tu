@@ -129,6 +129,8 @@ import {
   BOARD_SOURCE_ARROWHEAD_TOOL,
   BOARD_TARGET_ARROWHEAD_TOOL,
   ensureSnappingArrowheadToolsRegistered,
+  ensureOrthSmartRouterRegistered,
+  ORTH_SMART_ROUTER_NAME,
   snapFreeEdgeTerminals,
   type NodePreset,
 } from '@/components/x6';
@@ -650,9 +652,12 @@ function normalizeEdge(edge: CellData, mindmap = false): CellData {
 
   const router = edge.router;
   const routerName = typeof router === 'string' ? router : router?.name;
-  return createEdgeMetadata(edge, {
-    router: routerName === 'manhattan' ? { name: 'orth' } : (router ?? { name: 'orth' }),
-  });
+  // Migrate legacy 'orth'/'manhattan' to 'orth-smart' (delegates to orth for far nodes,
+  // straight line for close nodes). 'normal' and other explicit routers are preserved.
+  const resolvedRouter = !routerName || routerName === 'orth' || routerName === 'manhattan'
+    ? { name: ORTH_SMART_ROUTER_NAME }
+    : router;
+  return createEdgeMetadata(edge, { router: resolvedRouter });
 }
 
 function normalizeGraphData(data?: GraphData): GraphData {
@@ -3470,9 +3475,40 @@ function resizeGraph() {
   updateNodeOverlays();
 }
 
+/**
+ * 方向键微调选中节点位置（画板模式）。
+ * - 1px/步；Shift+方向键 10px/步。
+ * - 复用拖拽的持久化路径：translate 触发 node:change:position → 组合边框收放 + scheduleSync。
+ * - 文本/连线内联编辑中放行，让方向键作用于编辑器光标。
+ * - 思维导图模式不支持（位置由布局决定）。
+ * - 跳过「选中祖先的后代」节点，避免组合容器深平移与成员自身平移叠加导致双倍位移。
+ */
+function arrowNudge(dx: number, dy: number) {
+  if (editingNodeId.value != null || edgeInlineEditing.value) return;
+  if (!graph || !isEditable.value || isMindmap.value) return false;
+  const selectedNodes = graph.getSelectedCells().filter(
+    (cell): cell is Node => graph!.isNode(cell),
+  );
+  if (!selectedNodes.length) return false;
+  const selectedIds = new Set(selectedNodes.map((node) => node.id));
+  const topLevel = selectedNodes.filter((node) => {
+    let parent = node.getParent();
+    while (parent && graph!.isNode(parent)) {
+      if (selectedIds.has(parent.id)) return false;
+      parent = parent.getParent();
+    }
+    return true;
+  });
+  startUserInteraction();
+  graph.batchUpdate(() => {
+    topLevel.forEach((node) => node.translate(dx, dy));
+  });
+  finishUserInteraction();
+  return false;
+}
+
 function bindKeyboardShortcuts() {
   if (!graph || !isEditable.value) return;
-
   if (isMindmap.value) {
     graph.bindKey('tab', () => {
       if (editingNodeId.value != null) return;
@@ -3540,6 +3576,16 @@ function bindKeyboardShortcuts() {
     refreshSelectedCellState();
     return false;
   });
+
+  // 方向键微调选中节点位置：1px/步，Shift+方向键 10px/步
+  graph.bindKey('up', () => arrowNudge(0, -1));
+  graph.bindKey('down', () => arrowNudge(0, 1));
+  graph.bindKey('left', () => arrowNudge(-1, 0));
+  graph.bindKey('right', () => arrowNudge(1, 0));
+  graph.bindKey('shift+up', () => arrowNudge(0, -10));
+  graph.bindKey('shift+down', () => arrowNudge(0, 10));
+  graph.bindKey('shift+left', () => arrowNudge(-10, 0));
+  graph.bindKey('shift+right', () => arrowNudge(10, 0));
 }
 
 function bindGraphEvents() {
@@ -3844,6 +3890,7 @@ function initGraph() {
   if (!containerRef.value || !stageRef.value) return;
 
   ensureMindmapConnectorRegistered();
+  ensureOrthSmartRouterRegistered();
 
   if (graph) {
     graph.dispose();
@@ -3895,7 +3942,7 @@ function initGraph() {
       anchor: 'center',
       router: isMindmap.value
         ? { name: 'normal' }
-        : { name: 'orth' },
+        : { name: ORTH_SMART_ROUTER_NAME },
       connector: isMindmap.value
         ? { name: 'smooth' }
         : { name: 'rounded' },
@@ -4805,6 +4852,7 @@ defineExpose({
                   :disabled="!isEditable"
                   @change="updateSelectedEdgeRouter(($event.target as HTMLSelectElement).value)"
                 >
+                  <option :value="ORTH_SMART_ROUTER_NAME">智能正交</option>
                   <option value="normal">直线</option>
                   <option value="orth">正交</option>
                 </select>

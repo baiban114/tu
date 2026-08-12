@@ -2,6 +2,7 @@ import type { UmlClassDefinition } from '@/stores/objectModel';
 import { createId, mergeDeep, type CellData } from './cellUtils';
 import { MINDMAP_CONNECTOR_NAME } from './mindmapConnector';
 import { createMindmapPorts, createNodePorts, getMindmapEdgePorts } from './ports';
+import { ORTH_SMART_ROUTER_NAME } from './orthSmartRouter';
 
 export type NodePreset = 'rect' | 'round' | 'ellipse' | 'diamond' | 'umlClass';
 
@@ -43,7 +44,7 @@ export function createEdgeMetadata(edge: Partial<CellData> = {}, overrides?: Par
 
   return {
     shape: 'edge',
-    router: { name: 'orth' },
+    router: { name: ORTH_SMART_ROUTER_NAME },
     connector: { name: 'rounded' },
     zIndex: EDGE_Z_INDEX,
     ...edgeRest,
