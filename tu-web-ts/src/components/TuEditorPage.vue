@@ -1084,6 +1084,10 @@ provide('textTagSpans', currentTextTagSpans)
 provide('textTagSpanRevision', computed(() => textTagSpanRevision.value))
 const resourcePdfNotesReloadToken = ref(0)
 provide('resourcePdfNotesReloadToken', resourcePdfNotesReloadToken)
+/** Annotation ID whose note popover is currently open (null when closed). */
+provide('activeNotePopoverAnnotationId', computed(() =>
+  notePopoverVisible.value ? notePopoverAnnotation.value?.id ?? null : null,
+))
 const bumpResourcePdfNotesReload = () => {
   resourcePdfNotesReloadToken.value += 1
 }

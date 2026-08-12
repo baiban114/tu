@@ -60,6 +60,7 @@ const pagePdfRegionAnnotations = inject<ComputedRef<TextAnnotation[]>>(
   computed(() => []),
 )
 const resourcePdfNotesReloadToken = inject<Ref<number>>('resourcePdfNotesReloadToken', ref(0))
+const activeNotePopoverAnnotationId = inject<ComputedRef<string | null>>('activeNotePopoverAnnotationId', computed(() => null))
 
 const blockId = computed(() => props.node.attrs.blockId || '')
 const fileId = computed(() => String(props.node.attrs.fileId || ''))
@@ -1634,6 +1635,7 @@ onBeforeUnmount(() => {
           @click.stop="handlePdfRegionOverlayClick(overlay.annotationId, $event)"
         />
         <button
+          v-if="activeNotePopoverAnnotationId !== overlay.annotationId"
           type="button"
           class="pdf-excerpt-block__pdf-note-marker"
           :style="overlay.markerStyle"
