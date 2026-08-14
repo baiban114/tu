@@ -10,6 +10,15 @@ import { routerRegistry } from '@antv/x6';
 
 export const ORTH_SMART_ROUTER_NAME = 'orth-smart';
 
+/**
+ * 直线路由器（无路由）。
+ *
+ * 类似 Excalidraw 的默认连线：两端端点之间以直线连接，不做任何正交绕行。
+ * 端点可以铆钉在元素任意位置（通过 topLeft 锚点 + dx/dy 比例），
+ * 也可以是空白处的自由点 `{ x, y }`。
+ */
+export const STRAIGHT_ROUTER_NAME = 'straight';
+
 /** 两节点包围盒间隙小于此值（画布坐标系）时回退为直线。 */
 export const ORTH_SMART_STRAIGHT_GAP = 20;
 
@@ -72,6 +81,14 @@ export function ensureOrthSmartRouterRegistered(): void {
 
       return orth ? orth.call(edgeView, vertices, options, edgeView) : vertices;
     },
+    true,
+  );
+
+  // 直线路由器：直接返回原始顶点，不做任何正交绕行。
+  // 端点位置由锚点/自由点决定，连线始终为两点间的直线。
+  routerRegistry.register(
+    STRAIGHT_ROUTER_NAME,
+    (vertices: any[]) => vertices,
     true,
   );
 

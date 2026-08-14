@@ -84,6 +84,39 @@ test('ctrl-click multi-select highlights every selected node like rubberband', a
   await expect(page.locator('.toolbar-summary').filter({ hasText: '已选中' })).toHaveText('已选中 3 个对象')
 })
 
+test('overlapping nodes only select the node with the highest Z value', async ({ page }) => {
+  await openFreshBoard(page)
+
+  const startNode = page.locator('.x6-node[data-cell-id="x6-start-node"]')
+  const processNode = page.locator('.x6-node[data-cell-id="x6-process-node"]')
+
+  // Give the start node an explicit higher layer before overlapping the nodes.
+  await startNode.click()
+  const zInput = page.locator('.x6-inspector label.field', { hasText: 'Z 值' }).locator('input')
+  await zInput.fill('20')
+  await zInput.press('Enter')
+
+  const startBox = await startNode.boundingBox()
+  const processBox = await processNode.boundingBox()
+  expect(startBox).toBeTruthy()
+  expect(processBox).toBeTruthy()
+  await page.mouse.move(processBox!.x + processBox!.width / 2, processBox!.y + processBox!.height / 2)
+  await page.mouse.down()
+  await page.mouse.move(startBox!.x + startBox!.width / 2, startBox!.y + startBox!.height / 2, { steps: 8 })
+  await page.mouse.up()
+
+  // Moving can affect the renderer order, so assert the intended Z ordering
+  // after the overlap is established.
+  await zInput.fill('10')
+  await zInput.press('Enter')
+
+  // Avoid the connecting edge that crosses the node's vertical center.
+  await page.mouse.click(startBox!.x + startBox!.width / 2, startBox!.y + startBox!.height / 2 - 14)
+  await expect(startNode).toHaveClass(/x6-node-selected/)
+  await expect(processNode).not.toHaveClass(/x6-node-selected/)
+  await expect(page.locator('.toolbar-summary', { hasText: '节点:' })).toContainText('开始')
+})
+
 test('node content expands into a resource-document style dialog', async ({ page }) => {
   await page.getByTitle('新建页面').click()
   await page.getByRole('menuitem', { name: '画板' }).click()
@@ -229,6 +262,33 @@ test('group/ungroup wraps multi-selected nodes and member clicks prefer the grou
   await expect(groupContainer).toHaveCount(0)
   await expect(startNode).toBeVisible()
   await expect(processNode).toBeVisible()
+})
+
+test('ungroup button is only enabled on single-select of a group container', async ({ page }) => {
+  await openFreshBoard(page)
+
+  const startNode = page.locator('.x6-node[data-cell-id="x6-start-node"]')
+  const processNode = page.locator('.x6-node[data-cell-id="x6-process-node"]')
+  const decisionNode = page.locator('.x6-node[data-cell-id="x6-decision-node"]')
+  const groupContainer = page.locator('.x6-node[data-board-group="true"], .x6-node:has(g[data-board-group="true"])')
+
+  // 多选 2 节点 → 组合
+  await startNode.click()
+  await processNode.click({ modifiers: ['Control'] })
+  await page.locator('.tool-button', { hasText: '组合' }).click()
+  await expect(groupContainer).toBeVisible()
+
+  // 单选组合容器 → 取消组合可用
+  await groupContainer.click({ position: { x: 6, y: 6 } })
+  await expect(page.locator('.tool-button', { hasText: '取消组合' })).toBeEnabled()
+
+  // Ctrl+单击组外节点 → 多选含容器 → 取消组合禁用，按钮回到"组合"
+  await decisionNode.click({ modifiers: ['Control'] })
+  await expect(page.locator('.tool-button', { hasText: '组合' })).toBeDisabled()
+
+  // 再次单选容器 → 恢复可用
+  await groupContainer.click({ position: { x: 6, y: 6 } })
+  await expect(page.locator('.tool-button', { hasText: '取消组合' })).toBeEnabled()
 })
 
 test('deleting a selected group container with the Delete key dissolves it without crashing', async ({ page }) => {
@@ -465,4 +525,73 @@ test('arrow keys nudge the selected node by 1px and shift+arrow by 10px', async 
   await page.waitForTimeout(60)
   const afterIdle = await boardNodeTranslate(page, startNode)
   expect(afterIdle.x).toBeCloseTo(afterDeselect.x, 5)
+})
+
+test('right-click drag does not trigger the browser context menu on the canvas', async ({ page }) => {
+  await openFreshBoard(page)
+
+  // 浏览器手势在右键按下时就可能开始：必须提前 preventDefault，而不只是
+  // 等到拖动结束后的 contextmenu。
+  const rightPointerDownPrevented = await page.evaluate(() => {
+    const stage = document.querySelector('.x6-stage')
+    if (!stage) return null
+    const e = new PointerEvent('pointerdown', {
+      bubbles: true,
+      cancelable: true,
+      button: 2,
+      buttons: 2,
+      pointerId: 99,
+      pointerType: 'mouse',
+    })
+    stage.dispatchEvent(e)
+    return e.defaultPrevented
+  })
+  expect(rightPointerDownPrevented).toBe(true)
+
+  // 合成 contextmenu 事件：stage 与节点都应被 preventDefault
+  const preventedOnStage = await page.evaluate(() => {
+    const stage = document.querySelector('.x6-stage')
+    if (!stage) return null
+    const e = new MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2 })
+    stage.dispatchEvent(e)
+    return e.defaultPrevented
+  })
+  expect(preventedOnStage).toBe(true)
+
+  const preventedOnNode = await page.evaluate(() => {
+    const node = document.querySelector('.x6-node')
+    if (!node) return null
+    const e = new MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2 })
+    node.dispatchEvent(e)
+    return e.defaultPrevented
+  })
+  expect(preventedOnNode).toBe(true)
+
+  // 真实右键拖动平移后触发的 contextmenu 也应被 preventDefault
+  await page.evaluate(() => {
+    // bubble 阶段在 stage 监听之后读取 defaultPrevented
+    document.addEventListener('contextmenu', (e) => {
+      (window as any).__ctxPrevented = e.defaultPrevented
+    })
+  })
+  const stageBox = await page.locator('.x6-stage').boundingBox()
+  expect(stageBox).toBeTruthy()
+  const cx = stageBox!.x + stageBox!.width / 2
+  const cy = stageBox!.y + stageBox!.height / 2
+  const startNode = page.locator('.x6-node[data-cell-id="x6-start-node"]')
+  const nodeBefore = await startNode.boundingBox()
+  expect(nodeBefore).toBeTruthy()
+  await page.mouse.move(cx, cy)
+  await page.mouse.down({ button: 'right' })
+  await page.mouse.move(cx + 40, cy + 30, { steps: 6 })
+  await page.mouse.up({ button: 'right' })
+  await page.waitForTimeout(100)
+  const contextMenuState = await page.evaluate(() => (window as any).__ctxPrevented)
+  // 自定义 pointer 拖动通常会让 contextmenu 完全不产生；若浏览器仍派发，
+  // stage 的兜底监听也必须将其 defaultPrevented。
+  expect(contextMenuState === undefined || contextMenuState === true).toBe(true)
+  const nodeAfter = await startNode.boundingBox()
+  expect(nodeAfter).toBeTruthy()
+  expect(nodeAfter!.x).toBeCloseTo(nodeBefore!.x + 40, 0)
+  expect(nodeAfter!.y).toBeCloseTo(nodeBefore!.y + 30, 0)
 })

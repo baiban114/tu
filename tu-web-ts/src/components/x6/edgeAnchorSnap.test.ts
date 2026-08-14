@@ -141,4 +141,22 @@ describe('snapFreeEdgeTerminals', () => {
   it('defaults to FREE_POINT_SNAP_DISTANCE for the detection radius', () => {
     expect(FREE_POINT_SNAP_DISTANCE).toBeGreaterThan(0);
   });
+
+  it('does not snap free-point terminals on straight-router edges', () => {
+    const result = snapFreeEdgeTerminals({
+      nodes: [
+        { id: 'a', x: 0, y: 0, width: 100, height: 100 },
+      ],
+      edges: [
+        // straight router: free point near node should be preserved as-is.
+        {
+          id: 'e1',
+          source: { cell: 'a' },
+          target: { x: 50, y: 50 },
+          router: { name: 'straight' },
+        },
+      ],
+    }) as { edges: Array<Record<string, unknown>> };
+    expect(result.edges[0].target).toEqual({ x: 50, y: 50 });
+  });
 });

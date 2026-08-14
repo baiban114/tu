@@ -84,7 +84,9 @@ async function initializeWorkspace() {
 async function initLocalFileBridge() {
   // 监听单实例转发的文件打开事件（应用已运行时再次双击 .md）
   unsubscribeOpenLocalFile = onOpenLocalFile((filePath) => {
-    void localFileStore.openFile(filePath);
+    void localFileStore.openFile(filePath).then(() => {
+      leftCollapsed.value = true;
+    });
   });
 
   // 拾取启动时的初始文件参数（应用通过文件关联启动）
@@ -92,6 +94,7 @@ async function initLocalFileBridge() {
     const initialFile = await getInitialOpenFile();
     if (initialFile) {
       await localFileStore.openFile(initialFile);
+      leftCollapsed.value = true;
     }
   } catch (error) {
     console.warn('[HomeView] Failed to pick up initial local file:', error);

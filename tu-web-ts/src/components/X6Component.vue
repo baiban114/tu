@@ -128,10 +128,15 @@ import {
   MINDMAP_DRAG_PREVIEW_OPTION,
   BOARD_SOURCE_ARROWHEAD_TOOL,
   BOARD_TARGET_ARROWHEAD_TOOL,
+  BOARD_FREE_SOURCE_ARROWHEAD_TOOL,
+  BOARD_FREE_TARGET_ARROWHEAD_TOOL,
   ensureSnappingArrowheadToolsRegistered,
+  ensureFreeAnchorArrowheadToolsRegistered,
   ensureOrthSmartRouterRegistered,
   ORTH_SMART_ROUTER_NAME,
+  STRAIGHT_ROUTER_NAME,
   snapFreeEdgeTerminals,
+  isBoardGroupNodeData,
   type NodePreset,
 } from '@/components/x6';
 
@@ -315,6 +320,8 @@ const deletableSelectionCount = ref(0);
 const selectedCell = ref<SelectedCellState | null>(null);
 /** 组合按钮状态：'' 禁用 / 'group' 可组合 / 'ungroup' 可取消组合 */
 const groupActionButtonMode = ref<'' | 'group' | 'ungroup'>('');
+/** 子元素按钮状态：'' 禁用 / 'child' 可设为子元素 / 'detach' 可取消子元素 */
+const childActionButtonMode = ref<'' | 'child' | 'detach'>('');
 const objectModelStore = useObjectModelStore();
 const materialLibraryStore = useMaterialLibraryStore();
 const outlineCacheStore = useOutlineCacheStore();
@@ -869,6 +876,100 @@ function unbindSpacePanListeners() {
   stagePointerInside = false;
 }
 
+interface RightButtonPanState {
+  pointerId: number;
+  startClientX: number;
+  startClientY: number;
+  startTranslateX: number;
+  startTranslateY: number;
+}
+
+let rightButtonPanState: RightButtonPanState | null = null;
+
+/**
+ * 画板自行接管右键拖动。必须在 pointerdown 捕获阶段终止原事件，否则部分
+ * 浏览器会在后续 mousedown/contextmenu 之前启动内置的右键手势。
+ */
+function handleStageRightPointerDown(e: PointerEvent) {
+  if (e.button !== 2 || !graph || !stageRef.value) return;
+
+  e.preventDefault();
+  e.stopImmediatePropagation();
+  markStageActiveForBoardPaste();
+
+  const { tx, ty } = graph.translate();
+  rightButtonPanState = {
+    pointerId: e.pointerId,
+    startClientX: e.clientX,
+    startClientY: e.clientY,
+    startTranslateX: tx,
+    startTranslateY: ty,
+  };
+  try {
+    stageRef.value.setPointerCapture?.(e.pointerId);
+  } catch {
+    // Synthetic tests and older browsers can reject capture for an inactive pointer.
+    // Window-level move/up listeners still keep the custom pan functional.
+  }
+}
+
+function handleRightButtonPanMove(e: PointerEvent) {
+  const state = rightButtonPanState;
+  if (!state || e.pointerId !== state.pointerId || !graph) return;
+
+  e.preventDefault();
+  e.stopImmediatePropagation();
+  graph.translate(
+    state.startTranslateX + e.clientX - state.startClientX,
+    state.startTranslateY + e.clientY - state.startClientY,
+  );
+  updateNodeOverlays();
+}
+
+function finishRightButtonPan(e: PointerEvent) {
+  const state = rightButtonPanState;
+  if (!state || e.pointerId !== state.pointerId) return;
+
+  e.preventDefault();
+  e.stopImmediatePropagation();
+  try {
+    if (stageRef.value?.hasPointerCapture?.(state.pointerId)) {
+      stageRef.value.releasePointerCapture(state.pointerId);
+    }
+  } catch {
+    // Pointer capture may already have been released by the browser.
+  }
+  rightButtonPanState = null;
+}
+
+function cancelRightButtonPan() {
+  try {
+    if (rightButtonPanState && stageRef.value?.hasPointerCapture?.(rightButtonPanState.pointerId)) {
+      stageRef.value.releasePointerCapture(rightButtonPanState.pointerId);
+    }
+  } catch {
+    // Pointer capture may already have been released by the browser.
+  }
+  rightButtonPanState = null;
+}
+
+function bindRightButtonPanListeners() {
+  stageRef.value?.addEventListener('pointerdown', handleStageRightPointerDown, true);
+  window.addEventListener('pointermove', handleRightButtonPanMove, true);
+  window.addEventListener('pointerup', finishRightButtonPan, true);
+  window.addEventListener('pointercancel', finishRightButtonPan, true);
+  window.addEventListener('blur', cancelRightButtonPan);
+}
+
+function unbindRightButtonPanListeners() {
+  stageRef.value?.removeEventListener('pointerdown', handleStageRightPointerDown, true);
+  window.removeEventListener('pointermove', handleRightButtonPanMove, true);
+  window.removeEventListener('pointerup', finishRightButtonPan, true);
+  window.removeEventListener('pointercancel', finishRightButtonPan, true);
+  window.removeEventListener('blur', cancelRightButtonPan);
+  cancelRightButtonPan();
+}
+
 function getNodeLabel(node: Node) {
   const value = node.attr('label/text');
   return typeof value === 'string' ? value : '';
@@ -1171,6 +1272,16 @@ function cancelMindmapNodeDrag() {
 function applyCanvasInteractionMode() {
   if (!graph || editingNodeId.value != null || edgeInlineEditing.value) return;
 
+  if (isStraightLineMode.value) {
+    // 直线绘制模式：禁用选择，右键拖拽画布
+    cancelMindmapNodeDrag();
+    graph.options.panning.eventTypes = ['rightMouseDown'];
+    graph.enablePanning();
+    graph.disableSelection();
+    graph.cleanSelection();
+    return;
+  }
+
   if (getEffectiveCanvasInteractionMode() === 'pan') {
     cancelMindmapNodeDrag();
     graph.options.panning.eventTypes = ['leftMouseDown'];
@@ -1452,15 +1563,42 @@ function refreshSelectedCellState() {
     }
   }
 
-  // Refresh the group action button: containers selected → ungroup,
-  // otherwise ≥2 plain nodes → group.
+  // 工具栏「组合/取消组合」「设为子元素/取消子元素」按钮状态。
+  // 取消类操作仅在单选命中目标时可用：多选或选中父元素时禁用。
   if (!isMindmap.value) {
     const g = graph;
-    const hasGroupContainer = !!g && cells.some((cell) => g.isNode(cell) && isBoardGroupNode(cell as Node));
-    const plainNodeCount = g ? cells.filter((cell) => g.isNode(cell) && !isBoardGroupNode(cell as Node)).length : 0;
-    groupActionButtonMode.value = hasGroupContainer ? 'ungroup' : plainNodeCount >= 2 ? 'group' : '';
+    const selectedNodes: Node[] = g ? (cells.filter((cell) => g.isNode(cell)) as Node[]) : [];
+    const groupContainers = selectedNodes.filter((node) => isBoardGroupNode(node));
+    const hasNodeContainer = selectedNodes.some((node) => isNodeContainer(node));
+    const hasContainerChild = selectedNodes.some((node) => findNodeContainerParent(node) !== null);
+    const plainNodeCount = selectedNodes.filter((node) => !isBoardGroupNode(node)).length;
+    const isSingleSelection = cells.length === 1;
+
+    // 取消组合：仅单选一个组合容器时可用；多选或选中父元素等场景禁用
+    if (isSingleSelection && groupContainers.length === 1) {
+      groupActionButtonMode.value = 'ungroup';
+    } else if (groupContainers.length === 0 && plainNodeCount >= 2) {
+      groupActionButtonMode.value = 'group';
+    } else {
+      groupActionButtonMode.value = '';
+    }
+
+    // 取消子元素：仅单选一个子元素（存在 nodeContainer 父节点）时可用；
+    // 选中父元素（容器）或多选时禁用
+    if (
+      isSingleSelection &&
+      selectedNodes.length === 1 &&
+      findNodeContainerParent(selectedNodes[0]) !== null
+    ) {
+      childActionButtonMode.value = 'detach';
+    } else if (!hasNodeContainer && !hasContainerChild && plainNodeCount >= 2) {
+      childActionButtonMode.value = 'child';
+    } else {
+      childActionButtonMode.value = '';
+    }
   } else {
     groupActionButtonMode.value = '';
+    childActionButtonMode.value = '';
   }
 
   updateUndoRedoState();
@@ -1542,11 +1680,27 @@ function syncEdgeTools() {
       view.removeTools();
       continue;
     }
+    // 直线（自由锚点）路由器：端点可铆钉在节点任意位置，使用自由锚点箭头工具。
+    // 其他路由器（智能正交/正交）：端点吸附到节点边界，使用吸附箭头工具。
+    const edgeRouter = edge.getRouter();
+    const edgeRouterName = typeof edgeRouter === 'string'
+      ? edgeRouter
+      : (edgeRouter?.name ?? '');
+    const useFreeAnchor = !isMindmap.value && edgeRouterName === STRAIGHT_ROUTER_NAME;
+    const sourceTool = isMindmap.value
+      ? 'source-arrowhead'
+      : useFreeAnchor
+        ? BOARD_FREE_SOURCE_ARROWHEAD_TOOL
+        : BOARD_SOURCE_ARROWHEAD_TOOL;
+    const targetTool = isMindmap.value
+      ? 'target-arrowhead'
+      : useFreeAnchor
+        ? BOARD_FREE_TARGET_ARROWHEAD_TOOL
+        : BOARD_TARGET_ARROWHEAD_TOOL;
     const items: Array<{ name: string; args?: Record<string, unknown> }> = [
       { name: 'vertices' },
-      // 画板使用吸附箭头：拖拽端点吸附到节点边界，避免产生悬空自由点端点。
-      { name: isMindmap.value ? 'source-arrowhead' : BOARD_SOURCE_ARROWHEAD_TOOL },
-      { name: isMindmap.value ? 'target-arrowhead' : BOARD_TARGET_ARROWHEAD_TOOL },
+      { name: sourceTool },
+      { name: targetTool },
     ];
     // Mindmap: delete via selection + Delete/toolbar, not an on-edge remove button.
     if (!isMindmap.value) {
@@ -1977,6 +2131,104 @@ function onShapeButtonClick(preset: NodePreset) {
   addNode(preset);
 }
 
+// --- 直线连线绘制模式（参照 Excalidraw） ---
+
+const isStraightLineMode = ref(false);
+let straightLinePreviewEdge: Edge | null = null;
+
+/** 切换直线绘制模式。 */
+function toggleStraightLineMode() {
+  if (isStraightLineMode.value) {
+    exitStraightLineMode();
+  } else {
+    enterStraightLineMode();
+  }
+}
+
+function enterStraightLineMode() {
+  if (!graph || isMindmap.value) return;
+  isStraightLineMode.value = true;
+  applyCanvasInteractionMode();
+}
+
+function exitStraightLineMode() {
+  if (!isStraightLineMode.value) return;
+  isStraightLineMode.value = false;
+  cancelStraightLinePreview();
+  applyCanvasInteractionMode();
+}
+
+function cancelStraightLinePreview() {
+  if (straightLinePreviewEdge) {
+    straightLinePreviewEdge.remove({ disconnect: true });
+    straightLinePreviewEdge = null;
+  }
+}
+
+/**
+ * 根据画布坐标构造连线端子。
+ * 命中节点 → 按比例绑定到节点（topLeft 锚点 + dx/dy）；未命中 → 自由点 {x, y}。
+ */
+function terminalAtPoint(
+  x: number,
+  y: number,
+  excludeCellId?: string,
+): { cell: string; anchor: { name: string; args: { dx: number; dy: number } }; connectionPoint: { name: string } } | { x: number; y: number } {
+  if (!graph) return { x, y };
+  const views = graph.renderer.findViewsInArea(
+    { x: x - 1, y: y - 1, width: 2, height: 2 },
+    { nodeOnly: true },
+  );
+  for (const view of views) {
+    const node = view.cell;
+    if (excludeCellId && node.id === excludeCellId) continue;
+    if (isBoardGroupNodeData(node.getData() ?? {})) continue;
+    const bbox = node.getBBox();
+    if (x < bbox.x || x > bbox.x + bbox.width || y < bbox.y || y > bbox.y + bbox.height) continue;
+    const width = bbox.width || 1;
+    const height = bbox.height || 1;
+    const dx = Math.max(0, Math.min(1, (x - bbox.x) / width));
+    const dy = Math.max(0, Math.min(1, (y - bbox.y) / height));
+    return {
+      cell: node.id,
+      anchor: { name: 'topLeft', args: { dx, dy } },
+      connectionPoint: { name: 'anchor' },
+    };
+  }
+  return { x, y };
+}
+
+/** 直线模式点击：第一次设起点并创建预览，第二次设终点并完成。 */
+function handleStraightLineClick(x: number, y: number) {
+  if (!graph) return;
+
+  if (!straightLinePreviewEdge) {
+    const startTerminal = terminalAtPoint(x, y);
+    straightLinePreviewEdge = graph.createEdge(createEdgeMetadata({
+      source: startTerminal,
+      target: { x, y },
+      router: { name: STRAIGHT_ROUTER_NAME },
+      attrs: {
+        line: { strokeDasharray: '6 4', opacity: 0.6 },
+      },
+    }));
+  } else {
+    const endTerminal = terminalAtPoint(x, y);
+    straightLinePreviewEdge.setTerminal('target', endTerminal);
+    straightLinePreviewEdge.attr('line/strokeDasharray', '');
+    straightLinePreviewEdge.attr('line/opacity', 1);
+    straightLinePreviewEdge = null;
+    scheduleSync();
+  }
+}
+
+/** 直线模式鼠标移动：实时更新预览边终点。 */
+function handleStraightLineMouseMove(x: number, y: number) {
+  if (!straightLinePreviewEdge) return;
+  const terminal = terminalAtPoint(x, y);
+  straightLinePreviewEdge.setTerminal('target', terminal, { ui: true });
+}
+
 function onShapeButtonDragStart(event: DragEvent, payload: ShapeDragPayload) {
   if (!isEditable.value || isMindmap.value) {
     event.preventDefault();
@@ -2128,26 +2380,55 @@ function resolveDeletableCellsForDelete() {
 function deleteSelection() {
   if (!graph || !isEditable.value) return;
   const g = graph;
-  // Deleting a group container means “ungroup”: dissolve it and keep members.
+  // Deleting a group container means "ungroup": dissolve it and keep members.
   const groupContainers = g.getSelectedCells().filter(
     (cell) => g.isNode(cell) && isBoardGroupNode(cell as Node),
   ) as Node[];
-  const cells = resolveDeletableCellsForDelete().filter((cell) => !groupContainers.includes(cell as Node));
-  if (!cells.length && !groupContainers.length) return;
+  // Deleting a node container means "detach": unembed children and keep them.
+  const nodeContainers = g.getSelectedCells().filter(
+    (cell) => g.isNode(cell) && isNodeContainer(cell as Node),
+  ) as Node[];
+  const cells = resolveDeletableCellsForDelete().filter(
+    (cell) => !groupContainers.includes(cell as Node) && !nodeContainers.includes(cell as Node),
+  );
+  if (!cells.length && !groupContainers.length && !nodeContainers.length) return;
 
   if (syncTimer !== null) {
     window.clearTimeout(syncTimer);
     syncTimer = null;
   }
 
-  if (groupContainers.length) {
-    g.batchUpdate(() => {
+  g.batchUpdate(() => {
+    if (groupContainers.length) {
       groupContainers.forEach((container) => dissolveBoardGroup(container));
-    });
-  }
-  if (cells.length) {
-    g.removeCells(cells);
-  }
+    }
+    if (nodeContainers.length) {
+      nodeContainers.forEach((container) => {
+        (container.getChildren() ?? []).forEach((child) => container.unembed(child));
+        container.setData({ ...container.getData(), nodeContainer: false });
+      });
+    }
+    if (cells.length) {
+      // Unembed deleted children from their container parent first, then refit.
+      const refitParents = new Set<Node>();
+      cells.forEach((cell) => {
+        if (!g.isNode(cell)) return;
+        const parent = findNodeContainerParent(cell as Node);
+        if (parent) {
+          parent.unembed(cell);
+          refitParents.add(parent);
+        }
+      });
+      g.removeCells(cells);
+      refitParents.forEach((p) => {
+        if ((p.getChildren() ?? []).length === 0) {
+          p.setData({ ...p.getData(), nodeContainer: false });
+        } else {
+          fitNodeContainer(p);
+        }
+      });
+    }
+  });
   // Members deleted elsewhere may leave degraded groups (<2 members) behind.
   dissolveDegradedBoardGroups();
   g.cleanSelection();
@@ -2386,7 +2667,9 @@ function expandBoardGroupCells(cells: Cell[]): Cell[] {
     if (seen.has(cell.id)) return;
     seen.add(cell.id);
     expanded.push(cell);
-    if (graph!.isNode(cell) && isBoardGroupNode(cell as Node)) {
+    // Expand both group containers and node containers so copy/duplicate
+    // carries children along.
+    if (graph!.isNode(cell) && (isBoardGroupNode(cell as Node) || isNodeContainer(cell as Node))) {
       cell.getDescendants({ deep: true }).forEach((descendant) => {
         if (!seen.has(descendant.id)) {
           seen.add(descendant.id);
@@ -2480,6 +2763,163 @@ function ungroupSelection() {
 
   g.resetSelection(members);
   refreshSelectedCellState();
+  scheduleSync();
+}
+
+// --- Node parent-child (子元素) ---
+// Unlike groups (which create a dedicated container node), this embeds nodes
+// as children of an existing node. The parent expands to visually contain its
+// children, similar to the knowledge-point graph container nodes.
+
+const NODE_CONTAINER_PADDING = 16;
+const NODE_CONTAINER_HEADER = 8;
+
+function isNodeContainer(node: Node): boolean {
+  return (node.getData<Record<string, any>>()?.nodeContainer === true);
+}
+
+/** Returns the nearest non-group, non-mindmap ancestor that is a node container. */
+function findNodeContainerParent(node: Node): Node | null {
+  let parent = node.getParent();
+  const visited = new Set<string>([node.id]);
+  while (parent && graph?.isNode(parent)) {
+    if (visited.has(parent.id)) break;
+    visited.add(parent.id);
+    if (isNodeContainer(parent as Node)) return parent as Node;
+    parent = (parent as Node).getParent();
+  }
+  return null;
+}
+
+/** Reposition and resize a container node to exactly wrap its children (like group containers). */
+function fitNodeContainer(parent: Node) {
+  const g = graph;
+  if (!g || !isNodeContainer(parent)) return;
+  const children = (parent.getChildren() ?? []).filter(
+    (cell): cell is Node => g.isNode(cell),
+  );
+  if (!children.length) return;
+
+  const padding = NODE_CONTAINER_PADDING;
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  children.forEach((child) => {
+    const box = child.getBBox();
+    minX = Math.min(minX, box.x);
+    minY = Math.min(minY, box.y);
+    maxX = Math.max(maxX, box.x + box.width);
+    maxY = Math.max(maxY, box.y + box.height);
+  });
+  if (!Number.isFinite(minX)) return;
+
+  // Always recalculate position and size from the children's bounding box,
+  // matching the group container behavior (no preservation of old pos/size).
+  const x = minX - padding;
+  const y = minY - padding - NODE_CONTAINER_HEADER;
+  const w = maxX - minX + padding * 2;
+  const h = maxY - minY + padding * 2 + NODE_CONTAINER_HEADER;
+
+  g.batchUpdate(() => {
+    parent.setPosition(x, y);
+    parent.resize(w, h);
+  });
+}
+
+/** After a child moves or resizes, re-fit its container parent. */
+function refitNodeContainerForMember(node: Node) {
+  const parent = findNodeContainerParent(node);
+  if (parent) fitNodeContainer(parent);
+}
+
+/** Make the remaining selected nodes children of the first selected node. */
+function makeChildOfParent() {
+  if (!graph || !isEditable.value || isMindmap.value) return;
+  const g = graph;
+  const cells = g.getSelectedCells().filter(
+    (cell) => g.isNode(cell) && !isBoardGroupNode(cell as Node),
+  ) as Node[];
+  if (cells.length < 2) return;
+
+  // The last selected node becomes the parent; earlier selections become its children.
+  const parent = cells[cells.length - 1];
+  const children = cells.slice(0, -1);
+
+  // Cannot embed a node into itself or its descendant.
+  const descendantIds = new Set(parent.getDescendants({ deep: true }).map((c) => c.id));
+  const validChildren = children.filter((c) => c.id !== parent.id && !descendantIds.has(c.id));
+  if (!validChildren.length) return;
+
+  g.batchUpdate(() => {
+    // Detach children from any previous parent first.
+    validChildren.forEach((child) => {
+      const prev = child.getParent();
+      if (prev && g.isNode(prev)) {
+        prev.unembed(child);
+        if (isNodeContainer(prev as Node)) fitNodeContainer(prev as Node);
+      }
+    });
+
+    parent.setData({ ...parent.getData(), nodeContainer: true });
+    // Lower z-index so children render on top.
+    const parentZ = parent.getZIndex() ?? 0;
+    validChildren.forEach((child) => {
+      const childZ = child.getZIndex() ?? 0;
+      if (childZ <= parentZ) child.setZIndex(parentZ + 1);
+      parent.embed(child);
+    });
+    fitNodeContainer(parent);
+    g.resetSelection([parent]);
+  });
+
+  refreshSelectedCellState();
+  updateNodeOverlays();
+  scheduleSync();
+}
+
+/** Detach selected child nodes from their container parent, or dissolve a selected container. */
+function detachFromParent() {
+  if (!graph || !isEditable.value) return;
+  const g = graph;
+  const cells = g.getSelectedCells();
+  const detached: Node[] = [];
+
+  g.batchUpdate(() => {
+    cells.forEach((cell) => {
+      if (!g.isNode(cell)) return;
+      const node = cell as Node;
+
+      // If a container is selected, detach all its children.
+      if (isNodeContainer(node)) {
+        const children = (node.getChildren() ?? []).filter(
+          (c): c is Node => g.isNode(c),
+        );
+        children.forEach((child) => {
+          node.unembed(child);
+          detached.push(child);
+        });
+        node.setData({ ...node.getData(), nodeContainer: false });
+        return;
+      }
+
+      // If a child of a container is selected, detach it from its parent.
+      const parent = findNodeContainerParent(node);
+      if (parent) {
+        parent.unembed(node);
+        detached.push(node);
+        if ((parent.getChildren() ?? []).length === 0) {
+          parent.setData({ ...parent.getData(), nodeContainer: false });
+        } else {
+          fitNodeContainer(parent);
+        }
+      }
+    });
+  });
+
+  if (detached.length) g.resetSelection(detached);
+  refreshSelectedCellState();
+  updateNodeOverlays();
   scheduleSync();
 }
 
@@ -3256,6 +3696,8 @@ function updateSelectedEdgeRouter(value: string) {
   const edge = graph.getCellById(selectedCell.value.id);
   if (!edge || !graph.isEdge(edge)) return;
   edge.setRouter(value === 'manhattan' ? 'orth' : value, {});
+  // 路由器切换后重新挂载箭头工具（直线→自由锚点 / 正交→吸附）。
+  syncEdgeTools();
   scheduleSync();
 }
 
@@ -3569,6 +4011,10 @@ function bindKeyboardShortcuts() {
   });
 
   graph.bindKey('escape', () => {
+    if (isStraightLineMode.value) {
+      exitStraightLineMode();
+      return false;
+    }
     if (editingNodeId.value != null) {
       handleNodeOverlayCancel(editingNodeId.value);
     }
@@ -3588,6 +4034,26 @@ function bindKeyboardShortcuts() {
   graph.bindKey('shift+right', () => arrowNudge(10, 0));
 }
 
+/**
+ * X6 embedded nodes are nested in the DOM, so one browser click can be
+ * translated into node events for both the visible child and its ancestors.
+ * Resolve the real hit target from the browser's painted stack and only let
+ * the first (highest Z order) X6 node handle the interaction.
+ */
+function isTopmostNodeAtPointer(
+  node: Node,
+  e: { clientX: number; clientY: number },
+): boolean {
+  if (typeof document.elementsFromPoint !== 'function') return true;
+  const elements = document.elementsFromPoint(e.clientX, e.clientY);
+  for (const element of elements) {
+    const nodeElement = element.closest<HTMLElement>('.x6-node[data-cell-id]');
+    if (!nodeElement || !stageRef.value?.contains(nodeElement)) continue;
+    return nodeElement.dataset.cellId === node.id;
+  }
+  return true;
+}
+
 function bindGraphEvents() {
   if (!graph) return;
 
@@ -3599,7 +4065,12 @@ function bindGraphEvents() {
     openInspectorForNodeSelection();
   });
 
-  graph.on('node:mousedown', ({ node }) => {
+  graph.on('node:mousedown', ({ node, e }) => {
+    // Prevent the DOM event from bubbling to parent node elements (e.g. when
+    // a child is embedded in a container/group parent). Only the topmost node
+    // — the one directly under the cursor — should respond to the click.
+    e.stopPropagation();
+    if (!isTopmostNodeAtPointer(node, e)) return;
     startUserInteraction();
     pendingNodeInternalClickId = null;
     boardGroupMousedownRootSelected = !isMindmap.value
@@ -3680,10 +4151,12 @@ function bindGraphEvents() {
     // Follow solo member moves so the group border hugs the members. Skipped
     // while dragging the whole group as a unit (container already translates).
     if (!boardGroupDragState) refitBoardGroupForMember(node);
+    if (!boardGroupDragState) refitNodeContainerForMember(node);
   });
 
   graph.on('node:change:size', ({ node }) => {
     if (!boardGroupDragState) refitBoardGroupForMember(node);
+    if (!boardGroupDragState) refitNodeContainerForMember(node);
   });
 
   graph.on('node:moved', ({ node }) => {
@@ -3750,11 +4223,25 @@ function bindGraphEvents() {
     pendingNodeInternalClickId = null;
   });
 
-  graph.on('blank:click', () => {
+  graph.on('blank:click', ({ x, y }) => {
+    if (isStraightLineMode.value) {
+      handleStraightLineClick(x, y);
+      return;
+    }
     if (editingNodeId.value != null) {
       handleNodeOverlayCancel(editingNodeId.value);
     }
     pendingNodeInternalClickId = null;
+  });
+
+  graph.on('blank:mousemove', ({ x, y }) => {
+    if (!isStraightLineMode.value) return;
+    handleStraightLineMouseMove(x, y);
+  });
+
+  graph.on('node:mousemove', ({ x, y }) => {
+    if (!isStraightLineMode.value) return;
+    handleStraightLineMouseMove(x, y);
   });
 
   graph.on('node:mouseenter', ({ node }) => {
@@ -3767,7 +4254,15 @@ function bindGraphEvents() {
     scheduleHideMindmapCollapse();
   });
 
-  graph.on('node:click', ({ node, e }) => {
+  graph.on('node:click', ({ node, e, x, y }) => {
+    // Same as node:mousedown: prevent bubbling to embedded parent nodes.
+    e.stopPropagation();
+    if (!isTopmostNodeAtPointer(node, e)) return;
+    if (isStraightLineMode.value) {
+      handleStraightLineClick(x, y);
+      return;
+    }
+
     const shouldHandleInternalClick = pendingNodeInternalClickId === node.id;
     pendingNodeInternalClickId = null;
 
@@ -3804,6 +4299,13 @@ function bindGraphEvents() {
     finalizeSelectionVisualState();
   });
 
+  // 直线模式下点击已有连线也视为自由点
+  graph.on('edge:click', ({ x, y }) => {
+    if (isStraightLineMode.value) {
+      handleStraightLineClick(x, y);
+    }
+  });
+
   graph.on('blank:dblclick', () => {
     if (inspectorTab.value === 'library') return;
     if (isMindmap.value) {
@@ -3813,7 +4315,9 @@ function bindGraphEvents() {
     addNode(isTaskFlow.value ? 'round' : 'rect');
   });
 
-  graph.on('node:dblclick', ({ node }) => {
+  graph.on('node:dblclick', ({ node, e }) => {
+    e.stopPropagation();
+    if (!isTopmostNodeAtPointer(node, e)) return;
     tryHandleNodeInternalClick(node);
   });
 
@@ -3891,6 +4395,10 @@ function initGraph() {
 
   ensureMindmapConnectorRegistered();
   ensureOrthSmartRouterRegistered();
+
+  // 重置直线模式状态（避免引用已销毁的旧 graph 上的 edge）
+  isStraightLineMode.value = false;
+  straightLinePreviewEdge = null;
 
   if (graph) {
     graph.dispose();
@@ -4032,6 +4540,7 @@ function initGraph() {
 
   ensureBoardGroupShape();
   ensureSnappingArrowheadToolsRegistered();
+  ensureFreeAnchorArrowheadToolsRegistered();
   attachMindmapDirection(graph, props.graphData);
   bindKeyboardShortcuts();
   bindGraphEvents();
@@ -4045,6 +4554,7 @@ onMounted(() => {
     initGraph();
     bindStageCtrlWheel();
     bindSpacePanListeners();
+    bindRightButtonPanListeners();
 
     if (stageRef.value) {
       resizeObserver = new ResizeObserver(() => {
@@ -4054,6 +4564,9 @@ onMounted(() => {
       // 标记最近交互的画板 stage，用于多实例下的系统粘贴路由
       stageRef.value.addEventListener('pointerdown', markStageActiveForBoardPaste);
       stageRef.value.addEventListener('focusin', markStageActiveForBoardPaste);
+      // 同时屏蔽右键释放后可能产生的菜单与辅助点击默认行为。
+      stageRef.value.addEventListener('contextmenu', preventStageContextMenu, true);
+      stageRef.value.addEventListener('auxclick', preventStageRightButtonDefault, true);
     }
     document.addEventListener('paste', handleDocumentPaste);
     document.addEventListener('keydown', handleDocumentKeydownForBoard);
@@ -4066,6 +4579,20 @@ function markStageActiveForBoardPaste() {
   }
 }
 
+/**
+ * 屏蔽画板 stage 上的浏览器原生右键菜单：右键拖动平移（panning eventTypes
+ * 含 rightMouseDown）时不再触发系统右键手势。画板交互不依赖原生 contextmenu。
+ */
+function preventStageContextMenu(e: MouseEvent) {
+  e.preventDefault();
+}
+
+function preventStageRightButtonDefault(e: MouseEvent) {
+  if (e.button === 2) {
+    e.preventDefault();
+  }
+}
+
 onBeforeUnmount(() => {
   if (syncTimer !== null) {
     window.clearTimeout(syncTimer);
@@ -4073,11 +4600,14 @@ onBeforeUnmount(() => {
   clearMindmapCollapseHideTimer();
   unbindStageCtrlWheel();
   unbindSpacePanListeners();
+  unbindRightButtonPanListeners();
   document.removeEventListener('paste', handleDocumentPaste);
   document.removeEventListener('keydown', handleDocumentKeydownForBoard);
   if (stageRef.value) {
     stageRef.value.removeEventListener('pointerdown', markStageActiveForBoardPaste);
     stageRef.value.removeEventListener('focusin', markStageActiveForBoardPaste);
+    stageRef.value.removeEventListener('contextmenu', preventStageContextMenu, true);
+    stageRef.value.removeEventListener('auxclick', preventStageRightButtonDefault, true);
   }
   if (getActiveX6Stage() === stageRef.value) {
     markActiveX6Stage(document.body);
@@ -4322,6 +4852,20 @@ defineExpose({
           同步对象模型
         </button>
       </div>
+      <div class="toolbar-group" v-if="!isMindmap">
+        <button
+          type="button"
+          class="tool-button tool-button--shape"
+          :class="{ 'tool-button--active': isStraightLineMode }"
+          :disabled="!isEditable"
+          :title="isStraightLineMode ? '退出直线连线模式（Esc）' : '直线连线模式：点击设起点，移动预览，再点击设终点'"
+          :aria-pressed="isStraightLineMode"
+          @click="toggleStraightLineMode"
+        >
+          <svg class="tool-button__icon" viewBox="0 0 24 24"><line x1="4" y1="20" x2="20" y2="4" stroke="#52616b" stroke-width="2" stroke-linecap="round"/><circle cx="4" cy="20" r="2.5" fill="#fff" stroke="#52616b" stroke-width="1.5"/><circle cx="20" cy="4" r="2.5" fill="#fff" stroke="#52616b" stroke-width="1.5"/></svg>
+          <span class="tool-button__label">直线连线</span>
+        </button>
+      </div>
       <div class="toolbar-group">
         <button type="button" class="tool-button" :disabled="selectedCellsCount === 0" @click="copySelection">
           复制
@@ -4366,6 +4910,16 @@ defineExpose({
         >
           {{ groupActionButtonMode === 'ungroup' ? '取消组合' : '组合' }}
         </button>
+        <button
+          v-if="!isMindmap"
+          type="button"
+          class="tool-button"
+          :disabled="!isEditable || childActionButtonMode === ''"
+          :title="childActionButtonMode === 'detach' ? '将选中的子元素从父节点分离' : '将先选中的节点设为后选中节点的子元素'"
+          @click="childActionButtonMode === 'detach' ? detachFromParent() : makeChildOfParent()"
+        >
+          {{ childActionButtonMode === 'detach' ? '取消子元素' : '设为子元素' }}
+        </button>
         <button type="button" class="tool-button" :disabled="!isEditable" @click="requestInsertRefBlock">
           插入引用块
         </button>
@@ -4397,6 +4951,7 @@ defineExpose({
           'x6-stage--node-editing': isFillLayout && isNodeEditing,
           'x6-stage--interaction-select': !spacePanActive && canvasInteractionMode === 'select',
           'x6-stage--interaction-pan': spacePanActive || canvasInteractionMode === 'pan',
+          'x6-stage--straight-line-mode': isStraightLineMode,
         }"
         :style="stageStyle"
         @dragover.capture="onMaterialDragOver"
@@ -4853,6 +5408,7 @@ defineExpose({
                   @change="updateSelectedEdgeRouter(($event.target as HTMLSelectElement).value)"
                 >
                   <option :value="ORTH_SMART_ROUTER_NAME">智能正交</option>
+                  <option :value="STRAIGHT_ROUTER_NAME">直线（自由锚点）</option>
                   <option value="normal">直线</option>
                   <option value="orth">正交</option>
                 </select>
@@ -5289,6 +5845,12 @@ defineExpose({
 
 .x6-stage--interaction-pan :deep(.x6-graph.x6-graph-panning) {
   cursor: grabbing !important;
+}
+
+.x6-stage--straight-line-mode :deep(.x6-graph),
+.x6-stage--straight-line-mode :deep(.x6-node),
+.x6-stage--straight-line-mode :deep(.x6-edge) {
+  cursor: crosshair !important;
 }
 
 .x6-workspace {

@@ -1,5 +1,6 @@
 import { edgeToolRegistry } from '@antv/x6';
 import type { GraphData } from '@/api/types';
+import { STRAIGHT_ROUTER_NAME } from './orthSmartRouter';
 
 /**
  * 连线端点锚定吸附。
@@ -130,6 +131,13 @@ export function snapFreeEdgeTerminals(data: GraphData): GraphData {
     .filter((r): r is SnapNodeRect => r != null);
 
   const snappedEdges = edges.map((edge) => {
+    // 直线（自由锚点）路由器的端点：自由点是用户有意放置的，不吸附到边界。
+    const edgeRouter = (edge as Record<string, unknown>).router;
+    const edgeRouterName = typeof edgeRouter === 'string'
+      ? edgeRouter
+      : (edgeRouter as Record<string, unknown> | undefined)?.name;
+    if (edgeRouterName === STRAIGHT_ROUTER_NAME) return edge;
+
     const source = snapTerm(edge.source as TermialLike, rects);
     const target = snapTerm(edge.target as TermialLike, rects);
     if (source === edge.source && target === edge.target) return edge;
@@ -252,5 +260,114 @@ export function ensureSnappingArrowheadToolsRegistered(): void {
       buildSnappingArrowhead('target'),
     );
     targetToolRegistered = true;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 自由锚点 arrowhead 工具：端点可铆钉在元素任意位置（不限于边上）。
+//
+// 用于 straight 直线路由器：拖拽端点时不再吸附到节点边界，而是将端点绑定到
+// 节点的比例位置（topLeft 锚点 + dx/dy 比例），连线从锚点位置直接拉出（不裁
+// 边）。端点落在空白处时保留为自由点 `{ x, y }`。
+// ---------------------------------------------------------------------------
+
+/**
+ * 将一个画布坐标点按节点包围盒的比例绑定到该节点。
+ *
+ * 使用 X6 内置 `topLeft` 锚点 + `dx`/`dy` 比例参数（0–1 区间，X6 会乘以宽高）。
+ * `connectionPoint: 'anchor'` 使连线端点落在锚点本身而非节点边界上。
+ */
+function bindTerminalToNodeAtRatio(node: any, x: number, y: number): TerminalObject {
+  const bbox = node.getBBox();
+  const width = bbox.width || 1;
+  const height = bbox.height || 1;
+  const dx = Math.max(0, Math.min(1, (x - bbox.x) / width));
+  const dy = Math.max(0, Math.min(1, (y - bbox.y) / height));
+  return {
+    cell: node.id,
+    anchor: { name: 'topLeft', args: { dx, dy } },
+    connectionPoint: { name: 'anchor' },
+  };
+}
+
+/**
+ * 自由锚点箭头工具：拖拽端点时可落在节点任意位置（按比例绑定）或空白处（自由点）。
+ *
+ * 与吸附箭头的区别：
+ *  - 吸附箭头：自由点 → `{ cell }`（边界连接，connectionPoint=boundary）。
+ *  - 自由锚点：自由点 → `{ cell, anchor: topLeft+比例, connectionPoint: anchor }`
+ *    或保留为自由点（空白处）。
+ */
+function buildFreeAnchorArrowhead(type: 'source' | 'target'): any {
+  const baseName = type === 'source' ? 'source-arrowhead' : 'target-arrowhead';
+  const Base = edgeToolRegistry.get(baseName) as any;
+
+  return class FreeAnchorArrowhead extends Base {
+    onMouseMove(evt: unknown): void {
+      super.onMouseMove(evt);
+      this.bindFreePointToNode();
+      this.update();
+    }
+
+    onMouseUp(evt: unknown): void {
+      super.onMouseUp(evt);
+      // 落在节点上 → 按比例绑定；落在空白处 → 保留自由点（不回退）。
+      this.bindFreePointToNode();
+    }
+
+    private bindFreePointToNode(): void {
+      const terminal = this.cell?.[type];
+      if (!isFreePointTerminal(terminal)) return;
+      const node = this.findNodeAtPoint(terminal.x, terminal.y);
+      if (node) {
+        this.cell.setTerminal(type, bindTerminalToNodeAtRatio(node, terminal.x, terminal.y), {
+          ui: true,
+        });
+      }
+    }
+
+    private findNodeAtPoint(x: number, y: number): any {
+      const graph = this.graph;
+      const views = graph.renderer.findViewsInArea(
+        { x: x - 1, y: y - 1, width: 2, height: 2 },
+        { nodeOnly: true },
+      );
+      const opposite = type === 'source' ? 'target' : 'source';
+      const oppositeCellId = this.cell?.[opposite]?.cell;
+      for (const view of views) {
+        const node = view.cell;
+        if (oppositeCellId && node.id === oppositeCellId) continue;
+        if (isBoardGroupNodeData(node.getData() ?? {})) continue;
+        const bbox = node.getBBox();
+        if (x >= bbox.x && x <= bbox.x + bbox.width && y >= bbox.y && y <= bbox.y + bbox.height) {
+          return node;
+        }
+      }
+      return null;
+    }
+  };
+}
+
+export const BOARD_FREE_SOURCE_ARROWHEAD_TOOL = 'board-free-source-arrowhead';
+export const BOARD_FREE_TARGET_ARROWHEAD_TOOL = 'board-free-target-arrowhead';
+
+let freeSourceToolRegistered = false;
+let freeTargetToolRegistered = false;
+
+/** 注册自由锚点箭头工具（幂等）。 */
+export function ensureFreeAnchorArrowheadToolsRegistered(): void {
+  if (!freeSourceToolRegistered) {
+    edgeToolRegistry.register(
+      BOARD_FREE_SOURCE_ARROWHEAD_TOOL,
+      buildFreeAnchorArrowhead('source'),
+    );
+    freeSourceToolRegistered = true;
+  }
+  if (!freeTargetToolRegistered) {
+    edgeToolRegistry.register(
+      BOARD_FREE_TARGET_ARROWHEAD_TOOL,
+      buildFreeAnchorArrowhead('target'),
+    );
+    freeTargetToolRegistered = true;
   }
 }
