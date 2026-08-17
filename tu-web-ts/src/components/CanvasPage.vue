@@ -34,13 +34,17 @@ const kbTagPool = ref<BlockTag[]>([])
 const availableTags = computed(() => collectAvailableTags([], pageTags.value, [kbTagPool.value]))
 
 let saveTimer: number | null = null
+let pendingSaveContent: PageContent | null = null
 const SAVE_DELAY = 500
 
 function scheduleSave(next: PageContent) {
+  pendingSaveContent = next
   if (saveTimer !== null) window.clearTimeout(saveTimer)
   saveTimer = window.setTimeout(() => {
     saveTimer = null
-    emit('content-change', next)
+    const content = pendingSaveContent
+    pendingSaveContent = null
+    if (content) emit('content-change', content)
   }, SAVE_DELAY)
 }
 
@@ -92,6 +96,10 @@ function removePageTag(tag: BlockTag) {
 
 onBeforeUnmount(() => {
   if (saveTimer !== null) window.clearTimeout(saveTimer)
+  if (pendingSaveContent) {
+    emit('content-change', pendingSaveContent)
+    pendingSaveContent = null
+  }
 })
 </script>
 

@@ -19,6 +19,14 @@ export const ORTH_SMART_ROUTER_NAME = 'orth-smart';
  */
 export const STRAIGHT_ROUTER_NAME = 'straight';
 
+/**
+ * 纯直线路由器（无路由、无锚点响应）。
+ *
+ * 端点始终为自由点 `{ x, y }`，不绑定到任何节点或锚点。
+ * 连线就是两点之间的直线，不响应节点移动。
+ */
+export const LINE_ROUTER_NAME = 'line';
+
 /** 两节点包围盒间隙小于此值（画布坐标系）时回退为直线。 */
 export const ORTH_SMART_STRAIGHT_GAP = 20;
 
@@ -88,6 +96,14 @@ export function ensureOrthSmartRouterRegistered(): void {
   // 端点位置由锚点/自由点决定，连线始终为两点间的直线。
   routerRegistry.register(
     STRAIGHT_ROUTER_NAME,
+    (vertices: any[]) => vertices,
+    true,
+  );
+
+  // 纯直线路由器：与 straight 相同（返回原始顶点），但语义上表示
+  // 端点不绑定任何节点/锚点，始终为自由点。
+  routerRegistry.register(
+    LINE_ROUTER_NAME,
     (vertices: any[]) => vertices,
     true,
   );

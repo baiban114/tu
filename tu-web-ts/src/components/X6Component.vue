@@ -34,8 +34,13 @@ import { useBlockRegistryStore } from '@/stores/blockRegistry';
 import { useObjectModelStore } from '@/stores/objectModel';
 import { useOutlineCacheStore } from '@/stores/outlineCache';
 import { useWorkspaceStore } from '@/stores/workspace';
-import type { GraphData } from '@/api/types';
+import type {
+  BoardOperationHistoryEntry,
+  BoardOperationSnapshot,
+  GraphData,
+} from '@/api/types';
 import type { PageItem } from '@/api/page';
+import { DEFAULT_PAGE_SIZE } from '@/constants/pagination';
 import type { UmlClassDefinition, UmlModel } from '@/stores/objectModel';
 import {
   X6_MATERIAL_MIME,
@@ -64,6 +69,7 @@ import {
   History,
   Keyboard,
   type Node,
+  type ResizeDirection,
   Selection,
   Shape,
   Snapline,
@@ -130,11 +136,15 @@ import {
   BOARD_TARGET_ARROWHEAD_TOOL,
   BOARD_FREE_SOURCE_ARROWHEAD_TOOL,
   BOARD_FREE_TARGET_ARROWHEAD_TOOL,
+  BOARD_PLAIN_SOURCE_ARROWHEAD_TOOL,
+  BOARD_PLAIN_TARGET_ARROWHEAD_TOOL,
   ensureSnappingArrowheadToolsRegistered,
   ensureFreeAnchorArrowheadToolsRegistered,
+  ensurePlainArrowheadToolsRegistered,
   ensureOrthSmartRouterRegistered,
   ORTH_SMART_ROUTER_NAME,
   STRAIGHT_ROUTER_NAME,
+  LINE_ROUTER_NAME,
   snapFreeEdgeTerminals,
   isBoardGroupNodeData,
   type NodePreset,
@@ -248,6 +258,30 @@ const emit = defineEmits<{
 }>();
 
 const stageRef = ref<HTMLDivElement | null>(null);
+const rootRef = ref<HTMLDivElement | null>(null);
+const isFullscreen = ref(false);
+
+/** 切换画板全屏/退出全屏。 */
+function toggleFullscreen() {
+  const el = rootRef.value;
+  if (!el) return;
+  if (!document.fullscreenElement) {
+    el.requestFullscreen().catch(() => {});
+  } else {
+    document.exitFullscreen().catch(() => {});
+  }
+}
+
+function handleFullscreenChange() {
+  isFullscreen.value = Boolean(document.fullscreenElement);
+  // 全屏/退出全屏后容器尺寸变化，ResizeObserver 会自动触发 graph resize
+  // 但Fullscreen API 的尺寸变化可能在 RO 通知之前完成，延迟一帧确保
+  requestAnimationFrame(() => {
+    if (graph && stageRef.value) {
+      resizeGraph();
+    }
+  });
+}
 const containerRef = ref<HTMLDivElement | null>(null);
 const ZOOM_MIN = 0.2;
 const ZOOM_MAX = 3;
@@ -348,12 +382,29 @@ const mindmapRefTocContext = createMindmapRefTocContext({
   getPageTitle: (pageId) => resolvePageTitleForRef(pageId),
   onCollapseSettled: () => settleMindmapCollapseInteraction(),
 });
-const inspectorTab = ref<'inspector' | 'library'>('inspector');
+const inspectorTab = ref<'inspector' | 'library' | 'operations'>('inspector');
 const inspectorNodeStyleOpen = ref(false);
 const inspectorNodeContentOpen = ref(true);
 const inspectorZAxisOpen = ref(true);
 const toolbarVisible = ref(props.toolbarEnabled);
 const inspectorVisible = ref(props.inspectorEnabled && props.inspectorDefaultVisible);
+const BOARD_OPERATION_HISTORY_LIMIT = 30;
+const operationHistory = ref<BoardOperationHistoryEntry[]>([]);
+const operationHistoryPage = ref(1);
+const rollbackConfirmId = ref<string | null>(null);
+const operationNotice = ref('');
+let pendingOperationLabel: string | null = null;
+let pendingOperationBefore: BoardOperationSnapshot | null = null;
+let lastCommittedOperationSnapshot = '';
+
+const pagedOperationHistory = computed(() => {
+  const start = (operationHistoryPage.value - 1) * DEFAULT_PAGE_SIZE;
+  return operationHistory.value.slice(start, start + DEFAULT_PAGE_SIZE);
+});
+
+const operationHistoryPageCount = computed(() => (
+  Math.max(1, Math.ceil(operationHistory.value.length / DEFAULT_PAGE_SIZE))
+));
 type CanvasInteractionMode = 'select' | 'pan';
 const canvasInteractionMode = ref<CanvasInteractionMode>('select');
 /** Hold Space to temporarily pan (grab cursor), without changing toolbar mode. */
@@ -710,8 +761,9 @@ function stripVolatileCellContent(data: GraphData): GraphData {
     delete nextData.contentDocument;
     return { ...cell, data: nextData };
   };
+  const { operationHistory: _operationHistory, ...persistentGraph } = data;
   return {
-    ...data,
+    ...persistentGraph,
     cells: Array.isArray(data.cells)
       ? data.cells.map((cell) => stripCell(cell as Record<string, unknown>))
       : data.cells,
@@ -745,11 +797,106 @@ function serializeGraphData(): GraphData {
   } as GraphData;
 }
 
+function createOperationSnapshot(data: GraphData): BoardOperationSnapshot {
+  const normalized = normalizeGraphData(data);
+  return {
+    cells: JSON.parse(JSON.stringify(normalized.cells ?? [])) as Array<Record<string, unknown>>,
+    ...(normalized.blueprintMeta
+      ? { blueprintMeta: JSON.parse(JSON.stringify(normalized.blueprintMeta)) }
+      : {}),
+    ...(normalized.uml
+      ? { uml: JSON.parse(JSON.stringify(normalized.uml)) as Record<string, unknown> }
+      : {}),
+  };
+}
+
+function snapshotToGraphData(snapshot: BoardOperationSnapshot): GraphData {
+  return normalizeGraphData({
+    cells: JSON.parse(JSON.stringify(snapshot.cells)),
+    nodes: [],
+    edges: [],
+    ...(snapshot.blueprintMeta
+      ? { blueprintMeta: JSON.parse(JSON.stringify(snapshot.blueprintMeta)) }
+      : {}),
+    ...(snapshot.uml
+      ? { uml: JSON.parse(JSON.stringify(snapshot.uml)) as Record<string, unknown> }
+      : {}),
+  });
+}
+
+function operationSnapshotKey(snapshot: BoardOperationSnapshot): string {
+  return JSON.stringify(snapshot);
+}
+
+function loadOperationHistory(data?: GraphData) {
+  operationHistory.value = Array.isArray(data?.operationHistory)
+    ? data.operationHistory.slice(0, BOARD_OPERATION_HISTORY_LIMIT)
+    : [];
+  operationHistoryPage.value = Math.min(
+    operationHistoryPage.value,
+    Math.max(1, Math.ceil(operationHistory.value.length / DEFAULT_PAGE_SIZE)),
+  );
+  rollbackConfirmId.value = null;
+}
+
+/** Capture the exact state before a meaningful user action starts. */
+function markBoardOperation(label: string) {
+  if (!graph || isApplyingExternalData) return;
+  pendingOperationLabel = label;
+  pendingOperationBefore = createOperationSnapshot(serializeGraphData());
+}
+
+function formatOperationTime(timestamp: number): string {
+  if (!Number.isFinite(timestamp)) return '';
+  return new Intl.DateTimeFormat('zh-CN', {
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  }).format(new Date(timestamp));
+}
+
+function appendOperationRecord(current: BoardOperationSnapshot) {
+  const before = pendingOperationBefore
+    ?? (lastCommittedOperationSnapshot
+      ? JSON.parse(lastCommittedOperationSnapshot) as BoardOperationSnapshot
+      : current);
+  const beforeKey = operationSnapshotKey(before);
+  const currentKey = operationSnapshotKey(current);
+  if (beforeKey === currentKey) {
+    pendingOperationLabel = null;
+    pendingOperationBefore = null;
+    return;
+  }
+
+  operationHistory.value = [
+    {
+      id: createId('board-operation'),
+      label: pendingOperationLabel ?? '编辑画板',
+      createdAt: Date.now(),
+      before,
+    },
+    ...operationHistory.value,
+  ].slice(0, BOARD_OPERATION_HISTORY_LIMIT);
+  operationHistoryPage.value = 1;
+  pendingOperationLabel = null;
+  pendingOperationBefore = null;
+}
+
 function emitGraphData() {
   if (!graph || isApplyingExternalData) return;
-  const payload = normalizeGraphData(serializeGraphData());
+  const core = normalizeGraphData(serializeGraphData());
+  const currentOperationSnapshot = createOperationSnapshot(core);
+  appendOperationRecord(currentOperationSnapshot);
+  const payload: GraphData = {
+    ...core,
+    operationHistory: operationHistory.value,
+  };
   const snapshot = JSON.stringify(payload);
   if (snapshot === lastSerializedSnapshot) return;
+  lastCommittedOperationSnapshot = operationSnapshotKey(currentOperationSnapshot);
   lastSerializedSnapshot = snapshot;
   lastStructuralSnapshot = JSON.stringify(stripVolatileCellContent(payload));
   emit('graph-data-change', payload);
@@ -798,6 +945,42 @@ function bindStageCtrlWheel() {
 
 function unbindStageCtrlWheel() {
   stageRef.value?.removeEventListener('wheel', handleStageCtrlWheel, {
+    capture: true,
+  } as EventListenerOptions);
+}
+
+/**
+ * 画板滚轮平移：无修饰键时滚动滚轮上下移动画面（类比文档滚动）。
+ * - Ctrl/Meta + wheel 仍由 handleStageCtrlWheel 负责缩放；
+ * - 光标位于输入类目标（输入框/编辑器）时让位原生滚动；
+ * - 方向约定：向下滚动（deltaY>0）内容上移（ty 减小），即向下查看更下方内容。
+ */
+function handleStageWheelPan(e: WheelEvent) {
+  if (!graph) return;
+  if (e.ctrlKey || e.metaKey) return;
+  if (isCanvasTypingTarget(e.target)) return;
+
+  e.preventDefault();
+  e.stopPropagation();
+
+  // 归一化 Firefox 的行/页模式为像素
+  let dy = e.deltaY;
+  if (e.deltaMode === 1) dy *= 16;
+  else if (e.deltaMode === 2) dy *= 100;
+
+  const { tx, ty } = graph.translate();
+  graph.translate(tx, ty - dy);
+}
+
+function bindStageWheelPan() {
+  stageRef.value?.addEventListener('wheel', handleStageWheelPan, {
+    capture: true,
+    passive: false,
+  });
+}
+
+function unbindStageWheelPan() {
+  stageRef.value?.removeEventListener('wheel', handleStageWheelPan, {
     capture: true,
   } as EventListenerOptions);
 }
@@ -1313,6 +1496,9 @@ function handleNodeOverlayCommit(nodeId: string, text: string) {
   if (node && graph?.isNode(node)) {
     node.attr('label/text', text);
     node.attr('label/visibility', 'visible');
+    if (isNodeContainer(node)) {
+      positionContainerLabel(node);
+    }
     if (isMindmap.value && fitMindmapNodeToText(node) && graph) {
       layoutMindmapGraph(graph, readMindmapDirection(props.graphData));
     }
@@ -1564,34 +1750,43 @@ function refreshSelectedCellState() {
   }
 
   // 工具栏「组合/取消组合」「设为子元素/取消子元素」按钮状态。
-  // 取消类操作仅在单选命中目标时可用：多选或选中父元素时禁用。
+  // 取消类操作（取消组合/取消子元素）仅在单选命中目标时可用。
   if (!isMindmap.value) {
     const g = graph;
     const selectedNodes: Node[] = g ? (cells.filter((cell) => g.isNode(cell)) as Node[]) : [];
     const groupContainers = selectedNodes.filter((node) => isBoardGroupNode(node));
-    const hasNodeContainer = selectedNodes.some((node) => isNodeContainer(node));
-    const hasContainerChild = selectedNodes.some((node) => findNodeContainerParent(node) !== null);
-    const plainNodeCount = selectedNodes.filter((node) => !isBoardGroupNode(node)).length;
+    // 子元素相关判定只看非组合容器节点（与 makeChildOfParent/detachFromParent 一致）
+    const plainNodes = selectedNodes.filter((node) => !isBoardGroupNode(node));
     const isSingleSelection = cells.length === 1;
 
     // 取消组合：仅单选一个组合容器时可用；多选或选中父元素等场景禁用
     if (isSingleSelection && groupContainers.length === 1) {
       groupActionButtonMode.value = 'ungroup';
-    } else if (groupContainers.length === 0 && plainNodeCount >= 2) {
+    } else if (groupContainers.length === 0 && plainNodes.length >= 2) {
       groupActionButtonMode.value = 'group';
     } else {
       groupActionButtonMode.value = '';
     }
 
-    // 取消子元素：仅单选一个子元素（存在 nodeContainer 父节点）时可用；
-    // 选中父元素（容器）或多选时禁用
+    // 子元素按钮状态：
+    // - 单选一个子元素（存在 nodeContainer 父节点）→ 取消子元素（可分离）
+    // - 多选（≥2 个非组合节点）→ 设为子元素。末选节点为父元素、先选节点为子元素；
+    //   父元素（容器）自身也可以是其他元素的子元素（嵌套父子关系），
+    //   因此只要选中了 ≥2 个节点即可设为子元素，具体有效性由
+    //   makeChildOfParent（环检测等）判断
+    // - 其余（无选中、单选父容器等）→ 禁用
     if (
       isSingleSelection &&
-      selectedNodes.length === 1 &&
-      findNodeContainerParent(selectedNodes[0]) !== null
+      plainNodes.length === 1 &&
+      findNodeContainerParent(plainNodes[0]) !== null
     ) {
       childActionButtonMode.value = 'detach';
-    } else if (!hasNodeContainer && !hasContainerChild && plainNodeCount >= 2) {
+    } else if (
+      plainNodes.length >= 2
+      && plainNodes
+        .slice(0, -1)
+        .some((child) => canAttachNodeToParent(child, plainNodes[plainNodes.length - 1]))
+    ) {
       childActionButtonMode.value = 'child';
     } else {
       childActionButtonMode.value = '';
@@ -1662,6 +1857,65 @@ function finalizeSelectionVisualState() {
 }
 
 /**
+ * 在连线中点插入矩形环节，将连线拆分为两段（源 → 矩形 → 目标）。
+ * 新连线继承原连线的路由器、连接器和线条样式。
+ */
+function insertRelayOnEdge(edge: Edge) {
+  if (!graph || !isEditable.value) return;
+
+  const source = edge.getSource();
+  const target = edge.getTarget();
+  const router = edge.getRouter();
+  const connector = edge.getConnector();
+  const lineAttrs = edge.attr('line');
+
+  const sourcePoint = edge.getSourcePoint();
+  const targetPoint = edge.getTargetPoint();
+  const midX = (sourcePoint.x + targetPoint.x) / 2;
+  const midY = (sourcePoint.y + targetPoint.y) / 2;
+
+  const relayWidth = 80;
+  const relayHeight = 32;
+  const relayNode = graph.addNode(createNodeMetadata('rect', {
+    x: midX - relayWidth / 2,
+    y: midY - relayHeight / 2,
+    width: relayWidth,
+    height: relayHeight,
+    label: '',
+  }));
+
+  const edgeAttrs = lineAttrs && typeof lineAttrs === 'object'
+    ? { line: lineAttrs }
+    : undefined;
+
+  graph.batchUpdate(() => {
+    // 源 → 矩形
+    graph!.addEdge(createEdgeMetadata({
+      source,
+      target: { cell: relayNode.id },
+      router,
+      connector,
+      attrs: edgeAttrs,
+    }));
+    // 矩形 → 目标
+    graph!.addEdge(createEdgeMetadata({
+      source: { cell: relayNode.id },
+      target,
+      router,
+      connector,
+      attrs: edgeAttrs,
+    }));
+    // 移除原连线
+    edge.remove({ disconnect: true });
+  });
+
+  graph.cleanSelection();
+  graph.select(relayNode);
+  refreshSelectedCellState();
+  scheduleSync();
+}
+
+/**
  * Mount bend-anchor / arrowhead tools only on the sole selected edge.
  * Hover-mounted `vertices` tools capture the first click as "add vertex"
  * (black dots) and prevent a clean edge selection for the inspector.
@@ -1681,22 +1935,28 @@ function syncEdgeTools() {
       continue;
     }
     // 直线（自由锚点）路由器：端点可铆钉在节点任意位置，使用自由锚点箭头工具。
+    // 纯直线路由器：端点始终为自由点，不绑定任何节点，使用纯直线箭头工具。
     // 其他路由器（智能正交/正交）：端点吸附到节点边界，使用吸附箭头工具。
     const edgeRouter = edge.getRouter();
     const edgeRouterName = typeof edgeRouter === 'string'
       ? edgeRouter
       : (edgeRouter?.name ?? '');
     const useFreeAnchor = !isMindmap.value && edgeRouterName === STRAIGHT_ROUTER_NAME;
+    const usePlain = !isMindmap.value && edgeRouterName === LINE_ROUTER_NAME;
     const sourceTool = isMindmap.value
       ? 'source-arrowhead'
       : useFreeAnchor
         ? BOARD_FREE_SOURCE_ARROWHEAD_TOOL
-        : BOARD_SOURCE_ARROWHEAD_TOOL;
+        : usePlain
+          ? BOARD_PLAIN_SOURCE_ARROWHEAD_TOOL
+          : BOARD_SOURCE_ARROWHEAD_TOOL;
     const targetTool = isMindmap.value
       ? 'target-arrowhead'
       : useFreeAnchor
         ? BOARD_FREE_TARGET_ARROWHEAD_TOOL
-        : BOARD_TARGET_ARROWHEAD_TOOL;
+        : usePlain
+          ? BOARD_PLAIN_TARGET_ARROWHEAD_TOOL
+          : BOARD_TARGET_ARROWHEAD_TOOL;
     const items: Array<{ name: string; args?: Record<string, unknown> }> = [
       { name: 'vertices' },
       { name: sourceTool },
@@ -1704,6 +1964,33 @@ function syncEdgeTools() {
     ];
     // Mindmap: delete via selection + Delete/toolbar, not an on-edge remove button.
     if (!isMindmap.value) {
+      // 在连线中点添加「插入环节」按钮（+ 图标）
+      items.push({
+        name: 'button',
+        args: {
+          distance: 0.5,
+          offset: 0,
+          markup: [
+            {
+              tagName: 'circle',
+              selector: 'button',
+              attrs: { r: 9, fill: '#52616b', cursor: 'pointer' },
+            },
+            {
+              tagName: 'path',
+              selector: 'icon',
+              attrs: {
+                d: 'M -4 0 L 4 0 M 0 -4 L 0 4',
+                fill: 'none',
+                stroke: '#FFFFFF',
+                'stroke-width': 2,
+                'pointer-events': 'none',
+              },
+            },
+          ],
+          onClick: ({ cell }: { cell: Edge }) => insertRelayOnEdge(cell),
+        },
+      });
       items.push({ name: 'button-remove', args: { distance: -30 } });
     }
     view.addTools({ items });
@@ -1767,6 +2054,10 @@ function applyGraphData(data?: GraphData, fitView = false) {
   const normalized = normalizeGraphData(data);
   // 画板：把历史遗留的「悬空」自由点端点吸附回最近节点边界，统一端点样式。
   const normalizedData = isMindmap.value ? normalized : snapFreeEdgeTerminals(normalized);
+  loadOperationHistory(normalizedData);
+  lastCommittedOperationSnapshot = operationSnapshotKey(createOperationSnapshot(normalizedData));
+  pendingOperationLabel = null;
+  pendingOperationBefore = null;
   const incomingUml = (data as Record<string, any> | undefined)?.uml;
   if (incomingUml) {
     objectModelStore.replaceModel(incomingUml);
@@ -2105,6 +2396,7 @@ function addNode(
   options?: { centerAt?: boolean },
 ) {
   if (!graph || !isEditable.value) return;
+  markBoardOperation(isMindmap.value ? '添加思维导图节点' : '添加节点');
   if (isMindmap.value) {
     addMindmapChildNode();
     return;
@@ -2124,6 +2416,9 @@ function addNode(
   graph.select(node);
   refreshSelectedCellState();
   scheduleSync();
+  // 工具栏按钮点击会把焦点移出画布，而 X6 Keyboard 绑定在 graph 容器上，
+  // 焦点丢失后 Ctrl+Z/Delete/方向键等快捷键无法触发。添加后把焦点还给画布。
+  graph.container?.focus({ preventScroll: true });
 }
 
 function onShapeButtonClick(preset: NodePreset) {
@@ -2207,7 +2502,8 @@ function handleStraightLineClick(x: number, y: number) {
     straightLinePreviewEdge = graph.createEdge(createEdgeMetadata({
       source: startTerminal,
       target: { x, y },
-      router: { name: STRAIGHT_ROUTER_NAME },
+      // 直线工具默认生成「纯直线」：端点始终为自由点、不绑定节点/锚点、不响应节点移动。
+      router: { name: LINE_ROUTER_NAME },
       attrs: {
         line: { strokeDasharray: '6 4', opacity: 0.6 },
       },
@@ -2392,6 +2688,7 @@ function deleteSelection() {
     (cell) => !groupContainers.includes(cell as Node) && !nodeContainers.includes(cell as Node),
   );
   if (!cells.length && !groupContainers.length && !nodeContainers.length) return;
+  markBoardOperation('删除对象');
 
   if (syncTimer !== null) {
     window.clearTimeout(syncTimer);
@@ -2406,6 +2703,7 @@ function deleteSelection() {
       nodeContainers.forEach((container) => {
         (container.getChildren() ?? []).forEach((child) => container.unembed(child));
         container.setData({ ...container.getData(), nodeContainer: false });
+        restoreNormalLabelPosition(container);
       });
     }
     if (cells.length) {
@@ -2450,6 +2748,7 @@ function duplicateSelection() {
   if (!graph || !isEditable.value) return;
   const cells = expandBoardGroupCells(graph.getSelectedCells());
   if (!cells.length) return;
+  markBoardOperation('复制副本');
 
   const clones = Object.values(graph.cloneCells(cells));
   clones.forEach((cell) => {
@@ -2485,6 +2784,12 @@ let boardGroupDragState: { memberId: string; rootId: string; last: { x: number; 
 let boardGroupMousedownRootSelected = false;
 
 const BOARD_GROUP_SHAPE = 'board-group';
+
+// Bounding box of a container node at the start of a resize-handle drag
+// (`node:resize`). During `node:resizing` we compare the current box against it
+// to derive which edges the user is actually dragging, because the
+// `node:resizing` event args do not expose the drag direction at runtime.
+let containerResizeStartBox: { x: number; y: number; width: number; height: number } | null = null;
 
 type BoardGroupBorderPreset = 'tight' | 'highlight';
 
@@ -2690,6 +2995,7 @@ function groupSelection() {
     (cell) => g.isNode(cell) && !isBoardGroupNode(cell as Node),
   ) as Node[];
   if (members.length < 2) return;
+  markBoardOperation('组合');
 
   const padding = BOARD_GROUP_BORDER_PRESETS.tight.padding;
   let minX = Infinity;
@@ -2750,6 +3056,7 @@ function ungroupSelection() {
     (cell) => g.isNode(cell) && isBoardGroupNode(cell as Node),
   ) as Node[];
   if (!containers.length) return;
+  markBoardOperation('取消组合');
 
   const members: Node[] = [];
   g.batchUpdate(() => {
@@ -2772,7 +3079,11 @@ function ungroupSelection() {
 // children, similar to the knowledge-point graph container nodes.
 
 const NODE_CONTAINER_PADDING = 16;
-const NODE_CONTAINER_HEADER = 8;
+// X6 refY uses absolute px outside the (0,1) range; the label floats this far
+// above the container's top border so children never cover it.
+const NODE_CONTAINER_LABEL_GAP = 16;
+/** Suppress intermediate refits while an embedded subtree moves atomically. */
+let nodeContainerLayoutMutationDepth = 0;
 
 function isNodeContainer(node: Node): boolean {
   return (node.getData<Record<string, any>>()?.nodeContainer === true);
@@ -2789,6 +3100,37 @@ function findNodeContainerParent(node: Node): Node | null {
     parent = (parent as Node).getParent();
   }
   return null;
+}
+
+/** When a node becomes a container, move its label above the top border so it
+ * is not obscured by child nodes. */
+function positionContainerLabel(parent: Node) {
+  const g = graph;
+  if (!g || !isNodeContainer(parent)) return;
+
+  // Get current label text; if empty there is nothing to reposition.
+  const labelText = parent.attr('label/text') as string | undefined;
+  if (!labelText || labelText.trim() === '') return;
+
+  // X6 refY: values in (0,1) are proportions of the body, outside that range
+  // are absolute px. Use -NODE_CONTAINER_LABEL_GAP so the label floats that far
+  // above the body top border. textVerticalAnchor 'top' anchors the text's top
+  // edge at the refY point, keeping the whole label (even multi-line) outside
+  // the box where children render.
+  parent.attr('label/refY', -NODE_CONTAINER_LABEL_GAP);
+  parent.attr('label/textAnchor', 'middle');
+  parent.attr('label/textVerticalAnchor', 'top');
+  parent.attr('label/visibility', 'visible');
+}
+
+/** When a node is no longer a container, restore the label to center position. */
+function restoreNormalLabelPosition(node: Node) {
+  node.attr('label', {
+    refX: 0.5,
+    refY: 0.5,
+    textAnchor: 'middle',
+    textVerticalAnchor: 'middle',
+  });
 }
 
 /** Reposition and resize a container node to exactly wrap its children (like group containers). */
@@ -2817,20 +3159,212 @@ function fitNodeContainer(parent: Node) {
   // Always recalculate position and size from the children's bounding box,
   // matching the group container behavior (no preservation of old pos/size).
   const x = minX - padding;
-  const y = minY - padding - NODE_CONTAINER_HEADER;
+  const y = minY - padding;
   const w = maxX - minX + padding * 2;
-  const h = maxY - minY + padding * 2 + NODE_CONTAINER_HEADER;
+  const h = maxY - minY + padding * 2;
 
   g.batchUpdate(() => {
     parent.setPosition(x, y);
     parent.resize(w, h);
+    positionContainerLabel(parent);
   });
 }
 
-/** After a child moves or resizes, re-fit its container parent. */
+/**
+ * Grow-only fit: unlike fitNodeContainer (which always snaps back to the exact
+ * wrap bbox), this only expands the container frame when a child moves/resizes
+ * beyond its current border, so the parent never shrinks back to the minimum
+ * size just because a child was dragged inward.
+ */
+function growNodeContainer(parent: Node) {
+  const g = graph;
+  if (!g || !isNodeContainer(parent)) return;
+  const children = (parent.getChildren() ?? []).filter(
+    (cell): cell is Node => g.isNode(cell),
+  );
+  if (!children.length) return;
+
+  const padding = NODE_CONTAINER_PADDING;
+  const box = parent.getBBox();
+
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  children.forEach((child) => {
+    const cb = child.getBBox();
+    minX = Math.min(minX, cb.x);
+    minY = Math.min(minY, cb.y);
+    maxX = Math.max(maxX, cb.x + cb.width);
+    maxY = Math.max(maxY, cb.y + cb.height);
+  });
+  if (!Number.isFinite(minX)) return;
+
+  // Only expand the current frame when a child now exceeds it.
+  const x = Math.min(box.x, minX - padding);
+  const y = Math.min(box.y, minY - padding);
+  const right = Math.max(box.x + box.width, maxX + padding);
+  const bottom = Math.max(box.y + box.height, maxY + padding);
+
+  if (
+    x === box.x
+    && y === box.y
+    && right === box.x + box.width
+    && bottom === box.y + box.height
+  ) {
+    return; // still fully enclosed, nothing to do
+  }
+
+  g.batchUpdate(() => {
+    parent.setPosition(x, y);
+    parent.resize(right - x, bottom - y);
+    positionContainerLabel(parent);
+  });
+}
+
+/** After a child moves or resizes, grow its container parent only when needed. */
 function refitNodeContainerForMember(node: Node) {
+  if (nodeContainerLayoutMutationDepth > 0) return;
   const parent = findNodeContainerParent(node);
-  if (parent) fitNodeContainer(parent);
+  if (parent) growNodeContainer(parent);
+}
+
+/** Grow outer containers after the complete nested subtree reaches its final position. */
+function growNodeContainerAncestorChain(node: Node) {
+  let current = findNodeContainerParent(node);
+  const visited = new Set<string>();
+  while (current && !visited.has(current.id)) {
+    visited.add(current.id);
+    growNodeContainer(current);
+    current = findNodeContainerParent(current);
+  }
+}
+
+// --- Parent-child container resize constraint ---
+// The user may resize a container freely, but its border must never cut into a
+// child: once the border would reach a child, the container stops shrinking
+// there. Children are never scaled by the container's resize.
+//
+// The X6 `node:resizing` event does not expose the drag direction at runtime,
+// so we derive the dragged edges geometrically: the edges whose coordinate
+// differs between the resize-start box (captured on `node:resize`) and the
+// current box. Only those dragged edges are clamped toward the child frame; the
+// opposite (fixed) corner is preserved by passing the matching direction to
+// `node.resize`.
+
+/**
+ * Clamp a container's frame so it always fully encloses its children (with the
+ * container padding). Only the border(s) the user is dragging are clamped; the
+ * opposite (fixed) corner keeps its place, so the adjacent side is never
+ * stretched as a side effect.
+ */
+function clampContainerResizeToChildren(node: Node, startBox: { x: number; y: number; width: number; height: number }) {
+  const g = graph;
+  if (!g || !isNodeContainer(node)) return;
+  const children = (node.getChildren() ?? []).filter(
+    (cell): cell is Node => g.isNode(cell),
+  );
+  if (!children.length) return;
+
+  const padding = NODE_CONTAINER_PADDING;
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  children.forEach((child) => {
+    const cb = child.getBBox();
+    minX = Math.min(minX, cb.x);
+    minY = Math.min(minY, cb.y);
+    maxX = Math.max(maxX, cb.x + cb.width);
+    maxY = Math.max(maxY, cb.y + cb.height);
+  });
+  if (!Number.isFinite(minX)) return;
+
+  const box = node.getBBox();
+
+  // Which edges is the user dragging? The fixed (opposite) edges must not move.
+  // A small epsilon guards against sub-pixel/rounding drift of the fixed corner.
+  const EPS = 0.5;
+  const leftDragged = Math.abs(box.x - startBox.x) > EPS;
+  const rightDragged = Math.abs(box.x + box.width - (startBox.x + startBox.width)) > EPS;
+  const topDragged = Math.abs(box.y - startBox.y) > EPS;
+  const bottomDragged = Math.abs(box.y + box.height - (startBox.y + startBox.height)) > EPS;
+
+  let x = box.x;
+  let y = box.y;
+  let w = box.width;
+  let h = box.height;
+
+  if (leftDragged) {
+    const newX = Math.min(box.x, minX - padding);
+    if (newX !== x) {
+      w += box.x - newX;
+      x = newX;
+    }
+  }
+  if (rightDragged) {
+    const newRight = Math.max(box.x + box.width, maxX + padding);
+    w = newRight - x;
+  }
+  if (topDragged) {
+    const newY = Math.min(box.y, minY - padding);
+    if (newY !== y) {
+      h += box.y - newY;
+      y = newY;
+    }
+  }
+  if (bottomDragged) {
+    const newBottom = Math.max(box.y + box.height, maxY + padding);
+    h = newBottom - y;
+  }
+
+  if (x === box.x && y === box.y && w === box.width && h === box.height) {
+    return; // nothing to clamp
+  }
+
+  // Map the dragged edges back to a ResizeDirection so `node.resize` keeps the
+  // opposite (fixed) corner in place, matching how X6 itself interprets the
+  // handle being dragged.
+  const horizontal = leftDragged ? 'left' : rightDragged ? 'right' : '';
+  const vertical = topDragged ? 'top' : bottomDragged ? 'bottom' : '';
+  const direction: ResizeDirection = horizontal && vertical
+    ? `${vertical}-${horizontal}` as ResizeDirection
+    : (horizontal || vertical || 'top-right') as ResizeDirection;
+
+  node.resize(w, h, { direction });
+}
+
+/**
+ * Keep a newly-created container at its current canvas position. If the nodes
+ * being attached are left of or above the parent's content origin, move the
+ * whole incoming subtree into the parent as one unit, preserving the relative
+ * layout between selected children.
+ */
+function placeIncomingChildrenInsideParent(parent: Node, children: Node[]) {
+  if (!children.length) return;
+  const parentBox = parent.getBBox();
+  let minX = Infinity;
+  let minY = Infinity;
+
+  children.forEach((child) => {
+    const box = child.getBBox({ deep: true });
+    minX = Math.min(minX, box.x);
+    minY = Math.min(minY, box.y);
+  });
+  if (!Number.isFinite(minX) || !Number.isFinite(minY)) return;
+
+  const dx = Math.max(0, parentBox.x + NODE_CONTAINER_PADDING - minX);
+  const dy = Math.max(0, parentBox.y + NODE_CONTAINER_PADDING - minY);
+  if (dx === 0 && dy === 0) return;
+
+  children.forEach((child) => child.translate(dx, dy));
+}
+
+/** Reject no-op nesting and both directions of an ancestor cycle. */
+function canAttachNodeToParent(child: Node, parent: Node): boolean {
+  if (child.id === parent.id || child.getParent()?.id === parent.id) return false;
+  if (parent.getDescendants({ deep: true }).some((cell) => cell.id === child.id)) return false;
+  return !child.getDescendants({ deep: true }).some((cell) => cell.id === parent.id);
 }
 
 /** Make the remaining selected nodes children of the first selected node. */
@@ -2846,12 +3380,17 @@ function makeChildOfParent() {
   const parent = cells[cells.length - 1];
   const children = cells.slice(0, -1);
 
-  // Cannot embed a node into itself or its descendant.
-  const descendantIds = new Set(parent.getDescendants({ deep: true }).map((c) => c.id));
-  const validChildren = children.filter((c) => c.id !== parent.id && !descendantIds.has(c.id));
+  // Do not re-attach an existing descendant or make an ancestor its own child.
+  const validChildren = children.filter((child) => canAttachNodeToParent(child, parent));
   if (!validChildren.length) return;
+  markBoardOperation('设为子元素');
 
-  g.batchUpdate(() => {
+  // 使用 startBatch/stopBatch（而非 batchUpdate）确保即使内部抛异常也能关闭 batch，
+  // 避免未关闭的 batch 阻止 History 插件记录 undo 命令。
+  // resetSelection 移到 batch 外部，避免选择事件干扰 History 命令分组。
+  g.startBatch('make-child-of-parent');
+  nodeContainerLayoutMutationDepth += 1;
+  try {
     // Detach children from any previous parent first.
     validChildren.forEach((child) => {
       const prev = child.getParent();
@@ -2861,36 +3400,78 @@ function makeChildOfParent() {
       }
     });
 
+    // Converting the selected parent into a container must not snap that parent
+    // to a distant child's old bbox. Move the incoming subtree inside the
+    // parent's content origin first, then grow the frame from its existing
+    // top-left position.
+    placeIncomingChildrenInsideParent(parent, validChildren);
+
     parent.setData({ ...parent.getData(), nodeContainer: true });
-    // Lower z-index so children render on top.
+    // Raise z-index so the child subtree renders on top of the parent. When the
+    // child is itself a container (nested parents), bump its whole subtree by
+    // the same delta so inner children keep rendering above it.
     const parentZ = parent.getZIndex() ?? 0;
     validChildren.forEach((child) => {
       const childZ = child.getZIndex() ?? 0;
-      if (childZ <= parentZ) child.setZIndex(parentZ + 1);
+      if (childZ <= parentZ) {
+        const delta = parentZ + 1 - childZ;
+        child.setZIndex(childZ + delta);
+        child.getDescendants({ deep: true }).forEach((descendant) => {
+          if (g.isNode(descendant)) {
+            descendant.setZIndex((descendant.getZIndex() ?? 0) + delta);
+          }
+        });
+      }
       parent.embed(child);
     });
-    fitNodeContainer(parent);
-    g.resetSelection([parent]);
-  });
+    positionContainerLabel(parent);
+    growNodeContainer(parent);
+  } finally {
+    nodeContainerLayoutMutationDepth -= 1;
+    g.stopBatch('make-child-of-parent');
+  }
 
+  growNodeContainerAncestorChain(parent);
+
+  g.resetSelection([parent]);
   refreshSelectedCellState();
   updateNodeOverlays();
   scheduleSync();
 }
 
-/** Detach selected child nodes from their container parent, or dissolve a selected container. */
+/** Detach selected child nodes from their container parent, or dissolve a standalone container. */
 function detachFromParent() {
   if (!graph || !isEditable.value) return;
   const g = graph;
   const cells = g.getSelectedCells();
   const detached: Node[] = [];
+  markBoardOperation('取消子元素');
 
-  g.batchUpdate(() => {
+  g.startBatch('detach-from-parent');
+  try {
     cells.forEach((cell) => {
       if (!g.isNode(cell)) return;
       const node = cell as Node;
 
-      // If a container is selected, detach all its children.
+      // If the node is a child of a container, detach it from that parent first.
+      // This also applies when the node is itself a container (nested parents):
+      // "取消子元素" detaches it from its parent while keeping its own
+      // container status and children intact.
+      const parent = findNodeContainerParent(node);
+      if (parent) {
+        parent.unembed(node);
+        detached.push(node);
+        if ((parent.getChildren() ?? []).length === 0) {
+          parent.setData({ ...parent.getData(), nodeContainer: false });
+          restoreNormalLabelPosition(parent);
+        } else {
+          fitNodeContainer(parent);
+        }
+        return;
+      }
+
+      // Not a child of any container: if a standalone container is selected,
+      // dissolve it (detach all its children).
       if (isNodeContainer(node)) {
         const children = (node.getChildren() ?? []).filter(
           (c): c is Node => g.isNode(c),
@@ -2900,22 +3481,12 @@ function detachFromParent() {
           detached.push(child);
         });
         node.setData({ ...node.getData(), nodeContainer: false });
-        return;
-      }
-
-      // If a child of a container is selected, detach it from its parent.
-      const parent = findNodeContainerParent(node);
-      if (parent) {
-        parent.unembed(node);
-        detached.push(node);
-        if ((parent.getChildren() ?? []).length === 0) {
-          parent.setData({ ...parent.getData(), nodeContainer: false });
-        } else {
-          fitNodeContainer(parent);
-        }
+        restoreNormalLabelPosition(node);
       }
     });
-  });
+  } finally {
+    g.stopBatch('detach-from-parent');
+  }
 
   if (detached.length) g.resetSelection(detached);
   refreshSelectedCellState();
@@ -2926,10 +3497,7 @@ function detachFromParent() {
 function beginBoardGroupDrag(node: Node) {
   if (isMindmap.value) return;
   const root = findBoardGroupRoot(node);
-  if (root === node) return;
-  // Only treat the drag as a group-level operation when the group container is
-  // itself selected. When a member is selected alone (e.g. Alt+click), dragging
-  // moves just that member — its relative position inside the group changes.
+  if (root === node || !isBoardGroupNode(root)) return;
   if (!graph || !graph.isSelected(root)) return;
   boardGroupDragState = { memberId: node.id, rootId: root.id, last: node.getPosition() };
 }
@@ -2955,8 +3523,13 @@ function endBoardGroupDrag() {
 
 function pasteSelection() {
   if (!graph || !isEditable.value) return;
+  markBoardOperation('粘贴');
   const pasted = graph.paste({ offset: { dx: 32, dy: 32 } });
-  if (!pasted.length) return;
+  if (!pasted.length) {
+    pendingOperationLabel = null;
+    pendingOperationBefore = null;
+    return;
+  }
   graph.resetSelection(pasted);
   refreshSelectedCellState();
   scheduleSync();
@@ -3492,6 +4065,7 @@ function syncToSource() {
 
 function undo() {
   if (!graph || !canUndo.value) return;
+  markBoardOperation('撤销');
   graph.undo();
   refreshSelectedCellState();
   scheduleSync();
@@ -3499,9 +4073,58 @@ function undo() {
 
 function redo() {
   if (!graph || !canRedo.value) return;
+  markBoardOperation('重做');
   graph.redo();
   refreshSelectedCellState();
   scheduleSync();
+}
+
+function requestRollback(entry: BoardOperationHistoryEntry) {
+  rollbackConfirmId.value = entry.id;
+  operationNotice.value = '';
+}
+
+function cancelRollback() {
+  rollbackConfirmId.value = null;
+}
+
+function rollbackBeforeOperation(entry: BoardOperationHistoryEntry) {
+  if (!graph || !isEditable.value) return;
+
+  const current = createOperationSnapshot(serializeGraphData());
+  const target = entry.before;
+  if (operationSnapshotKey(current) === operationSnapshotKey(target)) {
+    rollbackConfirmId.value = null;
+    operationNotice.value = '当前画板已经是该操作之前的状态。';
+    return;
+  }
+
+  const rollbackEntry: BoardOperationHistoryEntry = {
+    id: createId('board-operation'),
+    label: `回退到「${entry.label}」之前`,
+    createdAt: Date.now(),
+    before: current,
+  };
+  const nextHistory = [rollbackEntry, ...operationHistory.value]
+    .slice(0, BOARD_OPERATION_HISTORY_LIMIT);
+  const targetData: GraphData = {
+    ...snapshotToGraphData(target),
+    operationHistory: nextHistory,
+  };
+
+  rollbackConfirmId.value = null;
+  operationHistoryPage.value = 1;
+  applyGraphData(targetData);
+
+  // applyGraphData 在 nextTick 完成内部状态恢复；随后强制发出一次持久化更新。
+  nextTick(() => {
+    if (!graph) return;
+    lastSerializedSnapshot = '';
+    lastCommittedOperationSnapshot = operationSnapshotKey(target);
+    emitGraphData();
+    operationNotice.value = `已回退到「${entry.label}」之前；回退前状态也已保留。`;
+    updateUndoRedoState();
+  });
 }
 
 function zoomIn() {
@@ -4076,6 +4699,7 @@ function bindGraphEvents() {
     boardGroupMousedownRootSelected = !isMindmap.value
       && !!graph
       && findBoardGroupRoot(node) !== node
+      && isBoardGroupNode(findBoardGroupRoot(node))
       && graph.isSelected(findBoardGroupRoot(node));
     beginBoardGroupDrag(node);
 
@@ -4159,6 +4783,17 @@ function bindGraphEvents() {
     if (!boardGroupDragState) refitNodeContainerForMember(node);
   });
 
+  graph.on('node:resizing', ({ node }) => {
+    // Keep a resized container from shrinking into its children: the border
+    // stops at the first child it would otherwise overlap. Only the edges the
+    // user is actually dragging are clamped (derived from the resize-start
+    // box), so the opposite fixed corner stays put and the adjacent side is
+    // never stretched.
+    if (containerResizeStartBox && isNodeContainer(node)) {
+      clampContainerResizeToChildren(node, containerResizeStartBox);
+    }
+  });
+
   graph.on('node:moved', ({ node }) => {
     if (
       isMindmap.value
@@ -4189,14 +4824,22 @@ function bindGraphEvents() {
     finishUserInteraction();
   });
 
-  graph.on('node:resize', () => {
+  graph.on('node:resize', ({ node }) => {
     startUserInteraction();
+    // Remember the box at the start of a handle drag so `node:resizing` can
+    // derive which edges the user is dragging (the event args do not carry the
+    // direction at runtime).
+    if (isNodeContainer(node)) {
+      const box = node.getBBox();
+      containerResizeStartBox = { x: box.x, y: box.y, width: box.width, height: box.height };
+    }
   });
 
   graph.on('node:resized', ({ node }) => {
     if (isMindmap.value && graph && graph.isNode(node)) {
       fitMindmapNodeToText(node);
     }
+    containerResizeStartBox = null;
     finishUserInteraction();
   });
 
@@ -4275,9 +4918,11 @@ function bindGraphEvents() {
     // member itself. Alt+click bypasses the group and selects the member directly.
     // Ctrl/⌘+click keeps its reserved multi-select meaning (member is toggled
     // by X6's Selection plugin), so we skip the group redirect entirely.
+    // Node containers (子元素 parents) are real nodes, not groups: clicking a
+    // child of a node container must select that child directly, never the parent.
     if (!isMindmap.value && graph && !e.ctrlKey && !e.metaKey) {
       const groupRoot = findBoardGroupRoot(node);
-      if (groupRoot !== node) {
+      if (groupRoot !== node && isBoardGroupNode(groupRoot)) {
         if (e.altKey) {
           // Keep the member (and any unrelated cells), but drop the group container.
           const others = graph
@@ -4541,18 +5186,26 @@ function initGraph() {
   ensureBoardGroupShape();
   ensureSnappingArrowheadToolsRegistered();
   ensureFreeAnchorArrowheadToolsRegistered();
+  ensurePlainArrowheadToolsRegistered();
   attachMindmapDirection(graph, props.graphData);
   bindKeyboardShortcuts();
   bindGraphEvents();
   applyGraphData(props.graphData, true);
   applyCanvasInteractionMode();
   updateUndoRedoState();
+
+  // Dev/test hook: expose the live graph so E2E can assert model state
+  // (embed parent/child, selection, etc.) that has no direct DOM signal.
+  if (import.meta.env.DEV) {
+    (window as any).__x6graph = graph;
+  }
 }
 
 onMounted(() => {
   nextTick(() => {
     initGraph();
     bindStageCtrlWheel();
+    bindStageWheelPan();
     bindSpacePanListeners();
     bindRightButtonPanListeners();
 
@@ -4570,6 +5223,7 @@ onMounted(() => {
     }
     document.addEventListener('paste', handleDocumentPaste);
     document.addEventListener('keydown', handleDocumentKeydownForBoard);
+    document.addEventListener('fullscreenchange', handleFullscreenChange);
   });
 });
 
@@ -4599,10 +5253,12 @@ onBeforeUnmount(() => {
   }
   clearMindmapCollapseHideTimer();
   unbindStageCtrlWheel();
+  unbindStageWheelPan();
   unbindSpacePanListeners();
   unbindRightButtonPanListeners();
   document.removeEventListener('paste', handleDocumentPaste);
   document.removeEventListener('keydown', handleDocumentKeydownForBoard);
+  document.removeEventListener('fullscreenchange', handleFullscreenChange);
   if (stageRef.value) {
     stageRef.value.removeEventListener('pointerdown', markStageActiveForBoardPaste);
     stageRef.value.removeEventListener('focusin', markStageActiveForBoardPaste);
@@ -4679,8 +5335,10 @@ defineExpose({
 
 <template>
   <div
+    ref="rootRef"
     class="x6-editor"
     :class="{
+      'x6-editor--fullscreen': isFullscreen,
       'x6-editor--sized': hasExplicitSize,
       'x6-editor--fill': isFillLayout,
       'x6-editor--node-editing': isFillLayout && isNodeEditing,
@@ -4895,6 +5553,14 @@ defineExpose({
         <button type="button" class="tool-button" @click="toggleGrid">
           {{ gridVisible ? '隐藏网格' : '显示网格' }}
         </button>
+        <button
+          type="button"
+          class="tool-button"
+          :title="isFullscreen ? '退出全屏' : '全屏画板'"
+          @click="toggleFullscreen"
+        >
+          {{ isFullscreen ? '退出全屏' : '全屏' }}
+        </button>
       </div>
 
       <div v-if="blockActionsEnabled" class="toolbar-group">
@@ -5072,6 +5738,14 @@ defineExpose({
             @click="inspectorTab = 'library'"
           >
             素材库
+          </button>
+          <button
+            type="button"
+            class="x6-inspector-tab"
+            :class="{ active: inspectorTab === 'operations' }"
+            @click="inspectorTab = 'operations'"
+          >
+            操作
           </button>
         </div>
 
@@ -5409,6 +6083,7 @@ defineExpose({
                 >
                   <option :value="ORTH_SMART_ROUTER_NAME">智能正交</option>
                   <option :value="STRAIGHT_ROUTER_NAME">直线（自由锚点）</option>
+                  <option :value="LINE_ROUTER_NAME">纯直线</option>
                   <option value="normal">直线</option>
                   <option value="orth">正交</option>
                 </select>
@@ -5505,6 +6180,79 @@ defineExpose({
         </div>
         </div>
 
+        <!-- Operation manager: fixed sidebar region with an internally scrolling list. -->
+        <div v-else-if="inspectorTab === 'operations'" class="x6-operation-manager">
+          <header class="x6-operation-manager__header">
+            <div>
+              <h4>操作管理</h4>
+              <p>保留最近 {{ BOARD_OPERATION_HISTORY_LIMIT }} 次已保存操作，可恢复到任一操作发生之前。</p>
+            </div>
+          </header>
+
+          <p v-if="operationNotice" class="x6-operation-manager__notice">{{ operationNotice }}</p>
+
+          <div v-if="operationHistory.length === 0" class="x6-operation-manager__empty">
+            <strong>还没有可回退的操作</strong>
+            <span>下一次编辑画板后，操作会自动记录并随画板保存。</span>
+          </div>
+
+          <ol v-else class="x6-operation-list">
+            <li v-for="entry in pagedOperationHistory" :key="entry.id" class="x6-operation-item">
+              <div class="x6-operation-item__summary">
+                <strong>{{ entry.label }}</strong>
+                <time :datetime="new Date(entry.createdAt).toISOString()">
+                  {{ formatOperationTime(entry.createdAt) }}
+                </time>
+              </div>
+              <template v-if="rollbackConfirmId === entry.id">
+                <p class="x6-operation-item__confirm-text">
+                  将恢复到该操作发生前；当前状态会自动保留为一条新的回退记录。
+                </p>
+                <div class="x6-operation-item__actions">
+                  <button type="button" class="operation-button" @click="cancelRollback">取消</button>
+                  <button
+                    type="button"
+                    class="operation-button operation-button--danger"
+                    :disabled="!isEditable"
+                    @click="rollbackBeforeOperation(entry)"
+                  >
+                    确认回退
+                  </button>
+                </div>
+              </template>
+              <button
+                v-else
+                type="button"
+                class="operation-button operation-button--primary"
+                :disabled="!isEditable"
+                @click="requestRollback(entry)"
+              >
+                回退到此前
+              </button>
+            </li>
+          </ol>
+
+          <footer v-if="operationHistory.length > DEFAULT_PAGE_SIZE" class="x6-operation-manager__pagination">
+            <button
+              type="button"
+              class="operation-button"
+              :disabled="operationHistoryPage <= 1"
+              @click="operationHistoryPage -= 1"
+            >
+              上一页
+            </button>
+            <span>{{ operationHistoryPage }} / {{ operationHistoryPageCount }}</span>
+            <button
+              type="button"
+              class="operation-button"
+              :disabled="operationHistoryPage >= operationHistoryPageCount"
+              @click="operationHistoryPage += 1"
+            >
+              下一页
+            </button>
+          </footer>
+        </div>
+
         <!-- Library panel content -->
         <div v-else class="x6-inspector__body x6-inspector__body--library">
           <X6MaterialLibrary @insert="insertMaterial" @close="inspectorTab = 'inspector'" />
@@ -5523,6 +6271,14 @@ defineExpose({
   overflow: hidden;
   background: linear-gradient(180deg, #fbfcfe 0%, #f4f7fb 100%);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7);
+}
+
+/* 全屏状态：填满屏幕，去掉圆角和边框 */
+.x6-editor--fullscreen {
+  border: none;
+  border-radius: 0;
+  width: 100vw;
+  height: 100vh;
 }
 
 .x6-editor--fill {
@@ -6139,6 +6895,164 @@ defineExpose({
   padding: 0;
   gap: 0;
   overflow: hidden;
+}
+
+.x6-operation-manager {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding: 14px;
+  gap: 12px;
+}
+
+.x6-operation-manager__header {
+  flex-shrink: 0;
+  padding: 14px;
+  border: 1px solid #dfe5ef;
+  border-radius: 12px;
+  background: #fff;
+}
+
+.x6-operation-manager__header h4 {
+  margin: 0 0 6px;
+  color: #1f2d3d;
+  font-size: 15px;
+}
+
+.x6-operation-manager__header p,
+.x6-operation-manager__notice {
+  margin: 0;
+  color: #5f6b7a;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.x6-operation-manager__notice {
+  flex-shrink: 0;
+  padding: 9px 10px;
+  border: 1px solid #b7ebc6;
+  border-radius: 9px;
+  background: #f0fff4;
+  color: #237a3b;
+}
+
+.x6-operation-manager__empty {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 20px;
+  border: 1px dashed #cfd7e6;
+  border-radius: 12px;
+  color: #667085;
+  text-align: center;
+  font-size: 13px;
+}
+
+.x6-operation-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 0;
+  padding: 0 2px 0 0;
+  list-style: none;
+}
+
+.x6-operation-item {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  padding: 12px;
+  border: 1px solid #e1e6ef;
+  border-radius: 11px;
+  background: #fff;
+}
+
+.x6-operation-item__summary {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.x6-operation-item__summary strong {
+  overflow: hidden;
+  color: #25324b;
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.x6-operation-item__summary time {
+  color: #8a94a6;
+  font-size: 11px;
+}
+
+.x6-operation-item__confirm-text {
+  margin: 0;
+  color: #7a4c00;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.x6-operation-item__actions,
+.x6-operation-manager__pagination {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.x6-operation-item__actions .operation-button {
+  flex: 1;
+}
+
+.operation-button {
+  min-height: 30px;
+  padding: 5px 9px;
+  border: 1px solid #cfd6e4;
+  border-radius: 7px;
+  background: #fff;
+  color: #4b5565;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.operation-button:hover:not(:disabled) {
+  border-color: #818cf8;
+  color: #4338ca;
+}
+
+.operation-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.operation-button--primary {
+  border-color: #a5b4fc;
+  background: #eef2ff;
+  color: #4338ca;
+}
+
+.operation-button--danger {
+  border-color: #f4a6a6;
+  background: #fff1f0;
+  color: #b42318;
+}
+
+.x6-operation-manager__pagination {
+  flex-shrink: 0;
+  justify-content: space-between;
+  padding-top: 2px;
+  color: #667085;
+  font-size: 12px;
 }
 
 .inspector-card {

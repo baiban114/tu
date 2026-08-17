@@ -1,6 +1,6 @@
 import { edgeToolRegistry } from '@antv/x6';
 import type { GraphData } from '@/api/types';
-import { STRAIGHT_ROUTER_NAME } from './orthSmartRouter';
+import { STRAIGHT_ROUTER_NAME, LINE_ROUTER_NAME } from './orthSmartRouter';
 
 /**
  * 连线端点锚定吸附。
@@ -136,7 +136,7 @@ export function snapFreeEdgeTerminals(data: GraphData): GraphData {
     const edgeRouterName = typeof edgeRouter === 'string'
       ? edgeRouter
       : (edgeRouter as Record<string, unknown> | undefined)?.name;
-    if (edgeRouterName === STRAIGHT_ROUTER_NAME) return edge;
+    if (edgeRouterName === STRAIGHT_ROUTER_NAME || edgeRouterName === LINE_ROUTER_NAME) return edge;
 
     const source = snapTerm(edge.source as TermialLike, rects);
     const target = snapTerm(edge.target as TermialLike, rects);
@@ -369,5 +369,65 @@ export function ensureFreeAnchorArrowheadToolsRegistered(): void {
       buildFreeAnchorArrowhead('target'),
     );
     freeTargetToolRegistered = true;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 纯直线 arrowhead 工具：端点始终为自由点，不绑定任何节点/锚点。
+//
+// 用于 line 纯直线路由器：拖拽端点时不做任何吸附/绑定，端点始终为 { x, y }。
+// ---------------------------------------------------------------------------
+
+function buildPlainArrowhead(type: 'source' | 'target'): any {
+  const baseName = type === 'source' ? 'source-arrowhead' : 'target-arrowhead';
+  const Base = edgeToolRegistry.get(baseName) as any;
+
+  return class PlainArrowhead extends Base {
+    private lastPos: { x: number; y: number } | null = null;
+
+    onMouseMove(evt: unknown): void {
+      const e = this.normalizeEvent(evt);
+      const coords = this.graph.snapToGrid(e.clientX, e.clientY);
+      this.lastPos = { x: coords.x, y: coords.y };
+      // 直接设为自由点，不走 cellView.onMouseMove 的端口吸附
+      this.cell.setTerminal(type, { x: coords.x, y: coords.y }, { ui: true });
+      this.update();
+    }
+
+    onMouseUp(evt: unknown): void {
+      super.onMouseUp(evt);
+      // super.onMouseUp 可能将端子绑定到端口/节点，强制改回自由点
+      if (this.lastPos) {
+        this.cell.setTerminal(
+          type,
+          { x: this.lastPos.x, y: this.lastPos.y },
+          { ui: true },
+        );
+      }
+    }
+  };
+}
+
+export const BOARD_PLAIN_SOURCE_ARROWHEAD_TOOL = 'board-plain-source-arrowhead';
+export const BOARD_PLAIN_TARGET_ARROWHEAD_TOOL = 'board-plain-target-arrowhead';
+
+let plainSourceToolRegistered = false;
+let plainTargetToolRegistered = false;
+
+/** 注册纯直线箭头工具（幂等）。 */
+export function ensurePlainArrowheadToolsRegistered(): void {
+  if (!plainSourceToolRegistered) {
+    edgeToolRegistry.register(
+      BOARD_PLAIN_SOURCE_ARROWHEAD_TOOL,
+      buildPlainArrowhead('source'),
+    );
+    plainSourceToolRegistered = true;
+  }
+  if (!plainTargetToolRegistered) {
+    edgeToolRegistry.register(
+      BOARD_PLAIN_TARGET_ARROWHEAD_TOOL,
+      buildPlainArrowhead('target'),
+    );
+    plainTargetToolRegistered = true;
   }
 }

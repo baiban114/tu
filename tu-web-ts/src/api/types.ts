@@ -1,3 +1,24 @@
+/** A compact board snapshot kept for a recoverable operation entry. */
+export interface BoardOperationSnapshot {
+  cells: Array<Record<string, unknown>>;
+  blueprintMeta?: {
+    anchor: { x: number; y: number };
+    extractedCenter?: { x: number; y: number };
+    extractedCount?: number;
+    kind?: string;
+    direction?: 'LR' | 'RL' | 'TB' | 'BT';
+  };
+  uml?: Record<string, unknown>;
+}
+
+/** Persistent, board-local operation record used by the operation manager. */
+export interface BoardOperationHistoryEntry {
+  id: string;
+  label: string;
+  createdAt: number;
+  before: BoardOperationSnapshot;
+}
+
 export interface GraphData {
   cells?: Array<Record<string, unknown>>;
   nodes: Array<{
@@ -62,6 +83,8 @@ export interface GraphData {
   };
   /** UML 对象模型快照，仅 X6 画板序列化时使用 */
   uml?: Record<string, unknown>;
+  /** 最近的可恢复操作；随画板内容持久化，快照不递归包含本字段。 */
+  operationHistory?: BoardOperationHistoryEntry[];
 }
 
 export interface BlockTag {

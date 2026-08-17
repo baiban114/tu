@@ -132,8 +132,8 @@ test('node content expands into a resource-document style dialog', async ({ page
   const dialog = page.locator('.expanded-document-dialog')
   await expect(dialog).toBeVisible()
   await expect(dialog.locator('.expanded-document-dialog__banner-title')).toHaveText('节点内容')
-  await expect(dialog.locator('.expanded-document-dialog__banner-tag').nth(0)).toHaveText('画板内容')
-  await expect(dialog.locator('.expanded-document-dialog__banner-tag').nth(1)).toHaveText('可编辑')
+  // 编辑状态下不显示「画板内容/可编辑」等标签（只读时才显示「只读」）
+  await expect(dialog.locator('.expanded-document-dialog__banner-tag')).toHaveCount(0)
   const dialogEditor = dialog.locator('.ProseMirror')
   await expect(dialogEditor).toBeVisible()
   await expect(dialogEditor).toHaveAttribute('contenteditable', 'true')
@@ -289,6 +289,216 @@ test('ungroup button is only enabled on single-select of a group container', asy
   // 再次单选容器 → 恢复可用
   await groupContainer.click({ position: { x: 6, y: 6 } })
   await expect(page.locator('.tool-button', { hasText: '取消组合' })).toBeEnabled()
+})
+
+test('a parent element can hold multiple children: 设为子元素 stays enabled for an existing parent', async ({ page }) => {
+  await openFreshBoard(page)
+
+  const startNode = page.locator('.x6-node[data-cell-id="x6-start-node"]')
+  const processNode = page.locator('.x6-node[data-cell-id="x6-process-node"]')
+  const decisionNode = page.locator('.x6-node[data-cell-id="x6-decision-node"]')
+  const childButton = page.locator('.tool-button', { hasText: '设为子元素' })
+
+  // 选中 start + process（process 后选，作为父元素）→ 设为子元素可用
+  await startNode.click()
+  await processNode.click({ modifiers: ['Control'] })
+  await expect(childButton).toBeEnabled()
+  const beforeAttach = await page.evaluate(() => {
+    const g = (window as any).__x6graph
+    return ['x6-start-node', 'x6-process-node'].map((id) => ({ id, bbox: g.getCellById(id).getBBox().toJSON() }))
+  })
+  await childButton.click()
+  const afterAttach = await page.evaluate(() => {
+    const g = (window as any).__x6graph
+    return ['x6-start-node', 'x6-process-node'].map((id) => ({ id, bbox: g.getCellById(id).getBBox().toJSON() }))
+  })
+
+  // 父节点保持原画布坐标；远处的子节点进入父容器内部，而不是把父节点拉到左上角。
+  expect(afterAttach[1].bbox.x).toBeCloseTo(beforeAttach[1].bbox.x, 5)
+  expect(afterAttach[1].bbox.y).toBeCloseTo(beforeAttach[1].bbox.y, 5)
+  expect(afterAttach[0].bbox.x).toBeGreaterThanOrEqual(afterAttach[1].bbox.x + 15)
+  expect(afterAttach[0].bbox.y).toBeGreaterThanOrEqual(afterAttach[1].bbox.y + 15)
+
+  // process 成为父容器，start 被嵌入为其子元素
+  // X6 embed 不改变 DOM 层级，通过模型验证父子关系
+  await expect.poll(() => page.evaluate(() => {
+    const child = (window as any).__x6graph?.getCellById('x6-start-node')
+    return child?.getParent()?.id
+  })).toBe('x6-process-node')
+
+  // 建立父子关系后画板仍可正常平移，不会被异常大的父容器遮住。
+  const translateBefore = await page.evaluate(() => (window as any).__x6graph.translate())
+  await page.locator('.x6-stage').hover({ position: { x: 24, y: 24 } })
+  await page.mouse.wheel(0, 80)
+  await expect.poll(async () => {
+    const current = await page.evaluate(() => (window as any).__x6graph.translate())
+    return current.ty
+  }).toBeCloseTo(translateBefore.ty - 80, 5)
+  await page.mouse.wheel(0, -80)
+
+  // 单选父元素 process → 按钮禁用（选中父元素时不可用）
+  await page.evaluate(() => {
+    const g = (window as any).__x6graph
+    g.cleanSelection()
+    g.select(g.getCellById('x6-process-node'))
+  })
+  await expect(childButton).toBeDisabled()
+
+  // 再选中 decision + process（process 最后选中作为父）→ 设为子元素仍可用，可继续添加子元素
+  await page.evaluate(() => {
+    const g = (window as any).__x6graph
+    g.cleanSelection()
+    g.select(g.getCellById('x6-decision-node'))
+    g.select(g.getCellById('x6-process-node'))
+  })
+  await expect(childButton).toBeEnabled()
+  await childButton.click()
+
+  // process 现在同时拥有两个子元素：start 与 decision（相连边也会被嵌入，过滤只统计节点）
+  await expect.poll(() => page.evaluate(() => {
+    const parent = (window as any).__x6graph?.getCellById('x6-process-node')
+    return parent
+      ?.getChildren()
+      ?.filter((c: any) => c.isNode())
+      .map((c: any) => c.id)
+      .sort()
+  })).toEqual(['x6-decision-node', 'x6-start-node'])
+})
+
+test('nesting a parent moves its whole subtree atomically and rejects inverse cycles', async ({ page }) => {
+  await openFreshBoard(page)
+
+  const childButton = page.locator('.tool-button', { hasText: '设为子元素' })
+  const snapshot = () => page.evaluate(() => {
+    const g = (window as any).__x6graph
+    return ['x6-start-node', 'x6-process-node', 'x6-decision-node', 'x6-finish-node']
+      .map((id) => ({ id, bbox: g.getCellById(id).getBBox().toJSON() }))
+  })
+
+  // 先建立 process → start，使 process 成为一个带子节点的父容器。
+  await page.evaluate(() => {
+    const g = (window as any).__x6graph
+    g.cleanSelection()
+    g.select(g.getCellById('x6-start-node'))
+    g.select(g.getCellById('x6-process-node'))
+  })
+  await expect(childButton).toBeEnabled()
+  await childButton.click()
+
+  // 放置一个不属于该子树、但与 process 容器实际重叠的节点，覆盖“原来重叠元素”场景。
+  await page.evaluate(() => {
+    const g = (window as any).__x6graph
+    const processBox = g.getCellById('x6-process-node').getBBox()
+    g.getCellById('x6-finish-node').setPosition(processBox.x + 4, processBox.y + 4)
+  })
+  const beforeNestedAttach = await snapshot()
+
+  // 再建立 decision → process；process 与其已有子节点必须作为一个整体移动。
+  await page.evaluate(() => {
+    const g = (window as any).__x6graph
+    g.cleanSelection()
+    g.select(g.getCellById('x6-process-node'))
+    g.select(g.getCellById('x6-decision-node'))
+  })
+  await expect(childButton).toBeEnabled()
+  await childButton.click()
+
+  const afterNestedAttach = await snapshot()
+  const beforeById = Object.fromEntries(beforeNestedAttach.map((item) => [item.id, item.bbox]))
+  const afterById = Object.fromEntries(afterNestedAttach.map((item) => [item.id, item.bbox]))
+  const processDx = afterById['x6-process-node'].x - beforeById['x6-process-node'].x
+  const processDy = afterById['x6-process-node'].y - beforeById['x6-process-node'].y
+
+  // 原本与父容器重叠的 start 不参与中间态回算，位移与 process 完全一致。
+  expect(afterById['x6-start-node'].x - beforeById['x6-start-node'].x).toBeCloseTo(processDx, 5)
+  expect(afterById['x6-start-node'].y - beforeById['x6-start-node'].y).toBeCloseTo(processDy, 5)
+  // 新父节点及与子树重叠、但无父子关系的节点不应被拖向左侧或左上角。
+  expect(afterById['x6-decision-node'].x).toBeCloseTo(beforeById['x6-decision-node'].x, 5)
+  expect(afterById['x6-decision-node'].y).toBeCloseTo(beforeById['x6-decision-node'].y, 5)
+  expect(afterById['x6-finish-node'].x).toBeCloseTo(beforeById['x6-finish-node'].x, 5)
+  expect(afterById['x6-finish-node'].y).toBeCloseTo(beforeById['x6-finish-node'].y, 5)
+
+  await expect.poll(() => page.evaluate(() => {
+    const g = (window as any).__x6graph
+    return {
+      processParent: g.getCellById('x6-process-node').getParent()?.id,
+      startParent: g.getCellById('x6-start-node').getParent()?.id,
+    }
+  })).toEqual({ processParent: 'x6-decision-node', startParent: 'x6-process-node' })
+
+  // 反向再设 decision 为 process 的子节点会形成环，按钮必须直接禁用。
+  await page.evaluate(() => {
+    const g = (window as any).__x6graph
+    g.cleanSelection()
+    g.select(g.getCellById('x6-decision-node'))
+    g.select(g.getCellById('x6-process-node'))
+  })
+  await expect(childButton).toBeDisabled()
+})
+
+test('operation manager persists 设为子元素 and restores the board to before it', async ({ page }) => {
+  await openFreshBoard(page)
+  await page.locator('.dev-mode-panel').getByRole('button', { name: '隐藏' }).click()
+
+  const before = await page.evaluate(() => {
+    const g = (window as any).__x6graph
+    return ['x6-start-node', 'x6-process-node'].map((id) => ({
+      id,
+      bbox: g.getCellById(id).getBBox().toJSON(),
+    }))
+  })
+
+  await page.evaluate(() => {
+    const g = (window as any).__x6graph
+    g.cleanSelection()
+    g.select(g.getCellById('x6-start-node'))
+    g.select(g.getCellById('x6-process-node'))
+  })
+  await page.locator('.tool-button', { hasText: '设为子元素' }).click()
+
+  await page.locator('.x6-inspector-tab', { hasText: '操作' }).click()
+  const childOperation = page.locator('.x6-operation-item', { hasText: '设为子元素' }).first()
+  await expect(childOperation).toBeVisible()
+
+  // 操作记录随页面内容进入 mock 持久化，而不只是 X6 当前会话的撤销栈。
+  await expect.poll(() => page.evaluate(() => (
+    window.localStorage.getItem('tu:mock-state')?.includes('operationHistory') ?? false
+  ))).toBe(true)
+
+  await childOperation.getByRole('button', { name: '回退到此前' }).click()
+  await expect(childOperation).toContainText('当前状态会自动保留')
+  await childOperation.getByRole('button', { name: '确认回退' }).click()
+
+  await expect.poll(() => page.evaluate(() => {
+    const g = (window as any).__x6graph
+    return {
+      parent: g.getCellById('x6-start-node').getParent()?.id ?? null,
+      boxes: ['x6-start-node', 'x6-process-node'].map((id) => g.getCellById(id).getBBox().toJSON()),
+    }
+  })).toEqual({ parent: null, boxes: before.map((item) => item.bbox) })
+  await expect(page.locator('.x6-operation-manager__notice')).toContainText('已回退到「设为子元素」之前')
+
+  // 回退本身也成为一条可恢复记录，避免误操作后无法找回。
+  await expect(page.locator('.x6-operation-item').first()).toContainText('回退到「设为子元素」之前')
+  await expect.poll(() => page.evaluate(() => (
+    window.localStorage.getItem('tu:mock-state')?.includes('回退到\\u300c设为子元素\\u300d之前')
+    || window.localStorage.getItem('tu:mock-state')?.includes('回退到「设为子元素」之前')
+    || false
+  ))).toBe(true)
+
+  // 刷新后重新打开该画板，恢复结果和操作时间线仍然存在。
+  await page.reload()
+  await page.getByRole('treeitem', { name: '未命名画板' }).click()
+  await expect(page.locator('.x6-stage')).toBeVisible()
+  await page.locator('.x6-inspector-tab', { hasText: '操作' }).click()
+  await expect(page.locator('.x6-operation-item').first()).toContainText('回退到「设为子元素」之前')
+  await expect.poll(() => page.evaluate(() => {
+    const g = (window as any).__x6graph
+    return {
+      parent: g.getCellById('x6-start-node').getParent()?.id ?? null,
+      boxes: ['x6-start-node', 'x6-process-node'].map((id) => g.getCellById(id).getBBox().toJSON()),
+    }
+  })).toEqual({ parent: null, boxes: before.map((item) => item.bbox) })
 })
 
 test('deleting a selected group container with the Delete key dissolves it without crashing', async ({ page }) => {
@@ -594,4 +804,91 @@ test('right-click drag does not trigger the browser context menu on the canvas',
   expect(nodeAfter).toBeTruthy()
   expect(nodeAfter!.x).toBeCloseTo(nodeBefore!.x + 40, 0)
   expect(nodeAfter!.y).toBeCloseTo(nodeBefore!.y + 30, 0)
+})
+
+test('plain mouse wheel pans the board view vertically; ctrl+wheel still zooms', async ({ page }) => {
+  await openFreshBoard(page)
+
+  const stageBox = await page.locator('.x6-stage').boundingBox()
+  expect(stageBox).toBeTruthy()
+  await page.mouse.move(stageBox!.x + stageBox!.width / 2, stageBox!.y + stageBox!.height / 2)
+
+  const translate = () =>
+    page.evaluate(() => (window as any).__x6graph.translate())
+  const zoom = () => page.evaluate(() => (window as any).__x6graph.zoom())
+
+  const before = await translate()
+
+  // 向下滚动（deltaY>0）→ 内容上移，ty 减小 120
+  await page.mouse.wheel(0, 120)
+  await expect.poll(async () => (await translate()).ty).toBeCloseTo(before.ty - 120, 5)
+
+  // 向上滚动 → ty 恢复
+  await page.mouse.wheel(0, -120)
+  await expect.poll(async () => (await translate()).ty).toBeCloseTo(before.ty, 5)
+
+  // Ctrl + 滚轮 → 缩放而非平移：ty 可能因缩放中心偏移微调，但 zoom 明显增大
+  const zoomBefore = await zoom()
+  await page.keyboard.down('Control')
+  await page.mouse.wheel(0, -120)
+  await page.keyboard.up('Control')
+  await expect.poll(zoom).toBeGreaterThan(zoomBefore * 1.01)
+})
+
+test('adding a shape from the toolbar is undoable with Ctrl+Z', async ({ page }) => {
+  await openFreshBoard(page)
+
+  const nodeCount = () => page.evaluate(() => (window as any).__x6graph.getNodes().length)
+  const before = await nodeCount()
+
+  // 点击工具栏「矩形」按钮在画布中心添加一个节点，随后 Ctrl+Z 应能撤销
+  await page.getByRole('button', { name: '矩形', exact: true }).click()
+  await expect.poll(nodeCount).toBe(before + 1)
+  expect(await page.evaluate(() => (window as any).__x6graph.canUndo())).toBe(true)
+
+  // 工具栏点击会把焦点移出画布，修复后 Ctrl+Z 仍能到达 graph 容器并撤销添加
+  await page.keyboard.press('Control+z')
+  await expect.poll(nodeCount).toBe(before)
+
+  // 撤销后可重做
+  await page.keyboard.press('Control+y')
+  await expect.poll(nodeCount).toBe(before + 1)
+})
+
+test('the straight-line tool defaults to a pure straight line (line router)', async ({ page }) => {
+  await openFreshBoard(page)
+
+  // 进入直线绘制模式
+  await page.getByRole('button', { name: '直线连线', exact: true }).click()
+
+  const stage = page.locator('.x6-stage')
+
+  // 在空白区域点击两次创建一条直线
+  await stage.click({ position: { x: 100, y: 50 } })
+  await page.waitForTimeout(100)
+  await stage.click({ position: { x: 100, y: 300 } })
+  await page.waitForTimeout(100)
+
+  // 新增连线默认使用「纯直线」（line）路由器
+  const routers = await page.evaluate(() => {
+    return (window as any).__x6graph.getEdges().map((e: any) => {
+      const r = e.getRouter()
+      return typeof r === 'string' ? r : r?.name
+    })
+  })
+  // 原有的 3 条 starter 连线 + 新增的 1 条纯直线
+  expect(routers.length).toBe(4)
+  expect(routers[3]).toBe('line')
+
+  // 选中该连线，属性面板「路由」下拉应显示「纯直线」
+  await page.evaluate(() => {
+    const g = (window as any).__x6graph
+    const edges = g.getEdges()
+    g.cleanSelection()
+    g.select(edges[edges.length - 1])
+  })
+  await page.waitForTimeout(60)
+  await expect(
+    page.locator('.x6-inspector label.field', { hasText: '路由' }).locator('select'),
+  ).toHaveValue('line')
 })
