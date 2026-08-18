@@ -85,6 +85,56 @@ test('creates an x6board page without outer content scroll', async ({ page }) =>
   await expect(page.locator('.ProseMirror')).toHaveCount(0)
 })
 
+test('board page enters and exits fullscreen from its page toolbar', async ({ page }) => {
+  await openFreshBoard(page)
+
+  const fullscreenButton = page.getByRole('button', { name: '全屏画板页面' })
+  await expect(fullscreenButton).toBeVisible()
+  await fullscreenButton.click()
+
+  await expect.poll(() => page.evaluate(() => (
+    document.fullscreenElement?.classList.contains('canvas-page') === true
+  ))).toBe(true)
+  await expect(page.getByRole('button', { name: '退出全屏' })).toBeVisible()
+  await expect(page.locator('.canvas-page__topbar')).toBeHidden()
+  await expect(page.locator('.board-canvas-shell__header')).toBeHidden()
+  await expect(page.locator('.x6-stage')).toBeVisible()
+
+  await page.getByRole('button', { name: '退出全屏' }).click()
+  await expect.poll(() => page.evaluate(() => document.fullscreenElement === null)).toBe(true)
+  await expect(fullscreenButton).toBeVisible()
+  await expect(page.locator('.canvas-page__topbar')).toBeVisible()
+  await expect(page.locator('.board-canvas-shell__header')).toBeVisible()
+})
+
+test('board page fills the webpage without entering browser fullscreen', async ({ page }) => {
+  await openFreshBoard(page)
+
+  const webFullscreenButton = page.getByRole('button', { name: '网页全屏' })
+  await expect(webFullscreenButton).toBeVisible()
+  await webFullscreenButton.click()
+
+  await expect(page.locator('.canvas-page')).toHaveClass(/canvas-page--web-fullscreen/)
+  expect(await page.evaluate(() => document.fullscreenElement)).toBeNull()
+  await expect(page.getByRole('button', { name: '退出网页全屏' })).toBeVisible()
+  await expect(page.locator('.canvas-page__topbar')).toBeHidden()
+  await expect(page.locator('.board-canvas-shell__header')).toBeHidden()
+  const webFullscreenBox = await page.locator('.canvas-page').boundingBox()
+  const viewport = page.viewportSize()
+  expect(webFullscreenBox).not.toBeNull()
+  expect(viewport).not.toBeNull()
+  expect(webFullscreenBox!.x).toBeCloseTo(0, 1)
+  expect(webFullscreenBox!.y).toBeCloseTo(0, 1)
+  expect(webFullscreenBox!.width).toBeCloseTo(viewport!.width, 1)
+  expect(webFullscreenBox!.height).toBeCloseTo(viewport!.height, 1)
+
+  await page.getByRole('button', { name: '退出网页全屏' }).click()
+  await expect(page.locator('.canvas-page')).not.toHaveClass(/canvas-page--web-fullscreen/)
+  await expect(webFullscreenButton).toBeVisible()
+  await expect(page.locator('.canvas-page__topbar')).toBeVisible()
+  await expect(page.locator('.board-canvas-shell__header')).toBeVisible()
+})
+
 test('ctrl-click multi-select highlights every selected node like rubberband', async ({ page }) => {
   await page.getByTitle('新建页面').click()
   await page.getByRole('menuitem', { name: '画板' }).click()
@@ -868,6 +918,9 @@ test('board reference content mode renders proportionally and writes edits back 
     .not.toHaveText('未命名画板')
   const extractedTitle = await page.locator('.page-tree .el-tree-node.is-current .node-label').textContent()
   expect(extractedTitle).toBeTruthy()
+  const extractedInterfaceTerminal = await page.evaluate(() => (
+    structuredClone((window as any).__x6graph.getCellById('x6-edge-2').getTarget())
+  ))
 
   await page.locator('.page-tree .tree-node').filter({ hasText: '未命名画板' }).first().click()
   const referenceId = await page.evaluate(() => {
@@ -884,12 +937,99 @@ test('board reference content mode renders proportionally and writes edits back 
   await expect(preview.locator('.x6-node[data-cell-id="x6-start-node"]')).toBeVisible()
   await expect(preview.locator('.x6-node[data-cell-id="x6-process-node"]')).toBeVisible()
 
+  const boundedTerminal = await page.evaluate(() => {
+    const g = (window as any).__x6graph
+    const edge = g.getCellById('x6-edge-1')
+    const rect = g.container.getBoundingClientRect()
+    const topLeft = g.clientToLocal(rect.left, rect.top)
+    const bottomRight = g.clientToLocal(rect.right, rect.bottom)
+    const boundaryX = Math.max(topLeft.x, bottomRight.x)
+    const middleY = (topLeft.y + bottomRight.y) / 2
+    edge.setTarget({ x: boundaryX + 240, y: middleY }, { ui: true })
+    return {
+      allowBlank: g.options.connecting.allowBlank,
+      boundaryX,
+      target: edge.getTarget(),
+    }
+  })
+  expect(boundedTerminal.allowBlank).toBe(true)
+  expect(boundedTerminal.target.x).toBeCloseTo(boundedTerminal.boundaryX, 4)
+
+  await page.evaluate(() => {
+    const g = (window as any).__x6graph
+    const edge = g.getCellById('x6-edge-2')
+    const source = edge.getSourcePoint()
+    const target = edge.getTargetPoint()
+    edge.setVertices([{
+      x: (source.x + target.x) / 2,
+      y: (source.y + target.y) / 2 - 36,
+    }])
+    g.resetSelection([edge])
+  })
+  const clearVerticesButton = preview.locator('[data-action="clear-edge-vertices"]')
+  await expect(clearVerticesButton).toBeVisible()
+  await clearVerticesButton.click()
+  await expect.poll(() => page.evaluate(() => (
+    (window as any).__x6graph.getCellById('x6-edge-2').getVertices().length
+  ))).toBe(0)
+
   // The editable preview intercepts the outer X6 node click. Clicking its
   // wrapper must still create the same native transform handles as a normal node.
   await page.evaluate(() => (window as any).__outerBoardGraph.cleanSelection())
   await expect(page.locator('.x6-widget-transform-resize')).toHaveCount(0)
+  await expect(preview).toHaveAttribute('data-wheel-active', 'false')
+
+  const nestedStage = preview.locator('.x6-stage')
+  const nestedStageBox = await nestedStage.boundingBox()
+  expect(nestedStageBox).not.toBeNull()
+  const readBoardZooms = () => page.evaluate(() => ({
+    outer: (window as any).__outerBoardGraph.zoom(),
+    nested: (window as any).__x6graph.zoom(),
+  }))
+
+  // An unselected reference lets the outer board own the wheel gesture.
+  const beforeOuterWheel = await readBoardZooms()
+  const previewBeforeOuterWheel = await preview.boundingBox()
+  const nodeBeforeOuterWheel = await preview.locator('.x6-node[data-cell-id="x6-start-node"]').boundingBox()
+  expect(previewBeforeOuterWheel).not.toBeNull()
+  expect(nodeBeforeOuterWheel).not.toBeNull()
+  await page.mouse.move(
+    nestedStageBox!.x + nestedStageBox!.width / 2,
+    nestedStageBox!.y + nestedStageBox!.height / 2,
+  )
+  await page.keyboard.down('Control')
+  await page.mouse.wheel(0, 120)
+  await page.keyboard.up('Control')
+  await expect.poll(async () => (await readBoardZooms()).outer)
+    .toBeLessThan(beforeOuterWheel.outer)
+  await expect.poll(async () => {
+    const resizedPreview = await preview.boundingBox()
+    const resizedNode = await preview.locator('.x6-node[data-cell-id="x6-start-node"]').boundingBox()
+    if (!resizedPreview || !resizedNode) return Number.POSITIVE_INFINITY
+    const referenceRatio = resizedPreview.width / previewBeforeOuterWheel!.width
+    const contentRatio = resizedNode.width / nodeBeforeOuterWheel!.width
+    return Math.abs(referenceRatio - contentRatio)
+  }).toBeLessThan(0.03)
+
   await preview.locator('.x6-board-reference-preview__header').click()
   await expect(page.locator('.x6-widget-transform-resize')).toHaveCount(8)
+  await expect(preview).toHaveAttribute('data-wheel-active', 'true')
+
+  // Once selected, the same gesture belongs only to the referenced board and
+  // must not bubble back into the outer board.
+  const beforeNestedWheel = await readBoardZooms()
+  const selectedNestedStageBox = await nestedStage.boundingBox()
+  expect(selectedNestedStageBox).not.toBeNull()
+  await page.mouse.move(
+    selectedNestedStageBox!.x + selectedNestedStageBox!.width / 2,
+    selectedNestedStageBox!.y + selectedNestedStageBox!.height / 2,
+  )
+  await page.keyboard.down('Control')
+  await page.mouse.wheel(0, 120)
+  await page.keyboard.up('Control')
+  await expect.poll(async () => (await readBoardZooms()).nested)
+    .toBeLessThan(beforeNestedWheel.nested)
+  expect((await readBoardZooms()).outer).toBeCloseTo(beforeNestedWheel.outer, 5)
 
   const geometry = await page.evaluate((id) => {
     const wrapper = document.querySelector(`.x6-node[data-cell-id="${id}"]`)?.getBoundingClientRect()
@@ -915,6 +1055,7 @@ test('board reference content mode renders proportionally and writes edits back 
 
   const interfaceDock = preview.locator('[data-interface-edge-id="x6-edge-2"]')
   await expect(interfaceDock).toBeVisible()
+  await expect(preview.locator('.x6-board-reference-preview__interface-line')).toHaveCount(0)
   const dockGeometry = await interfaceDock.evaluate((element) => {
     const dock = element.getBoundingClientRect()
     const wrapper = element.closest('.x6-board-reference-preview')?.getBoundingClientRect()
@@ -975,6 +1116,19 @@ test('board reference content mode renders proportionally and writes edits back 
   }).toEqual({ dx: 72, dy: 44 })
   await expect(preview.locator('.x6-node[data-cell-id="x6-start-node"]')).toBeVisible()
 
+  const readReferencedNodeGeometry = async () => {
+    const nodeBox = await preview.locator('.x6-node[data-cell-id="x6-start-node"]').boundingBox()
+    if (!nodeBox) return null
+    return {
+      x: nodeBox.x,
+      y: nodeBox.y,
+      width: nodeBox.width,
+      height: nodeBox.height,
+    }
+  }
+  const referencedNodeBeforeResize = await readReferencedNodeGeometry()
+  expect(referencedNodeBeforeResize).not.toBeNull()
+
   const previewBeforeResize = await preview.boundingBox()
   expect(previewBeforeResize).not.toBeNull()
   const nativeResizeHandles = page.locator('.x6-widget-transform-resize')
@@ -1006,6 +1160,12 @@ test('board reference content mode renders proportionally and writes edits back 
     return dy < -30 && dw > 50 && dh > 30 && Math.abs(dy + dh) <= 2
   }).toBe(true)
   await expect(preview.locator('.x6-node[data-cell-id="x6-start-node"]')).toBeVisible()
+  await expect.poll(readReferencedNodeGeometry).toEqual({
+    x: expect.closeTo(referencedNodeBeforeResize!.x, 1),
+    y: expect.closeTo(referencedNodeBeforeResize!.y, 1),
+    width: expect.closeTo(referencedNodeBeforeResize!.width, 1),
+    height: expect.closeTo(referencedNodeBeforeResize!.height, 1),
+  })
   await expect.poll(async () => {
     return measureReferencedBoardInterfaceEndpointGap(page, 'x6-edge-2')
   }).toBeLessThanOrEqual(4)
@@ -1040,6 +1200,12 @@ test('board reference content mode renders proportionally and writes edits back 
       && Math.abs(dx + dw) <= 2
       && Math.abs(dy + dh) <= 2
   }).toBe(true)
+  await expect.poll(readReferencedNodeGeometry).toEqual({
+    x: expect.closeTo(referencedNodeBeforeResize!.x, 1),
+    y: expect.closeTo(referencedNodeBeforeResize!.y, 1),
+    width: expect.closeTo(referencedNodeBeforeResize!.width, 1),
+    height: expect.closeTo(referencedNodeBeforeResize!.height, 1),
+  })
 
   const movedPreviewBox = await preview.boundingBox()
   expect(movedPreviewBox).not.toBeNull()
@@ -1083,6 +1249,9 @@ test('board reference content mode renders proportionally and writes edits back 
     if (!dock) return null
     return Math.round((dock.x + dock.width / 2) - movedPreviewBox!.x)
   }).toBeLessThanOrEqual(6)
+  await expect.poll(() => (
+    measureReferencedBoardInterfaceEndpointGap(page, 'x6-edge-2')
+  )).toBeLessThanOrEqual(4)
   const interfaceAlignment = await page.evaluate(({ id, portId }) => {
     const previewElement = document.querySelector('.x6-board-reference-preview')
     const dock = previewElement?.querySelector('.x6-board-reference-preview__interface-dock')?.getBoundingClientRect()
@@ -1115,12 +1284,28 @@ test('board reference content mode renders proportionally and writes edits back 
     const nestedGraph = (window as any).__x6graph
     nestedGraph.getCellById('x6-start-node').attr('label/text', '主机（引用内同步）')
   })
-  await page.waitForTimeout(150)
 
   await page.locator('.page-tree .tree-node').filter({ hasText: extractedTitle! }).first().click()
+  await expect(page.getByText('不能在画板内展开其自身引用')).toHaveCount(0)
   await expect.poll(() => page.evaluate(() => (
     (window as any).__x6graph?.getCellById('x6-start-node')?.attr('label/text')
   ))).toBe('主机（引用内同步）')
+  await expect.poll(() => page.evaluate(() => (
+    structuredClone((window as any).__x6graph?.getCellById('x6-edge-2')?.getTarget())
+  ))).toEqual(extractedInterfaceTerminal)
+  await expect.poll(() => page.evaluate((title) => {
+    const state = JSON.parse(window.localStorage.getItem('tu:mock-state') || '{}')
+    const sourcePage = state.pages?.find((item: { title?: string }) => item.title === title)
+    const graphData = sourcePage ? state.contents?.[sourcePage.id]?.embeds?.[0]?.graphData : null
+    const cells = graphData?.cells ?? []
+    return {
+      label: cells.find((cell: any) => cell.id === 'x6-start-node')?.attrs?.label?.text,
+      selfReferences: cells.filter((cell: any) => (
+        cell.data?.extractedBoardReference === true
+        && cell.data?.refBlockId === sourcePage?.id
+      )).length,
+    }
+  }, extractedTitle)).toEqual({ label: '主机（引用内同步）', selfReferences: 0 })
 
   const restoredSourceTreeNode = page.locator('.page-tree .tree-node').filter({ hasText: '未命名画板' }).first()
   await expect(async () => {
@@ -1137,6 +1322,85 @@ test('board reference content mode renders proportionally and writes edits back 
     if (!restoredBox || !restoredDock) return null
     return Math.round((restoredDock.x + restoredDock.width / 2) - restoredBox.x)
   }).toBeLessThanOrEqual(6)
+})
+
+test('unused board reference border anchors disappear after detaching or deleting their edge', async ({ page }) => {
+  await openFreshBoard(page)
+
+  await page.evaluate(() => {
+    const graph = (window as any).__x6graph
+    graph.cleanSelection()
+    graph.select(graph.getCellById('x6-start-node'))
+    graph.select(graph.getCellById('x6-process-node'))
+  })
+  await page.getByRole('button', { name: '提取为画板页' }).click()
+  await expect(page.locator('.page-tree .el-tree-node.is-current .node-label'))
+    .not.toHaveText('未命名画板')
+  await page.locator('.page-tree .tree-node').filter({ hasText: '未命名画板' }).first().click()
+  await expect(page.locator('.page-tree .el-tree-node.is-current .node-label'))
+    .toHaveText('未命名画板')
+
+  const interfaceIdentity = await page.evaluate(() => {
+    const graph = (window as any).__x6graph
+    const reference = graph.getNodes().find((node: any) => (
+      node.getData()?.extractedBoardReference
+    ))
+    const item = reference.getData().extractedInterfaces[0]
+    return { nodeId: reference.id, edgeId: item.edgeId, portId: item.portId }
+  })
+
+  const readAnchorState = () => page.evaluate(({ nodeId, portId }) => {
+    const graph = (window as any).__x6graph
+    const reference = graph.getCellById(nodeId)
+    const item = reference.getData().extractedInterfaces.find((entry: any) => (
+      entry.portId === portId
+    ))
+    return {
+      portVisible: reference.getPorts().some((port: any) => port.id === portId),
+      detached: item?.interfaceDetached === true,
+      terminalUsesPort: graph.getEdges().some((edge: any) => (
+        [edge.getSource(), edge.getTarget()].some((terminal: any) => (
+          terminal?.cell === nodeId && terminal?.port === portId
+        ))
+      )),
+    }
+  }, interfaceIdentity)
+
+  await expect.poll(readAnchorState).toEqual({
+    portVisible: true,
+    detached: false,
+    terminalUsesPort: true,
+  })
+
+  await page.evaluate(({ edgeId }) => {
+    const graph = (window as any).__x6graph
+    graph.getCellById(edgeId).setSource({ x: 920, y: 520 })
+  }, interfaceIdentity)
+  await expect.poll(readAnchorState).toEqual({
+    portVisible: false,
+    detached: true,
+    terminalUsesPort: false,
+  })
+
+  await page.evaluate(({ nodeId, edgeId, portId }) => {
+    const graph = (window as any).__x6graph
+    graph.getCellById(edgeId).setSource({ cell: nodeId, port: portId })
+  }, interfaceIdentity)
+  await expect.poll(readAnchorState).toEqual({
+    portVisible: true,
+    detached: false,
+    terminalUsesPort: true,
+  })
+
+  await page.evaluate(({ edgeId }) => {
+    const graph = (window as any).__x6graph
+    graph.removeCell(edgeId)
+  }, interfaceIdentity)
+  await expect.poll(readAnchorState).toEqual({
+    portVisible: false,
+    detached: true,
+    terminalUsesPort: false,
+  })
 })
 
 test('deleting a selected group container with the Delete key dissolves it without crashing', async ({ page }) => {

@@ -3,16 +3,20 @@ import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, onMounted, r
 import type { GraphData, PageContent } from '@/api/types'
 import { getPageContent } from '@/api/page'
 import { useWorkspaceStore } from '@/stores/workspace'
+import { containsSelfBoardReference } from '@/components/x6'
 
 const X6Component = defineAsyncComponent(() => import('./X6Component.vue'))
 
 interface ReferencedBoardExpose {
+  flushGraphData: () => GraphData | null
   dockReferenceInterfaceTerminals: (items: Array<{
     edgeId: string
     direction: 'in' | 'out'
     clientX: number
     clientY: number
   }>) => void
+  translateViewportByClientDelta: (delta: { dx: number; dy: number }) => void
+  scaleViewportByRatio: (ratio: number) => void
 }
 
 const props = defineProps<{
@@ -20,6 +24,8 @@ const props = defineProps<{
   hostPageId?: string
   title: string
   editable: boolean
+  selected: boolean
+  resizing: boolean
   interfaces?: Array<{
     edgeId: string
     portId: string
@@ -58,9 +64,19 @@ const width = ref(320)
 const height = ref(200)
 
 let resizeObserver: ResizeObserver | null = null
+let previousCanvasRect: DOMRect | null = null
+let previousPreviewRect: DOMRect | null = null
 let interfaceMutationObserver: MutationObserver | null = null
 let interfaceMeasureFrame: number | null = null
-let pendingGraphData: GraphData | null = null
+let loadedPageId = ''
+let loadRevision = 0
+let pendingSave: {
+  pageId: string
+  embedId: string
+  baseContent: PageContent
+  graphData: GraphData
+} | null = null
+let unregisterPageSaveFlusher: (() => void) | null = null
 let headerPointerId: number | null = null
 let headerPointerStart: { x: number; y: number } | null = null
 let headerPointerLast: { x: number; y: number } | null = null
@@ -122,61 +138,125 @@ function scheduleInterfaceMeasurement() {
 function updateSize() {
   const element = canvasRef.value
   if (!element) return
+  const rect = element.getBoundingClientRect()
+  const previewRect = previewRef.value?.getBoundingClientRect() ?? null
+  if (
+    previousCanvasRect
+    && props.resizing
+    && (
+      Math.abs(rect.width - previousCanvasRect.width) > 0.1
+      || Math.abs(rect.height - previousCanvasRect.height) > 0.1
+    )
+  ) {
+    nestedBoardRef.value?.translateViewportByClientDelta({
+      dx: previousCanvasRect.left - rect.left,
+      dy: previousCanvasRect.top - rect.top,
+    })
+  } else if (
+    previousPreviewRect
+    && previewRect
+    && previousPreviewRect.width > 0
+    && previousPreviewRect.height > 0
+  ) {
+    const widthRatio = previewRect.width / previousPreviewRect.width
+    const heightRatio = previewRect.height / previousPreviewRect.height
+    // Uniform host resizing is caused by outer-board zoom. Keep the nested
+    // viewport proportional to its reference frame.
+    if (Math.abs(widthRatio - heightRatio) < 0.015) {
+      nestedBoardRef.value?.scaleViewportByRatio((widthRatio + heightRatio) / 2)
+    }
+  }
+  previousCanvasRect = rect
+  previousPreviewRect = previewRect
   width.value = Math.max(1, element.clientWidth)
   height.value = Math.max(1, element.clientHeight)
   scheduleInterfaceMeasurement()
 }
 
 async function loadReferencedBoard() {
-  if (!props.pageId) return
-  if (props.hostPageId && props.hostPageId === props.pageId) {
+  const requestedPageId = props.pageId
+  const revision = ++loadRevision
+  if (!requestedPageId) return
+  if (props.hostPageId && props.hostPageId === requestedPageId) {
     error.value = '不能在画板内展开其自身引用'
     graphData.value = null
+    loadedPageId = ''
     return
   }
   loading.value = true
   error.value = ''
   try {
-    const pageContent = await getPageContent(props.pageId)
+    const pageContent = await getPageContent(requestedPageId)
+    if (revision !== loadRevision || requestedPageId !== props.pageId) return
     const primaryId = typeof pageContent.metadata?.primaryEmbedId === 'string'
       ? pageContent.metadata.primaryEmbedId
       : ''
     const embed = pageContent.embeds.find((item) => item.id === primaryId && item.type === 'x6')
       ?? pageContent.embeds.find((item) => item.type === 'x6')
     if (!embed?.graphData) throw new Error('引用页面中没有可显示的画板')
+    loadedPageId = requestedPageId
     content.value = pageContent
     embedId.value = embed.id
     graphData.value = embed.graphData
     await nextTick()
     updateSize()
   } catch (reason) {
+    if (revision !== loadRevision || requestedPageId !== props.pageId) return
     error.value = reason instanceof Error ? reason.message : '引用画板加载失败'
     graphData.value = null
+    loadedPageId = ''
   } finally {
+    if (revision !== loadRevision || requestedPageId !== props.pageId) return
     loading.value = false
     nextTick(() => scheduleInterfaceMeasurement())
   }
 }
 
 async function flushSave() {
-  const nextGraphData = pendingGraphData
-  const pageContent = content.value
-  const targetEmbedId = embedId.value
-  pendingGraphData = null
-  if (!nextGraphData || !pageContent || !targetEmbedId) return
+  const pending = pendingSave
+  pendingSave = null
+  if (!pending || containsSelfBoardReference(pending.graphData, pending.pageId)) return
   const nextContent: PageContent = {
-    ...pageContent,
-    embeds: pageContent.embeds.map((embed) => (
-      embed.id === targetEmbedId ? { ...embed, graphData: nextGraphData } : embed
+    ...pending.baseContent,
+    embeds: pending.baseContent.embeds.map((embed) => (
+      embed.id === pending.embedId ? { ...embed, graphData: pending.graphData } : embed
     )),
   }
-  content.value = nextContent
-  await workspaceStore.savePage(props.pageId, nextContent)
+  if (loadedPageId === pending.pageId) content.value = nextContent
+  await workspaceStore.savePage(pending.pageId, nextContent)
+}
+
+function registerPageSaveFlusher() {
+  unregisterPageSaveFlusher?.()
+  unregisterPageSaveFlusher = null
+  const targetPageId = props.pageId
+  if (!targetPageId) return
+  unregisterPageSaveFlusher = workspaceStore.registerPageSaveFlusher(targetPageId, async () => {
+    if (loadedPageId !== targetPageId) return
+    nestedBoardRef.value?.flushGraphData()
+    await flushSave()
+  })
 }
 
 function onGraphDataChange(next: GraphData) {
+  const targetPageId = loadedPageId
+  const pageContent = content.value
+  const targetEmbedId = embedId.value
+  if (!targetPageId || targetPageId !== props.pageId || !pageContent || !targetEmbedId) return
+  if (containsSelfBoardReference(next, targetPageId)) {
+    void (async () => {
+      await flushSave()
+      await loadReferencedBoard()
+    })()
+    return
+  }
   graphData.value = next
-  pendingGraphData = next
+  pendingSave = {
+    pageId: targetPageId,
+    embedId: targetEmbedId,
+    baseContent: pageContent,
+    graphData: next,
+  }
   scheduleInterfaceMeasurement()
   void flushSave()
 }
@@ -298,14 +378,26 @@ function onInterfacePointerUp(event: PointerEvent) {
 }
 
 watch(() => props.pageId, () => {
-  void loadReferencedBoard()
+  registerPageSaveFlusher()
+  void (async () => {
+    await flushSave()
+    await loadReferencedBoard()
+  })()
 })
 
 watch(() => props.interfaces, () => {
   scheduleInterfaceMeasurement()
 }, { deep: true })
 
+watch(() => props.resizing, (resizing) => {
+  if (resizing && canvasRef.value) {
+    previousCanvasRect = canvasRef.value.getBoundingClientRect()
+    previousPreviewRect = previewRef.value?.getBoundingClientRect() ?? null
+  }
+}, { flush: 'sync' })
+
 onMounted(() => {
+  registerPageSaveFlusher()
   updateSize()
   if (canvasRef.value) {
     resizeObserver = new ResizeObserver(() => updateSize())
@@ -322,6 +414,10 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  loadRevision += 1
+  unregisterPageSaveFlusher?.()
+  unregisterPageSaveFlusher = null
+  nestedBoardRef.value?.flushGraphData()
   if (wrapperDragging) emit('drag-wrapper-end')
   clearHeaderPointerListeners()
   if (interfaceDragging && interfaceDragPortId) emit('drag-interface-end', interfaceDragPortId)
@@ -330,6 +426,8 @@ onBeforeUnmount(() => {
   interfaceMeasureFrame = null
   resizeObserver?.disconnect()
   resizeObserver = null
+  previousCanvasRect = null
+  previousPreviewRect = null
   interfaceMutationObserver?.disconnect()
   interfaceMutationObserver = null
   void flushSave()
@@ -337,7 +435,14 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div ref="previewRef" class="x6-board-reference-preview" @mousedown.stop @click.stop @dblclick.stop>
+  <div
+    ref="previewRef"
+    class="x6-board-reference-preview"
+    :data-wheel-active="selected ? 'true' : 'false'"
+    @mousedown.stop
+    @click.stop
+    @dblclick.stop
+  >
     <button
       type="button"
       class="x6-board-reference-preview__header"
@@ -367,7 +472,7 @@ onBeforeUnmount(() => {
         :inspector-enabled="false"
         :block-actions-enabled="false"
         :reference-preview-enabled="false"
-        :auto-fit-on-resize="true"
+        edge-terminal-boundary="viewport"
         @graph-data-change="onGraphDataChange"
       />
       <div v-else class="x6-board-reference-preview__state">引用画板暂无内容</div>

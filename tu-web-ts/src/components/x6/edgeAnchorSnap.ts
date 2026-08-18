@@ -202,18 +202,48 @@ function buildSnappingArrowhead(type: 'source' | 'target'): any {
       const terminal = this.cell?.[type];
       if (!isFreePointTerminal(terminal)) return;
       const node = this.findNearestNode(terminal.x, terminal.y);
-      if (node) this.cell.setTerminal(type, { cell: node.id }, { ui: true });
+      if (node) {
+        this.cell.setTerminal(type, { cell: node.id }, { ui: true });
+        return;
+      }
+      const boundary = this.findViewportBoundary(terminal.x, terminal.y);
+      if (boundary) this.cell.setTerminal(type, boundary, { ui: true });
     }
 
     private snapFreePointOnDrop(): void {
       const terminal = this.cell?.[type];
       if (!isFreePointTerminal(terminal)) return;
       const node = this.findNearestNode(terminal.x, terminal.y);
+      const boundary = this.findViewportBoundary(terminal.x, terminal.y);
       if (node) {
         this.cell.setTerminal(type, { cell: node.id }, { ui: true });
+      } else if (boundary) {
+        this.cell.setTerminal(type, boundary, { ui: true });
       } else if (this.initialTerminal != null) {
         this.cell.setTerminal(type, this.initialTerminal, { ui: true });
       }
+    }
+
+    private findViewportBoundary(x: number, y: number): { x: number; y: number } | null {
+      if (this.options?.clampToViewportBoundary !== true) return null;
+      const container = this.graph?.container as HTMLElement | undefined;
+      if (!container) return null;
+      const rect = container.getBoundingClientRect();
+      const topLeft = this.graph.clientToLocal(rect.left, rect.top);
+      const bottomRight = this.graph.clientToLocal(rect.right, rect.bottom);
+      const minX = Math.min(topLeft.x, bottomRight.x);
+      const maxX = Math.max(topLeft.x, bottomRight.x);
+      const minY = Math.min(topLeft.y, bottomRight.y);
+      const maxY = Math.max(topLeft.y, bottomRight.y);
+      const threshold = 18 / Math.max(0.01, this.graph.zoom());
+      const candidates = [
+        { distance: Math.abs(x - minX), point: { x: minX, y: Math.min(maxY, Math.max(minY, y)) } },
+        { distance: Math.abs(x - maxX), point: { x: maxX, y: Math.min(maxY, Math.max(minY, y)) } },
+        { distance: Math.abs(y - minY), point: { x: Math.min(maxX, Math.max(minX, x)), y: minY } },
+        { distance: Math.abs(y - maxY), point: { x: Math.min(maxX, Math.max(minX, x)), y: maxY } },
+      ].sort((left, right) => left.distance - right.distance);
+      const outside = x < minX || x > maxX || y < minY || y > maxY;
+      return outside || candidates[0].distance <= threshold ? candidates[0].point : null;
     }
 
     private findNearestNode(x: number, y: number): any {

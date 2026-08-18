@@ -4,6 +4,7 @@ export * from './ports';
 export * from './graphCells';
 export * from './edgeAnchorSnap';
 export * from './orthSmartRouter';
+export * from './boardReference';
 export * from './blueprints';
 export * from './mindmapConnector';
 export * from './mindmap';

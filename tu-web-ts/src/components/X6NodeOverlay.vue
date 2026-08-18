@@ -10,6 +10,8 @@ interface Props {
   textMode: 'plain' | 'rich';
   label: string;
   richContent: string;
+  isSelected: boolean;
+  isResizing: boolean;
   isEditing: boolean;
   isEditable: boolean;
   boardReferencePageId: string;
@@ -145,6 +147,8 @@ defineExpose({
       :host-page-id="hostPageId"
       :title="boardReferenceTitle"
       :editable="isEditable"
+      :selected="isSelected"
+      :resizing="isResizing"
       :interfaces="boardReferenceInterfaces"
       @select-wrapper="emit('select-reference')"
       @drag-wrapper-start="emit('drag-reference-start')"

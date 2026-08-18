@@ -122,7 +122,28 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   const loading = ref(false);
   const localFileBindings = ref<Record<string, LocalFileBinding>>({});
   const pendingPageSaves = new Map<string, Promise<void>>();
+  const pageSaveFlushers = new Map<string, Set<() => void | Promise<void>>>();
   const registryStore = useBlockRegistryStore();
+
+  function registerPageSaveFlusher(
+    pageId: string,
+    flusher: () => void | Promise<void>,
+  ): () => void {
+    if (!pageId) return () => undefined;
+    const flushers = pageSaveFlushers.get(pageId) ?? new Set();
+    flushers.add(flusher);
+    pageSaveFlushers.set(pageId, flushers);
+    return () => {
+      const current = pageSaveFlushers.get(pageId);
+      current?.delete(flusher);
+      if (current?.size === 0) pageSaveFlushers.delete(pageId);
+    };
+  }
+
+  async function flushPageSaveWriters(pageId: string) {
+    const flushers = [...(pageSaveFlushers.get(pageId) ?? [])];
+    await Promise.all(flushers.map(async (flusher) => flusher()));
+  }
 
   const isResourceDocumentView = computed(() => viewMode.value === 'resource-document');
 
@@ -278,6 +299,9 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       if (resourceItemId) await selectKbLinkedResource(resourceItemId);
       return;
     }
+    // Ask live board-reference previews to publish any graph mutation that is
+    // still inside their debounce window before checking the save queue.
+    await flushPageSaveWriters(pageId);
     // A live board-reference preview may be writing this target page while it
     // is opened from the tree. Wait for that queued write before reading, so
     // the freshly opened source board cannot momentarily show stale content.
@@ -920,6 +944,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     saveCurrentPage,
     savePage,
     savePageGraphData,
+    registerPageSaveFlusher,
     addKb,
     removeKb,
     renameKb,

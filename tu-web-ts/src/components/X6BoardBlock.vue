@@ -20,6 +20,8 @@ const props = withDefaults(
     headingLevel?: number
     headingText?: string
     pageTitle?: string
+    pageFullscreen?: boolean
+    pageFullscreenExitLabel?: string
   }>(),
   {
     width: null,
@@ -30,6 +32,8 @@ const props = withDefaults(
     headingText: '',
     pageTitle: '',
     pageId: '',
+    pageFullscreen: false,
+    pageFullscreenExitLabel: '',
   },
 )
 
@@ -38,6 +42,7 @@ const emit = defineEmits<{
   resize: [width: number | null, height: number | null]
   'page-title-change': [title: string]
   'compound-badge-click': [blockId: string, annotationId: string, event: MouseEvent]
+  'request-exit-page-fullscreen': []
 }>()
 
 interface CompoundBadge {
@@ -165,8 +170,11 @@ function handleRefBlockPickerVisibleChange(visible: boolean) {
         :width="effectiveWidth"
         :height="effectiveHeight"
         :layout-mode="layoutMode"
+        :fullscreen-button-enabled="mode !== 'page' || pageFullscreen"
+        :fullscreen-exit-label="pageFullscreenExitLabel"
         @graph-data-change="emit('graph-data-change', $event)"
         @request-insert-ref="handleRequestInsertRef"
+        @request-exit-fullscreen="emit('request-exit-page-fullscreen')"
       />
     </div>
   </BoardCanvasShell>
