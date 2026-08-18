@@ -23,6 +23,7 @@ import type { Block, GraphData, PageContent, PageItem, PageType } from '@/api/ty
 import { MAX_PAGE_SIZE } from '@/constants/pagination';
 import {
   createInitialPageContent,
+  createX6BoardPageContent,
   createPageContentFromEmbed,
   defaultTitleForPageType,
   inferPageTypeFromContent,
@@ -120,6 +121,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   const currentPageTitleOverride = ref<string | null>(null);
   const loading = ref(false);
   const localFileBindings = ref<Record<string, LocalFileBinding>>({});
+  const pendingPageSaves = new Map<string, Promise<void>>();
   const registryStore = useBlockRegistryStore();
 
   const isResourceDocumentView = computed(() => viewMode.value === 'resource-document');
@@ -276,6 +278,11 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       if (resourceItemId) await selectKbLinkedResource(resourceItemId);
       return;
     }
+    // A live board-reference preview may be writing this target page while it
+    // is opened from the tree. Wait for that queued write before reading, so
+    // the freshly opened source board cannot momentarily show stale content.
+    const pendingTargetSave = pendingPageSaves.get(pageId);
+    if (pendingTargetSave) await pendingTargetSave.catch(() => undefined);
     if (currentPageId.value && currentPageId.value !== pageId) {
       await flushCurrentPageIndexBestEffort();
     }
@@ -524,18 +531,56 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     }, LOCAL_FILE_SAVE_DELAY);
   }
 
+  /**
+   * 保存指定页面。画板的延迟保存/卸载 flush 必须使用其固定 pageId，避免页面
+   * 切换后误用新的 currentPageId，导致旧画板的最后一次修改丢失或写错页面。
+   */
+  function savePage(pageId: string, content: PageContent): Promise<void> {
+    if (!pageId) return Promise.resolve();
+    if (currentPageId.value === pageId) {
+      pageContent.value = content;
+    }
+
+    const previous = pendingPageSaves.get(pageId) ?? Promise.resolve();
+    let queued: Promise<void>;
+    queued = previous
+      .catch(() => undefined)
+      .then(async () => {
+        try {
+          await savePageContent(pageId, content);
+        } finally {
+          scheduleLocalFileSave(pageId, content);
+        }
+      })
+      .finally(() => {
+        if (pendingPageSaves.get(pageId) === queued) pendingPageSaves.delete(pageId);
+      });
+    pendingPageSaves.set(pageId, queued);
+    return queued;
+  }
+
+  /** Persist graph data immediately for a standalone canvas page. */
+  async function savePageGraphData(pageId: string, graphData: GraphData): Promise<void> {
+    if (currentPageId.value !== pageId || !pageContent.value) return;
+    const content = pageContent.value;
+    const primaryId = content.metadata?.primaryEmbedId;
+    const embed = content.embeds.find((item) => (
+      typeof primaryId === 'string' ? item.id === primaryId : item.type === 'x6'
+    ));
+    if (!embed || embed.type !== 'x6') return;
+    const nextContent: PageContent = {
+      ...content,
+      embeds: content.embeds.map((item) => (
+        item.id === embed.id ? { ...item, graphData } : item
+      )),
+    };
+    await savePage(pageId, nextContent);
+  }
+
   async function saveCurrentPage(content: PageContent) {
     if (viewMode.value === 'resource-document') return;
     if (!currentPageId.value) return;
-
-    const pageId = currentPageId.value;
-    pageContent.value = content;
-
-    try {
-      await savePageContent(pageId, content);
-    } finally {
-      scheduleLocalFileSave(pageId, content);
-    }
+    await savePage(currentPageId.value, content);
   }
 
   async function reloadWorkspace() {
@@ -652,6 +697,39 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     pageTree.value = await getPageTree(currentKbId.value);
     await selectPage(page.id);
     return page;
+  }
+
+  /**
+   * 将画板选区提取为当前页面的同级独立画板页。
+   * 新页面紧随来源页；调用方可延迟选中新页，以便先将来源选区替换为引用并保存。
+   */
+  async function createBoardPageFromSelection(
+    sourcePageId: string,
+    title: string,
+    graphData: GraphData,
+    options?: { select?: boolean },
+  ): Promise<PageItem> {
+    if (!currentKbId.value) {
+      throw new Error('未选择知识库');
+    }
+    const sourcePage = findPageInTree(pageTree.value, sourcePageId);
+    if (!sourcePage) {
+      throw new Error('未找到当前画板所在页面');
+    }
+
+    const page = await createPage(
+      currentKbId.value,
+      sourcePage.parentId,
+      title,
+      'x6board',
+    );
+    await movePage(page.id, sourcePage.parentId, (sourcePage.order ?? 0) + 1);
+    await savePageContent(page.id, createX6BoardPageContent(title, undefined, graphData));
+    pageTree.value = await getPageTree(currentKbId.value);
+    if (options?.select !== false) {
+      await selectPage(page.id);
+    }
+    return findPageInTree(pageTree.value, page.id) ?? page;
   }
 
   /**
@@ -840,12 +918,15 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     consumePendingResourceExcerptFocusId,
     refreshLinkedResourceDocuments,
     saveCurrentPage,
+    savePage,
+    savePageGraphData,
     addKb,
     removeKb,
     renameKb,
     addPage,
     refreshPageTree,
     createSiblingDocumentBelow,
+    createBoardPageFromSelection,
     importMarkdownFile,
     importRoadmapJson,
     syncKnowledgeRoadmapToSource,

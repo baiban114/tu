@@ -24,6 +24,7 @@ import com.tu.backend.page.repository.PageRepository;
 import jakarta.persistence.EntityManager;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
@@ -127,7 +128,7 @@ public class ContentTreeNodeService {
             .orElseThrow(() -> new BusinessException(50000, "failed to compute node rollup"));
     }
 
-    @Transactional
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
     public void rebuildPageOutline(String pageId, String fingerprint) {
         PageEntity page = findPage(pageId);
         PageContentEntity content = pageContentRepository.findById(pageId).orElse(null);
@@ -187,14 +188,14 @@ public class ContentTreeNodeService {
         scopeRepository.deleteById(new ContentTreeScopeId(ScopeType.PAGE, pageId));
     }
 
-    @Transactional(readOnly = true)
+    @Transactional(readOnly = true, propagation = Propagation.REQUIRES_NEW)
     public String getStoredFingerprint(String pageId) {
         return findScope(ScopeType.PAGE, pageId)
             .map(ContentTreeScopeEntity::getContentFingerprint)
             .orElse(null);
     }
 
-    @Transactional
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
     public void deletePageOutlines(List<String> pageIds) {
         if (pageIds == null || pageIds.isEmpty()) {
             return;

@@ -131,6 +131,10 @@ export function snapFreeEdgeTerminals(data: GraphData): GraphData {
     .filter((r): r is SnapNodeRect => r != null);
 
   const snappedEdges = edges.map((edge) => {
+    // Extracted-board interfaces intentionally terminate at a free point.
+    // Snapping that point back to the internal endpoint destroys the interface.
+    const edgeData = (edge as Record<string, unknown>).data as Record<string, unknown> | undefined;
+    if (edgeData?.boardInterface && typeof edgeData.boardInterface === 'object') return edge;
     // 直线（自由锚点）路由器的端点：自由点是用户有意放置的，不吸附到边界。
     const edgeRouter = (edge as Record<string, unknown>).router;
     const edgeRouterName = typeof edgeRouter === 'string'

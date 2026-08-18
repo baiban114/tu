@@ -159,4 +159,17 @@ describe('snapFreeEdgeTerminals', () => {
     }) as { edges: Array<Record<string, unknown>> };
     expect(result.edges[0].target).toEqual({ x: 50, y: 50 });
   });
+
+  it('does not snap extracted-board interface terminals', () => {
+    const result = snapFreeEdgeTerminals({
+      nodes: [{ id: 'a', x: 0, y: 0, width: 100, height: 100 }],
+      edges: [{
+        id: 'interface-edge',
+        source: { cell: 'a' },
+        target: { x: 120, y: 50 },
+        data: { boardInterface: { direction: 'out' } },
+      }],
+    }) as { edges: Array<Record<string, unknown>> };
+    expect(result.edges[0].target).toEqual({ x: 120, y: 50 });
+  });
 });

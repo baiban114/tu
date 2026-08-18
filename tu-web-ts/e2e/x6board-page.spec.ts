@@ -501,6 +501,342 @@ test('operation manager persists 设为子元素 and restores the board to befor
   })).toEqual({ parent: null, boxes: before.map((item) => item.bbox) })
 })
 
+test('rollback remains after immediately switching to another board and back', async ({ page }) => {
+  await openFreshBoard(page)
+
+  const sourceBoardTitle = '回退切换来源画板'
+  const titleInput = page.locator('.board-canvas-shell__title-input')
+  await titleInput.fill(sourceBoardTitle)
+  await titleInput.press('Enter')
+  await expect(page.getByRole('treeitem', { name: sourceBoardTitle })).toBeVisible()
+
+  await page.evaluate(() => {
+    const g = (window as any).__x6graph
+    g.cleanSelection()
+    g.select(g.getCellById('x6-start-node'))
+    g.select(g.getCellById('x6-process-node'))
+  })
+  await page.locator('.tool-button', { hasText: '设为子元素' }).click()
+
+  await page.locator('.x6-inspector-tab', { hasText: '操作' }).click()
+  const childOperation = page.locator('.x6-operation-item', { hasText: '设为子元素' }).first()
+  await childOperation.getByRole('button', { name: '回退到此前' }).click()
+  await childOperation.getByRole('button', { name: '确认回退' }).click()
+  await expect.poll(() => page.evaluate(() => (
+    (window as any).__x6graph.getCellById('x6-start-node').getParent()?.id ?? null
+  ))).toBe(null)
+
+  // 不等待 CanvasPage 的 500ms 防抖，直接切走，覆盖卸载 flush 的竞态窗口。
+  await page.getByTitle('新建页面').click()
+  await page.getByRole('menuitem', { name: '画板' }).click()
+  await expect(page.locator('.x6-stage')).toBeVisible()
+  await page.getByRole('treeitem', { name: sourceBoardTitle }).click()
+  await expect(page.locator('.x6-stage')).toBeVisible()
+  await expect.poll(() => page.evaluate(() => (
+    (window as any).__x6graph.getCellById('x6-start-node').getParent()?.id ?? null
+  ))).toBe(null)
+})
+
+test('extracts selected nodes as a standalone board and turns crossing edges into interfaces', async ({ page }) => {
+  await openFreshBoard(page)
+
+  await page.evaluate(() => {
+    const g = (window as any).__x6graph
+    g.cleanSelection()
+    g.select(g.getCellById('x6-start-node'))
+    g.select(g.getCellById('x6-process-node'))
+  })
+
+  const extractButton = page.getByRole('button', { name: '提取为画板页' })
+  await expect(extractButton).toBeEnabled()
+  await extractButton.click()
+
+  await expect(page.locator('.page-tree .tree-node').filter({ hasText: '开始 等组件' }).first()).toBeVisible()
+  await expect(page.locator('.x6-node[data-cell-id="x6-start-node"]')).toBeVisible()
+  await expect(page.locator('.x6-node[data-cell-id="x6-process-node"]')).toBeVisible()
+  await expect(page.locator('.x6-edge-labels').filter({ hasText: '接口：需要分支?' })).toBeVisible()
+  await expect.poll(() => page.evaluate(() => {
+    const g = (window as any).__x6graph
+    if (!g) return null
+    const nodes = g.getNodes().map((node: any) => node.id).sort()
+    const edges = g.getEdges().map((edge: any) => ({
+      id: edge.id,
+      source: edge.getSource(),
+      target: edge.getTarget(),
+      data: edge.getData(),
+      labels: edge.getLabels(),
+    }))
+    return { nodes, edges }
+  })).toEqual({
+    nodes: ['x6-process-node', 'x6-start-node'],
+    edges: expect.arrayContaining([
+      expect.objectContaining({
+        id: 'x6-edge-1',
+        source: expect.objectContaining({ cell: 'x6-start-node' }),
+        target: expect.objectContaining({ cell: 'x6-process-node' }),
+      }),
+      expect.objectContaining({
+        id: 'x6-edge-2',
+        source: expect.objectContaining({ cell: 'x6-process-node' }),
+        target: expect.objectContaining({ x: expect.any(Number), y: expect.any(Number) }),
+        data: expect.objectContaining({
+          boardInterface: expect.objectContaining({
+            direction: 'out',
+            externalCellId: 'x6-decision-node',
+            externalLabel: '需要分支?',
+          }),
+        }),
+        labels: expect.arrayContaining([
+          expect.objectContaining({
+            attrs: expect.objectContaining({
+              label: expect.objectContaining({ text: '接口：需要分支?' }),
+            }),
+          }),
+        ]),
+      }),
+    ]),
+  })
+
+  // 来源画板的选区被替换为可跳转的画板引用，跨界线改接到引用。
+  await page.locator('.page-tree .tree-node').filter({ hasText: '未命名画板' }).first().click()
+  await expect.poll(() => page.evaluate(() => {
+    const g = (window as any).__x6graph
+    if (!g) return null
+    const reference = g.getNodes().find((node: any) => node.getData()?.extractedBoardReference === true)
+    const crossingEdge = g.getCellById('x6-edge-2')
+    return {
+      nodes: g.getNodes().map((node: any) => node.id).sort(),
+      edges: g.getEdges().map((edge: any) => edge.id).sort(),
+      referenceId: reference?.id,
+      referenceLabel: reference?.attr('label/text'),
+      referencePageId: reference?.getData()?.refBlockId,
+      crossingSource: crossingEdge?.getSource()?.cell,
+      crossingTarget: crossingEdge?.getTarget()?.cell,
+    }
+  })).toEqual({
+    nodes: expect.arrayContaining(['x6-decision-node', 'x6-finish-node']),
+    edges: ['x6-edge-2', 'x6-edge-3'],
+    referenceId: expect.stringMatching(/^board-page-ref-/),
+    referenceLabel: '画板引用：开始 等组件',
+    referencePageId: expect.any(String),
+    crossingSource: expect.stringMatching(/^board-page-ref-/),
+    crossingTarget: 'x6-decision-node',
+  })
+  await expect(page.locator('.x6-node[data-cell-id="x6-start-node"]')).toHaveCount(0)
+  await expect(page.locator('.x6-node[data-cell-id="x6-process-node"]')).toHaveCount(0)
+
+  const referenceNode = page.locator('.x6-node').filter({ hasText: '画板引用：开始 等组件' })
+  await expect(referenceNode).toBeVisible()
+  await referenceNode.click()
+  await page.locator('.inspector-source-row__jump[title="点击跳转"]').click()
+  await expect(page.locator('.x6-node[data-cell-id="x6-start-node"]')).toBeVisible()
+  await expect(page.locator('.x6-node[data-cell-id="x6-process-node"]')).toBeVisible()
+})
+
+test('rolling back board extraction stays restored after a page refresh', async ({ page }) => {
+  await openFreshBoard(page)
+
+  const sourceBoardTitle = '提取回退来源画板'
+  const titleInput = page.locator('.board-canvas-shell__title-input')
+  await titleInput.fill(sourceBoardTitle)
+  await titleInput.press('Enter')
+  await expect(page.getByRole('treeitem', { name: sourceBoardTitle })).toBeVisible()
+
+  await page.evaluate(() => {
+    const g = (window as any).__x6graph
+    g.cleanSelection()
+    g.select(g.getCellById('x6-start-node'))
+    g.select(g.getCellById('x6-process-node'))
+  })
+  await page.getByRole('button', { name: '提取为画板页' }).click()
+
+  // 提取完成后会进入新画板；返回来源画板执行“提取为画板页”的回退。
+  await page.getByRole('treeitem', { name: sourceBoardTitle }).click()
+  await expect(page.locator('.x6-node').filter({ hasText: '画板引用：开始 等组件' })).toBeVisible()
+  await page.locator('.x6-inspector-tab', { hasText: '操作' }).click()
+  const extractionOperation = page.locator('.x6-operation-item', { hasText: '提取为画板页' }).first()
+  await extractionOperation.getByRole('button', { name: '回退到此前' }).click()
+  await extractionOperation.getByRole('button', { name: '确认回退' }).click()
+
+  await expect(page.locator('.x6-node').filter({ hasText: '画板引用：开始 等组件' })).toHaveCount(0)
+  await expect(page.locator('.x6-node[data-cell-id="x6-start-node"]')).toBeVisible()
+  await expect(page.locator('.x6-node[data-cell-id="x6-process-node"]')).toBeVisible()
+
+  await page.reload()
+  await page.getByRole('treeitem', { name: sourceBoardTitle }).click()
+  await expect(page.locator('.x6-stage')).toBeVisible()
+  await expect(page.locator('.x6-node').filter({ hasText: '画板引用：开始 等组件' })).toHaveCount(0)
+  await expect(page.locator('.x6-node[data-cell-id="x6-start-node"]')).toBeVisible()
+  await expect(page.locator('.x6-node[data-cell-id="x6-process-node"]')).toBeVisible()
+})
+
+test('extracting Ctrl+A keeps independent nodes together with a selected group', async ({ page }) => {
+  await openFreshBoard(page)
+
+  await page.evaluate(() => {
+    const g = (window as any).__x6graph
+    g.cleanSelection()
+    g.select(g.getCellById('x6-decision-node'))
+    g.select(g.getCellById('x6-finish-node'))
+  })
+  await page.locator('.tool-button', { hasText: '设为子元素' }).click()
+  await expect.poll(() => page.evaluate(() => (
+    (window as any).__x6graph.getCellById('x6-decision-node').getParent()?.id
+  ))).toBe('x6-finish-node')
+
+  await page.evaluate(() => {
+    const g = (window as any).__x6graph
+    g.cleanSelection()
+    g.select(g.getCellById('x6-process-node'))
+    g.select(g.getCellById('x6-finish-node'))
+  })
+  await page.locator('.tool-button', { hasText: '组合' }).click()
+  const groupContainer = page.locator('.x6-node[data-shape="board-group"]')
+  await expect(groupContainer).toHaveCount(1)
+
+  await groupContainer.click({ force: true })
+  await page.keyboard.press('Control+a')
+  await expect(page.locator('.toolbar-summary').filter({ hasText: '已选中' })).toHaveText('已选中 8 个对象')
+  const sourceLayout = await page.evaluate(() => {
+    const g = (window as any).__x6graph
+    return Object.fromEntries(g.getNodes().map((node: any) => {
+      const position = node.getPosition()
+      const size = node.getSize()
+      return [node.id, {
+        x: position.x,
+        y: position.y,
+        width: size.width,
+        height: size.height,
+        parent: node.getParent()?.id ?? null,
+      }]
+    }))
+  })
+  await page.getByRole('button', { name: '提取为画板页' }).click()
+
+  await expect(page.locator('.x6-node[data-cell-id="x6-start-node"]')).toBeVisible()
+  await expect(page.locator('.x6-node[data-cell-id="x6-process-node"]')).toBeVisible()
+  await expect(page.locator('.x6-node[data-cell-id="x6-decision-node"]')).toBeVisible()
+  await expect(page.locator('.x6-node[data-cell-id="x6-finish-node"]')).toBeVisible()
+  await expect(page.locator('.x6-node[data-shape="board-group"]')).toHaveCount(1)
+  await expect.poll(() => page.evaluate(() => {
+    const g = (window as any).__x6graph
+    return {
+      nodeIds: g?.getNodes().map((node: any) => node.id).sort(),
+      edgeIds: g?.getEdges().map((edge: any) => edge.id).sort(),
+    }
+  })).toEqual({
+    nodeIds: expect.arrayContaining([
+      'x6-start-node',
+      'x6-process-node',
+      'x6-decision-node',
+      'x6-finish-node',
+    ]),
+    edgeIds: ['x6-edge-1', 'x6-edge-2', 'x6-edge-3'],
+  })
+
+  const assertRelativeLayoutPreserved = async () => {
+    const extractedLayout = await page.evaluate(() => {
+      const g = (window as any).__x6graph
+      return Object.fromEntries(g.getNodes().map((node: any) => {
+        const position = node.getPosition()
+        const size = node.getSize()
+        return [node.id, {
+          x: position.x,
+          y: position.y,
+          width: size.width,
+          height: size.height,
+          parent: node.getParent()?.id ?? null,
+        }]
+      }))
+    })
+    const ids = Object.keys(sourceLayout)
+    const anchorId = 'x6-start-node'
+    const dx = extractedLayout[anchorId].x - sourceLayout[anchorId].x
+    const dy = extractedLayout[anchorId].y - sourceLayout[anchorId].y
+    for (const id of ids) {
+      expect(extractedLayout[id]).toEqual({
+        x: sourceLayout[id].x + dx,
+        y: sourceLayout[id].y + dy,
+        width: sourceLayout[id].width,
+        height: sourceLayout[id].height,
+        parent: sourceLayout[id].parent,
+      })
+    }
+  }
+  await assertRelativeLayoutPreserved()
+
+  // Persistence round-trip must not trigger a second parent/container layout.
+  const extractedPageTitle = await page.locator('.page-tree .el-tree-node.is-current .node-label').textContent()
+  expect(extractedPageTitle).toBeTruthy()
+  await page.locator('.page-tree .tree-node').filter({ hasText: '未命名画板' }).first().click()
+  await page.locator('.page-tree .tree-node').filter({ hasText: extractedPageTitle! }).first().click()
+  await assertRelativeLayoutPreserved()
+})
+
+test('board reference content mode renders proportionally and writes edits back to the source board', async ({ page }) => {
+  await openFreshBoard(page)
+
+  await page.evaluate(() => {
+    const g = (window as any).__x6graph
+    g.cleanSelection()
+    g.select(g.getCellById('x6-start-node'))
+    g.select(g.getCellById('x6-process-node'))
+  })
+  await page.getByRole('button', { name: '提取为画板页' }).click()
+  const extractedTitle = await page.locator('.page-tree .el-tree-node.is-current .node-label').textContent()
+  expect(extractedTitle).toBeTruthy()
+
+  await page.locator('.page-tree .tree-node').filter({ hasText: '未命名画板' }).first().click()
+  const referenceId = await page.evaluate(() => {
+    const g = (window as any).__x6graph
+    return g.getNodes().find((node: any) => node.getData()?.extractedBoardReference)?.id
+  })
+  expect(referenceId).toBeTruthy()
+  await page.locator(`.x6-node[data-cell-id="${referenceId}"]`).click()
+  await page.locator('.inspector-reference-display select').selectOption('content')
+
+  const preview = page.locator('.x6-board-reference-preview')
+  await expect(preview).toBeVisible()
+  await expect(preview.locator('.x6-node[data-cell-id="x6-start-node"]')).toBeVisible()
+  await expect(preview.locator('.x6-node[data-cell-id="x6-process-node"]')).toBeVisible()
+
+  const geometry = await page.evaluate((id) => {
+    const wrapper = document.querySelector(`.x6-node[data-cell-id="${id}"]`)?.getBoundingClientRect()
+    const previewElement = document.querySelector('.x6-board-reference-preview')?.getBoundingClientRect()
+    if (!wrapper || !previewElement) return null
+    return {
+      wrapper: { width: wrapper.width, height: wrapper.height },
+      preview: {
+        left: previewElement.left - wrapper.left,
+        top: previewElement.top - wrapper.top,
+        width: previewElement.width,
+        height: previewElement.height,
+      },
+    }
+  }, referenceId)
+  expect(geometry).not.toBeNull()
+  expect(geometry!.wrapper.width).toBeGreaterThan(300)
+  expect(geometry!.wrapper.height).toBeGreaterThan(200)
+  expect(Math.abs(geometry!.preview.left)).toBeLessThanOrEqual(6)
+  expect(Math.abs(geometry!.preview.top)).toBeLessThanOrEqual(6)
+  expect(Math.abs(geometry!.preview.width - geometry!.wrapper.width)).toBeLessThanOrEqual(8)
+  expect(Math.abs(geometry!.preview.height - geometry!.wrapper.height)).toBeLessThanOrEqual(8)
+
+  await expect.poll(() => page.evaluate(() => (
+    (window as any).__x6graph?.getCellById('x6-start-node')?.id
+  ))).toBe('x6-start-node')
+  await page.evaluate(() => {
+    const nestedGraph = (window as any).__x6graph
+    nestedGraph.getCellById('x6-start-node').attr('label/text', '主机（引用内同步）')
+  })
+  await page.waitForTimeout(150)
+
+  await page.locator('.page-tree .tree-node').filter({ hasText: extractedTitle! }).first().click()
+  await expect.poll(() => page.evaluate(() => (
+    (window as any).__x6graph?.getCellById('x6-start-node')?.attr('label/text')
+  ))).toBe('主机（引用内同步）')
+})
+
 test('deleting a selected group container with the Delete key dissolves it without crashing', async ({ page }) => {
   await openFreshBoard(page)
 

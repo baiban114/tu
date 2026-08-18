@@ -269,6 +269,10 @@ function onContentChange(content: PageContent) {
   void store.saveCurrentPage(content);
 }
 
+function onCanvasContentChange(pageId: string, content: PageContent) {
+  void store.savePage(pageId, content);
+}
+
 function onPageTitleChange(title: string) {
   if (!store.currentPageId) return;
   void store.renameCurrentPage(store.currentPageId, title);
@@ -392,11 +396,12 @@ watch(
         class="content-canvas"
       >
         <CanvasPage
+          :page-id="store.currentPageId!"
           :page-type="canvasPageType"
           :content="store.pageContent!"
           :page-title="store.currentPageTitle"
           @page-title-change="onPageTitleChange"
-          @content-change="onContentChange"
+          @content-change="onCanvasContentChange"
         />
       </div>
 

@@ -10,13 +10,14 @@ import { collectAvailableTags, fetchKbTagPool } from '@/utils/tagPool'
 import { useWorkspaceStore } from '@/stores/workspace'
 
 const props = defineProps<{
+  pageId: string
   pageType: Extract<PageType, 'mindmap' | 'x6board'>
   content: PageContent
   pageTitle: string
 }>()
 
 const emit = defineEmits<{
-  'content-change': [content: PageContent]
+  'content-change': [pageId: string, content: PageContent]
   'page-title-change': [title: string]
 }>()
 
@@ -35,16 +36,20 @@ const availableTags = computed(() => collectAvailableTags([], pageTags.value, [k
 
 let saveTimer: number | null = null
 let pendingSaveContent: PageContent | null = null
+let pendingSavePageId: string | null = null
 const SAVE_DELAY = 500
 
 function scheduleSave(next: PageContent) {
   pendingSaveContent = next
+  pendingSavePageId = props.pageId
   if (saveTimer !== null) window.clearTimeout(saveTimer)
   saveTimer = window.setTimeout(() => {
     saveTimer = null
     const content = pendingSaveContent
+    const pageId = pendingSavePageId
     pendingSaveContent = null
-    if (content) emit('content-change', content)
+    pendingSavePageId = null
+    if (content && pageId) emit('content-change', pageId, content)
   }, SAVE_DELAY)
 }
 
@@ -96,9 +101,10 @@ function removePageTag(tag: BlockTag) {
 
 onBeforeUnmount(() => {
   if (saveTimer !== null) window.clearTimeout(saveTimer)
-  if (pendingSaveContent) {
-    emit('content-change', pendingSaveContent)
+  if (pendingSaveContent && pendingSavePageId) {
+    emit('content-change', pendingSavePageId, pendingSaveContent)
     pendingSaveContent = null
+    pendingSavePageId = null
   }
 })
 </script>
@@ -118,6 +124,7 @@ onBeforeUnmount(() => {
       v-if="primaryEmbed && graphData"
       class="canvas-page__board"
       mode="page"
+      :page-id="pageId"
       :graph-data="graphData"
       :page-title="pageTitle"
       @graph-data-change="onGraphDataChange"

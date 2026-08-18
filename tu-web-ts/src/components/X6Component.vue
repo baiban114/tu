@@ -25,6 +25,7 @@ function isBoardLinkShapeRegistered(): boolean {
 
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { ElMessage } from 'element-plus';
 import X6NodeOverlay from './X6NodeOverlay.vue';
 import X6CellContentPanel from './X6CellContentPanel.vue';
 import X6MaterialLibrary from './X6MaterialLibrary.vue';
@@ -153,6 +154,8 @@ import {
 const BLUEPRINT_ANCHOR = { x: 480, y: 280 } as const;
 
 interface Props {
+  /** Standalone canvas page id; absent for document-embedded boards. */
+  pageId?: string;
   graphData?: GraphData;
   graphSourceKind?: string | null;
   editable?: boolean;
@@ -170,6 +173,10 @@ interface Props {
   inspectorDefaultVisible?: boolean;
   /** Auto-open inspector when a node is selected (default false). */
   openInspectorOnNodeSelect?: boolean;
+  /** Disable nested board-reference previews inside an already nested preview. */
+  referencePreviewEnabled?: boolean;
+  /** Keep all graph content fitted when the host container is resized. */
+  autoFitOnResize?: boolean;
 }
 
 /** 画板节点可互相转换的样式（graphCells NodePreset 去掉 umlClass） */
@@ -201,6 +208,8 @@ type SelectedCellState =
       refBlockId: string;
       refType: 'block' | 'page';
       refSourceLabel: string;
+      boardReferenceDisplay: 'card' | 'content';
+      canPreviewBoardReference: boolean;
       /** 定位系统 locator（目录思维导图等） */
       sourceLocator: string;
       tocEntryId: string;
@@ -227,6 +236,7 @@ type SelectedCellState =
     };
 
 const props = withDefaults(defineProps<Props>(), {
+  pageId: undefined,
   graphData: undefined,
   graphSourceKind: null,
   editable: true,
@@ -240,6 +250,8 @@ const props = withDefaults(defineProps<Props>(), {
   inspectorEnabled: true,
   inspectorDefaultVisible: true,
   openInspectorOnNodeSelect: false,
+  referencePreviewEnabled: true,
+  autoFitOnResize: false,
 });
 
 interface InsertRefRequestPayload {
@@ -352,6 +364,7 @@ const zoomPercent = ref(100);
 const selectedCellsCount = ref(0);
 const deletableSelectionCount = ref(0);
 const selectedCell = ref<SelectedCellState | null>(null);
+const extractingSelectionBoard = ref(false);
 /** 组合按钮状态：'' 禁用 / 'group' 可组合 / 'ungroup' 可取消组合 */
 const groupActionButtonMode = ref<'' | 'group' | 'ungroup'>('');
 /** 子元素按钮状态：'' 禁用 / 'child' 可设为子元素 / 'detach' 可取消子元素 */
@@ -422,6 +435,8 @@ const nodeOverlays = ref<Array<{
   textMode: 'plain' | 'rich';
   label: string;
   richContent: string;
+  boardReferencePageId: string;
+  boardReferenceTitle: string;
 }>>([]);
 const graphSourceRegion = ref<{
   kind: string;
@@ -885,8 +900,8 @@ function appendOperationRecord(current: BoardOperationSnapshot) {
   pendingOperationBefore = null;
 }
 
-function emitGraphData() {
-  if (!graph || isApplyingExternalData) return;
+function emitGraphData(): GraphData | null {
+  if (!graph || isApplyingExternalData) return null;
   const core = normalizeGraphData(serializeGraphData());
   const currentOperationSnapshot = createOperationSnapshot(core);
   appendOperationRecord(currentOperationSnapshot);
@@ -895,11 +910,12 @@ function emitGraphData() {
     operationHistory: operationHistory.value,
   };
   const snapshot = JSON.stringify(payload);
-  if (snapshot === lastSerializedSnapshot) return;
+  if (snapshot === lastSerializedSnapshot) return payload;
   lastCommittedOperationSnapshot = operationSnapshotKey(currentOperationSnapshot);
   lastSerializedSnapshot = snapshot;
   lastStructuralSnapshot = JSON.stringify(stripVolatileCellContent(payload));
   emit('graph-data-change', payload);
+  return payload;
 }
 
 function updateUndoRedoState() {
@@ -1271,6 +1287,15 @@ function updateNodeOverlays() {
         textMode: (data.textMode ?? 'plain') as 'plain' | 'rich',
         label: getNodeLabel(node),
         richContent: data.richContent ?? '',
+        boardReferencePageId: props.referencePreviewEnabled
+          && data.boardReferenceDisplay === 'content'
+          && data.refType === 'page'
+          && typeof data.refBlockId === 'string'
+          ? data.refBlockId
+          : '',
+        boardReferenceTitle: typeof data.refBlockId === 'string'
+          ? buildRefSourceLabel(data.refBlockId, data.refType === 'page' ? 'page' : 'block')
+          : '',
       };
     });
   updateGraphSourceRegion();
@@ -1690,6 +1715,14 @@ function refreshSelectedCellState() {
       const refBlockId = typeof nodeData.refBlockId === 'string' ? nodeData.refBlockId : '';
       const refType: 'block' | 'page' = nodeData.refType === 'page' ? 'page' : 'block';
       const isRefBlock = nodeData.refKind === 'block-ref' || Boolean(refBlockId);
+      const referencedPage = refType === 'page' && refBlockId
+        ? findPageInTree(workspaceStore.pageTree, refBlockId)
+        : null;
+      const canPreviewBoardReference = refType === 'page' && (
+        nodeData.extractedBoardReference === true
+        || referencedPage?.pageType === 'x6board'
+        || referencedPage?.pageType === 'mindmap'
+      );
       const sourceLocator = typeof nodeData.sourceLocator === 'string' ? nodeData.sourceLocator.trim() : '';
       const tocEntryId = typeof nodeData.tocEntryId === 'string' ? nodeData.tocEntryId : '';
       const linkUrl = typeof nodeData.linkUrl === 'string' ? nodeData.linkUrl : '';
@@ -1720,6 +1753,8 @@ function refreshSelectedCellState() {
         refBlockId,
         refType,
         refSourceLabel: isRefBlock && refBlockId ? buildRefSourceLabel(refBlockId, refType) : '',
+        boardReferenceDisplay: nodeData.boardReferenceDisplay === 'content' ? 'content' : 'card',
+        canPreviewBoardReference,
         sourceLocator,
         tocEntryId,
         contentBinding: readCellContentBinding(nodeData),
@@ -2088,6 +2123,7 @@ function applyGraphData(data?: GraphData, fitView = false) {
   lastSerializedSnapshot = snapshot;
   lastStructuralSnapshot = structuralSnapshot;
   graph.fromJSON({ cells: normalizedData.cells ?? [] });
+  restoreLoadedNodeWorldPositions(normalizedData);
   graph.cleanSelection();
   graph.getEdges().forEach((edge) => ensureEdgeHitTarget(edge));
   syncTaskFlowEdgeState();
@@ -2325,6 +2361,413 @@ function buildMaterialGraphData(): GraphData | null {
   return normalizeGraphData(raw)
 }
 
+type ExtractedBoardInterfaceDirection = 'in' | 'out';
+
+interface ExtractedBoardInterfaceData {
+  direction: ExtractedBoardInterfaceDirection;
+  externalCellId: string;
+  externalLabel: string;
+  originalTerminal: unknown;
+}
+
+function getCellIdFromTerminal(terminal: unknown): string {
+  if (typeof terminal === 'string') return terminal;
+  if (!terminal || typeof terminal !== 'object') return '';
+  const cell = (terminal as Record<string, unknown>).cell;
+  return typeof cell === 'string' ? cell : '';
+}
+
+function getBoardNodeLabel(node: Node): string {
+  const attrLabel = node.attr('label/text');
+  if (typeof attrLabel === 'string' && attrLabel.trim()) return attrLabel.trim();
+  const data = node.getData<Record<string, unknown>>() ?? {};
+  for (const key of ['label', 'title', 'name']) {
+    const value = data[key];
+    if (typeof value === 'string' && value.trim()) return value.trim();
+  }
+  return node.id;
+}
+
+function computeExternalInterfacePoint(
+  internalNode: Node,
+  externalNode: Node,
+  bounds: { minX: number; minY: number; maxX: number; maxY: number },
+): { x: number; y: number } {
+  const internalBox = internalNode.getBBox();
+  const externalBox = externalNode.getBBox();
+  const start = {
+    x: internalBox.x + internalBox.width / 2,
+    y: internalBox.y + internalBox.height / 2,
+  };
+  const end = {
+    x: externalBox.x + externalBox.width / 2,
+    y: externalBox.y + externalBox.height / 2,
+  };
+  let dx = end.x - start.x;
+  let dy = end.y - start.y;
+  if (Math.abs(dx) < 0.001 && Math.abs(dy) < 0.001) dx = 1;
+
+  const margin = 56;
+  const candidates: number[] = [];
+  if (dx > 0) candidates.push((bounds.maxX + margin - start.x) / dx);
+  if (dx < 0) candidates.push((bounds.minX - margin - start.x) / dx);
+  if (dy > 0) candidates.push((bounds.maxY + margin - start.y) / dy);
+  if (dy < 0) candidates.push((bounds.minY - margin - start.y) / dy);
+  const positive = candidates.filter((value) => Number.isFinite(value) && value > 0);
+  const scale = positive.length ? Math.min(...positive) : 1;
+  return {
+    x: start.x + dx * scale,
+    y: start.y + dy * scale,
+  };
+}
+
+function offsetExtractedTerminal(terminal: unknown, dx: number, dy: number): unknown {
+  if (!terminal || typeof terminal !== 'object') return terminal;
+  const value = terminal as Record<string, unknown>;
+  if (typeof value.cell === 'string') return terminal;
+  if (typeof value.x === 'number' && typeof value.y === 'number') {
+    return { ...value, x: value.x + dx, y: value.y + dy };
+  }
+  return terminal;
+}
+
+interface FrozenExtractedNodeLayout {
+  node: Node;
+  position: { x: number; y: number };
+  size: { width: number; height: number };
+  parentId: string;
+  depth: number;
+  order: number;
+}
+
+/** Freeze every selected node in absolute graph coordinates before serialization. */
+function freezeExtractedNodeLayouts(
+  selectedNodes: Map<string, Node>,
+): FrozenExtractedNodeLayout[] {
+  const selectedIds = new Set(selectedNodes.keys());
+  return [...selectedNodes.values()].map((node, order) => {
+    const position = node.getPosition();
+    const size = node.getSize();
+    const parent = node.getParent();
+    const parentId = parent && selectedIds.has(parent.id) ? parent.id : '';
+    let depth = 0;
+    let ancestor = parent;
+    const visited = new Set<string>([node.id]);
+    while (ancestor && selectedIds.has(ancestor.id) && !visited.has(ancestor.id)) {
+      visited.add(ancestor.id);
+      depth += 1;
+      ancestor = ancestor.getParent();
+    }
+    return {
+      node,
+      position: { x: position.x, y: position.y },
+      size: { width: size.width, height: size.height },
+      parentId,
+      depth,
+      order,
+    };
+  });
+}
+
+/** Re-assert serialized absolute positions after X6 restores embed relations. */
+function restoreLoadedNodeWorldPositions(data: GraphData) {
+  if (!graph) return;
+  const positions = new Map(
+    data.nodes.map((node) => [node.id, getCellPosition(node as CellData)]),
+  );
+  graph.getNodes().forEach((node) => {
+    const expected = positions.get(node.id);
+    if (!expected) return;
+    const actual = node.getPosition();
+    if (actual.x === expected.x && actual.y === expected.y) return;
+    node.setPosition(expected.x, expected.y);
+  });
+}
+
+function collectExtractableSelectedNodes(g: Graph): Map<string, Node> {
+  const selectedNodes = new Map<string, Node>();
+  g.getSelectedCells().forEach((cell) => {
+    if (g.isNode(cell)) {
+      selectedNodes.set(cell.id, cell as Node);
+      return;
+    }
+    // Rubberband selection can contain a crossing edge even when one of its
+    // endpoint nodes is only partially covered. Treat an explicitly selected
+    // edge and both endpoints as one extractable unit so mixed selections do
+    // not silently lose the endpoint node.
+    if (!g.isEdge(cell)) return;
+    const sourceNode = cell.getSourceNode();
+    const targetNode = cell.getTargetNode();
+    if (sourceNode) selectedNodes.set(sourceNode.id, sourceNode);
+    if (targetNode) selectedNodes.set(targetNode.id, targetNode);
+  });
+
+  // Expand every selected group/container after collecting direct selections
+  // and edge endpoints. The queue also handles nested containers reliably.
+  const pending = [...selectedNodes.values()];
+  for (let index = 0; index < pending.length; index += 1) {
+    const node = pending[index];
+    if (!isBoardGroupNode(node) && !isNodeContainer(node)) continue;
+    node.getDescendants({ deep: true }).forEach((descendant) => {
+      if (!g.isNode(descendant) || selectedNodes.has(descendant.id)) return;
+      selectedNodes.set(descendant.id, descendant as Node);
+      pending.push(descendant as Node);
+    });
+  }
+  return selectedNodes;
+}
+
+/** Build a standalone board from selected nodes, converting crossing edges into reusable interfaces. */
+function buildSelectionBoardGraphData(): GraphData | null {
+  if (!graph) return null;
+  const g = graph;
+  const selectedNodes = collectExtractableSelectedNodes(g);
+  if (!selectedNodes.size) return null;
+
+  const nodeIds = new Set(selectedNodes.keys());
+  const frozenLayouts = freezeExtractedNodeLayouts(selectedNodes);
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  frozenLayouts.forEach(({ position, size }) => {
+    minX = Math.min(minX, position.x);
+    minY = Math.min(minY, position.y);
+    maxX = Math.max(maxX, position.x + size.width);
+    maxY = Math.max(maxY, position.y + size.height);
+  });
+  const bounds = { minX, minY, maxX, maxY };
+
+  const nodeData = frozenLayouts
+    .slice()
+    .sort((left, right) => left.depth - right.depth || left.order - right.order)
+    .map(({ node, position, parentId }) => {
+      const data = { id: node.id, ...node.toJSON() } as CellData;
+      if (parentId) data.parent = parentId;
+      else delete data.parent;
+      data.x = position.x;
+      data.y = position.y;
+      data.position = {
+        ...(data.position as Record<string, unknown> | undefined),
+        x: position.x,
+        y: position.y,
+      };
+      return data;
+    });
+
+  const edgeData: CellData[] = [];
+  g.getEdges().forEach((edge) => {
+    const sourceNode = edge.getSourceNode();
+    const targetNode = edge.getTargetNode();
+    if (!sourceNode || !targetNode) return;
+    const sourceInside = nodeIds.has(sourceNode.id);
+    const targetInside = nodeIds.has(targetNode.id);
+    if (!sourceInside && !targetInside) return;
+
+    const json = { id: edge.id, ...edge.toJSON() } as CellData;
+    if (sourceInside && targetInside) {
+      edgeData.push(json);
+      return;
+    }
+
+    const direction: ExtractedBoardInterfaceDirection = sourceInside ? 'out' : 'in';
+    const internalNode = sourceInside ? sourceNode : targetNode;
+    const externalNode = sourceInside ? targetNode : sourceNode;
+    const interfacePoint = computeExternalInterfacePoint(internalNode, externalNode, bounds);
+    const originalTerminal = direction === 'out' ? json.target : json.source;
+    const interfaceData: ExtractedBoardInterfaceData = {
+      direction,
+      externalCellId: externalNode.id,
+      externalLabel: getBoardNodeLabel(externalNode),
+      originalTerminal,
+    };
+    const existingData = json.data && typeof json.data === 'object' ? json.data : {};
+    json.data = { ...existingData, boardInterface: interfaceData };
+    if (direction === 'out') json.target = interfacePoint;
+    else json.source = interfacePoint;
+    json.vertices = [];
+    const interfaceLabel = `接口：${interfaceData.externalLabel}`;
+    json.labels = [
+      ...((Array.isArray(json.labels) ? json.labels : []) as Array<Record<string, unknown>>),
+      {
+        attrs: { label: { text: interfaceLabel, fill: '#6d28d9', fontSize: 12 } },
+        position: { distance: direction === 'out' ? 0.78 : 0.22 },
+      },
+    ];
+    const attrs = json.attrs && typeof json.attrs === 'object' ? json.attrs : {};
+    const line = (attrs as Record<string, any>).line ?? {};
+    json.attrs = {
+      ...attrs,
+      line: { ...line, stroke: '#7c3aed', strokeDasharray: '7 4' },
+    };
+    edgeData.push(json);
+  });
+
+  // Normalize the extracted component near the new board's top-left while preserving layout.
+  const offsetX = 120 - minX;
+  const offsetY = 120 - minY;
+  nodeData.forEach((node) => {
+    const x = typeof node.x === 'number' ? node.x + offsetX : offsetX;
+    const y = typeof node.y === 'number' ? node.y + offsetY : offsetY;
+    node.x = x;
+    node.y = y;
+    node.position = { ...(node.position as Record<string, unknown> | undefined), x, y };
+  });
+  edgeData.forEach((edge) => {
+    edge.source = offsetExtractedTerminal(edge.source, offsetX, offsetY) as CellData['source'];
+    edge.target = offsetExtractedTerminal(edge.target, offsetX, offsetY) as CellData['target'];
+    if (Array.isArray(edge.vertices)) {
+      edge.vertices = edge.vertices.map((vertex) => ({
+        ...vertex,
+        x: typeof vertex.x === 'number' ? vertex.x + offsetX : vertex.x,
+        y: typeof vertex.y === 'number' ? vertex.y + offsetY : vertex.y,
+      }));
+    }
+  });
+
+  const normalized = normalizeGraphData({
+    cells: [...nodeData, ...edgeData],
+    nodes: nodeData,
+    edges: edgeData,
+  } as unknown as GraphData);
+  const expectedById = new Map(nodeData.map((node) => [node.id, getCellPosition(node)]));
+  const lockPosition = (cell: CellData) => {
+    const expected = expectedById.get(cell.id);
+    if (!expected) return;
+    cell.x = expected.x;
+    cell.y = expected.y;
+    cell.position = {
+      ...(cell.position as Record<string, unknown> | undefined),
+      x: expected.x,
+      y: expected.y,
+    };
+  };
+  normalized.nodes.forEach((node) => lockPosition(node as CellData));
+  normalized.cells?.forEach((cell) => lockPosition(cell as CellData));
+  return normalized;
+}
+
+/** Replace the extracted source selection with one navigable page-reference node. */
+function replaceSelectionWithBoardReference(
+  pageId: string,
+  pageTitle: string,
+  extractedData: GraphData,
+): Node | null {
+  if (!graph || !isEditable.value) return null;
+  const g = graph;
+  const selectedNodes = collectExtractableSelectedNodes(g);
+  if (!selectedNodes.size) return null;
+  const selectedIds = new Set(selectedNodes.keys());
+
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  selectedNodes.forEach((node) => {
+    const box = node.getBBox();
+    minX = Math.min(minX, box.x);
+    minY = Math.min(minY, box.y);
+    maxX = Math.max(maxX, box.x + box.width);
+    maxY = Math.max(maxY, box.y + box.height);
+  });
+
+  const boundaryEdges: Array<{
+    edge: Edge;
+    direction: ExtractedBoardInterfaceDirection;
+  }> = [];
+  const internalEdges: Edge[] = [];
+  g.getEdges().forEach((edge) => {
+    const sourceId = getCellIdFromTerminal(edge.getSource());
+    const targetId = getCellIdFromTerminal(edge.getTarget());
+    const sourceInside = selectedIds.has(sourceId);
+    const targetInside = selectedIds.has(targetId);
+    if (sourceInside && targetInside) internalEdges.push(edge);
+    else if (sourceInside !== targetInside) {
+      boundaryEdges.push({ edge, direction: sourceInside ? 'out' : 'in' });
+    }
+  });
+
+  const refWidth = 240;
+  const refHeight = 84;
+  const refId = createId('board-page-ref');
+  const interfaceSummary = extractedData.edges
+    .map((edge) => ({ edgeId: edge.id, boardInterface: edge.data?.boardInterface }))
+    .filter((item) => item.boardInterface && typeof item.boardInterface === 'object');
+
+  markBoardOperation('提取为画板页');
+  g.startBatch('extract-selection-as-board-page');
+  let referenceNode: Node | null = null;
+  try {
+    referenceNode = g.addNode({
+      id: refId,
+      shape: 'rect',
+      x: minX + Math.max(0, (maxX - minX - refWidth) / 2),
+      y: minY + Math.max(0, (maxY - minY - refHeight) / 2),
+      width: refWidth,
+      height: refHeight,
+      ports: createNodePorts(),
+      attrs: {
+        body: {
+          fill: '#f5f3ff',
+          stroke: '#7c3aed',
+          strokeWidth: 2,
+          strokeDasharray: '7 4',
+          rx: 14,
+          ry: 14,
+        },
+        label: {
+          text: `画板引用：${pageTitle}`,
+          fill: '#5b21b6',
+          fontSize: 13,
+          fontWeight: 600,
+          textWrap: { width: refWidth - 24, height: refHeight - 16, ellipsis: true },
+        },
+      },
+      data: {
+        refBlockId: pageId,
+        refType: 'page',
+        refKind: 'block-ref',
+        boardReferenceDisplay: 'card',
+        extractedBoardReference: true,
+        extractedNodeCount: extractedData.nodes.length,
+        extractedInterfaces: interfaceSummary,
+      },
+    });
+
+    // Preserve the source graph's external connectivity by reconnecting every
+    // crossing edge to the new reference node before the extracted nodes leave.
+    boundaryEdges.forEach(({ edge, direction }) => {
+      if (direction === 'out') edge.setSource({ cell: refId });
+      else edge.setTarget({ cell: refId });
+    });
+
+    // Detach selected nodes from any non-selected parent so that removing them
+    // cannot leave stale child references on the surviving container.
+    const survivingParents = new Set<Node>();
+    selectedNodes.forEach((node) => {
+      const parent = node.getParent();
+      if (parent && g.isNode(parent) && !selectedIds.has(parent.id)) {
+        parent.unembed(node);
+        survivingParents.add(parent as Node);
+      }
+    });
+    g.removeCells([...internalEdges, ...selectedNodes.values()]);
+    survivingParents.forEach((parent) => {
+      if (isBoardGroupNode(parent)) fitBoardGroupContainer(parent);
+      else if (isNodeContainer(parent)) fitNodeContainer(parent);
+    });
+    dissolveDegradedBoardGroups();
+    g.resetSelection([referenceNode]);
+  } finally {
+    g.stopBatch('extract-selection-as-board-page');
+  }
+
+  refreshSelectedCellState();
+  updateNodeOverlays();
+  emitGraphData();
+  return referenceNode;
+}
+
 function getRefInsertPosition() {
   if (!graph) return getCanvasCenter();
 
@@ -2513,6 +2956,9 @@ function handleStraightLineClick(x: number, y: number) {
     straightLinePreviewEdge.setTerminal('target', endTerminal);
     straightLinePreviewEdge.attr('line/strokeDasharray', '');
     straightLinePreviewEdge.attr('line/opacity', 1);
+    // graph.createEdge 只创建游离的 Edge 对象，不会进入画布模型；
+    // 这里把它真正加入模型，直线才会显示，并纳入历史记录（可 Ctrl+Z 撤销）。
+    graph.addEdge(straightLinePreviewEdge);
     straightLinePreviewEdge = null;
     scheduleSync();
   }
@@ -3748,6 +4194,56 @@ function extractSelectionAsMaterial() {
   inspectorTab.value = 'library';
 }
 
+async function extractSelectionAsBoardPage() {
+  if (
+    !graph
+    || !props.blockActionsEnabled
+    || extractingSelectionBoard.value
+    || !workspaceStore.currentPageId
+  ) return;
+  const data = buildSelectionBoardGraphData();
+  if (!data || !data.nodes.length) {
+    ElMessage.warning('请至少选择一个画板节点');
+    return;
+  }
+
+  const firstLabel = data.nodes
+    .map((node) => extractNodeLabel(node as CellData).trim())
+    .find(Boolean);
+  const title = firstLabel
+    ? `${firstLabel}${data.nodes.length > 1 ? ' 等组件' : ' 组件'}`
+    : '画板组件';
+
+  extractingSelectionBoard.value = true;
+  try {
+    const sourcePageId = workspaceStore.currentPageId;
+    const page = await workspaceStore.createBoardPageFromSelection(
+      sourcePageId,
+      title,
+      data,
+      { select: false },
+    );
+    const reference = replaceSelectionWithBoardReference(page.id, title, data);
+    if (!reference) {
+      throw new Error('原画板选区已变化，无法创建画板引用');
+    }
+
+    // CanvasPage buffers graph changes for 500 ms. Keep the source page active
+    // until that buffer has emitted so saveCurrentPage captures sourcePageId,
+    // otherwise an unmount-time flush can accidentally target the new page.
+    await new Promise<void>((resolve) => window.setTimeout(resolve, 550));
+    if (workspaceStore.currentPageId === sourcePageId) {
+      await workspaceStore.selectPage(page.id);
+    }
+    ElMessage.success('已提取为独立画板页');
+  } catch (error) {
+    const message = error instanceof Error ? error.message : '提取失败';
+    ElMessage.error(message);
+  } finally {
+    extractingSelectionBoard.value = false;
+  }
+}
+
 /** Insert a saved material's graph data onto the canvas at the viewport center. */
 function insertMaterial(graphData: GraphData) {
   insertMaterialAt(graphData, undefined);
@@ -3792,6 +4288,9 @@ function insertMaterialAt(graphData: GraphData, position?: { x: number; y: numbe
     const remapTerminal = (term: any): any => {
       if (typeof term === 'string') return idMap.get(term) ?? term;
       if (term?.cell) return { ...term, cell: idMap.get(term.cell) ?? term.cell };
+      if (typeof term?.x === 'number' && typeof term?.y === 'number') {
+        return { ...term, x: term.x + offsetX, y: term.y + offsetY };
+      }
       return term;
     };
     for (const edgeData of graphData.edges ?? []) {
@@ -3801,6 +4300,13 @@ function insertMaterialAt(graphData: GraphData, position?: { x: number; y: numbe
         x: undefined, y: undefined, position: undefined,
         source: remapTerminal(edgeData.source),
         target: remapTerminal(edgeData.target),
+        vertices: Array.isArray(edgeData.vertices)
+          ? edgeData.vertices.map((vertex) => ({
+              ...vertex,
+              x: typeof vertex.x === 'number' ? vertex.x + offsetX : vertex.x,
+              y: typeof vertex.y === 'number' ? vertex.y + offsetY : vertex.y,
+            }))
+          : edgeData.vertices,
       });
     }
     if (addedNodes.length) {
@@ -4079,6 +4585,45 @@ function redo() {
   scheduleSync();
 }
 
+function selectBoardReferenceWrapper(nodeId: string) {
+  if (!graph) return;
+  const node = graph.getCellById(nodeId);
+  if (!node || !graph.isNode(node)) return;
+  graph.resetSelection([node]);
+  refreshSelectedCellState();
+}
+
+function updateSelectedBoardReferenceDisplay(mode: 'card' | 'content') {
+  if (!graph || !isEditable.value) return;
+  const state = selectedCell.value;
+  if (
+    !state
+    || state.kind !== 'node'
+    || !state.isRefBlock
+    || state.refType !== 'page'
+    || !state.canPreviewBoardReference
+  ) return;
+  const node = graph.getCellById(state.id);
+  if (!node || !graph.isNode(node)) return;
+  markBoardOperation('切换画板引用展示');
+  const data = node.getData<Record<string, unknown>>() ?? {};
+  node.setData({ ...data, boardReferenceDisplay: mode });
+  if (mode === 'content') {
+    const size = node.getSize();
+    if (size.width < 420 || size.height < 280) {
+      node.resize(Math.max(480, size.width), Math.max(320, size.height));
+    }
+    node.attr('label/visibility', 'hidden');
+    node.attr('body/fill', '#ffffff');
+  } else {
+    node.attr('label/visibility', 'visible');
+    node.attr('body/fill', '#f5f3ff');
+  }
+  refreshSelectedCellState();
+  updateNodeOverlays();
+  scheduleSync();
+}
+
 function requestRollback(entry: BoardOperationHistoryEntry) {
   rollbackConfirmId.value = entry.id;
   operationNotice.value = '';
@@ -4088,7 +4633,7 @@ function cancelRollback() {
   rollbackConfirmId.value = null;
 }
 
-function rollbackBeforeOperation(entry: BoardOperationHistoryEntry) {
+async function rollbackBeforeOperation(entry: BoardOperationHistoryEntry) {
   if (!graph || !isEditable.value) return;
 
   const current = createOperationSnapshot(serializeGraphData());
@@ -4117,14 +4662,16 @@ function rollbackBeforeOperation(entry: BoardOperationHistoryEntry) {
   applyGraphData(targetData);
 
   // applyGraphData 在 nextTick 完成内部状态恢复；随后强制发出一次持久化更新。
-  nextTick(() => {
-    if (!graph) return;
-    lastSerializedSnapshot = '';
-    lastCommittedOperationSnapshot = operationSnapshotKey(target);
-    emitGraphData();
-    operationNotice.value = `已回退到「${entry.label}」之前；回退前状态也已保留。`;
-    updateUndoRedoState();
-  });
+  await nextTick();
+  if (!graph) return;
+  lastSerializedSnapshot = '';
+  lastCommittedOperationSnapshot = operationSnapshotKey(target);
+  const payload = emitGraphData();
+  if (props.pageId && payload) {
+    await workspaceStore.savePageGraphData(props.pageId, payload);
+  }
+  operationNotice.value = `已回退到「${entry.label}」之前；回退前状态也已保留。`;
+  updateUndoRedoState();
 }
 
 function zoomIn() {
@@ -4592,6 +5139,12 @@ function bindKeyboardShortcuts() {
     return false;
   });
 
+  graph.bindKey(['ctrl+a', 'meta+a'], () => {
+    if (!graph || editingNodeId.value != null || edgeInlineEditing.value) return;
+    graph.resetSelection([...graph.getNodes(), ...graph.getEdges()]);
+    return false;
+  });
+
   graph.bindKey(['ctrl+c', 'meta+c'], () => {
     copySelection();
     return false;
@@ -4771,6 +5324,7 @@ function bindGraphEvents() {
   });
 
   graph.on('node:change:position', ({ node }) => {
+    if (isApplyingExternalData) return;
     updateBoardGroupDrag(node, node.getPosition());
     // Follow solo member moves so the group border hugs the members. Skipped
     // while dragging the whole group as a unit (container already translates).
@@ -4779,6 +5333,7 @@ function bindGraphEvents() {
   });
 
   graph.on('node:change:size', ({ node }) => {
+    if (isApplyingExternalData) return;
     if (!boardGroupDragState) refitBoardGroupForMember(node);
     if (!boardGroupDragState) refitNodeContainerForMember(node);
   });
@@ -5250,6 +5805,11 @@ function preventStageRightButtonDefault(e: MouseEvent) {
 onBeforeUnmount(() => {
   if (syncTimer !== null) {
     window.clearTimeout(syncTimer);
+    syncTimer = null;
+    // Flush the final graph mutation before a nested board reference or page
+    // disappears; otherwise a quick navigation within the debounce window can
+    // drop the last edit.
+    emitGraphData();
   }
   clearMindmapCollapseHideTimer();
   unbindStageCtrlWheel();
@@ -5318,6 +5878,10 @@ watch(
   ([w, h]) => {
     if (!graph || !stageRef.value || w == null || h == null) return;
     graph.resize(w, h);
+    if (props.autoFitOnResize && graph.getCellCount() > 0) {
+      graph.zoomToFit({ padding: 18, maxScale: 1 });
+      graph.centerContent();
+    }
     updateUndoRedoState();
     updateNodeOverlays();
   },
@@ -5570,6 +6134,15 @@ defineExpose({
         <button
           type="button"
           class="tool-button"
+          :disabled="selectedCellsCount === 0 || extractingSelectionBoard"
+          title="把选中节点提取为同级独立画板页；跨出选区的连线保留为对外接口"
+          @click="extractSelectionAsBoardPage"
+        >
+          {{ extractingSelectionBoard ? '提取中…' : '提取为画板页' }}
+        </button>
+        <button
+          type="button"
+          class="tool-button"
           :disabled="!isEditable || groupActionButtonMode === ''"
           :title="groupActionButtonMode === 'ungroup' ? '解散选中的组合（保留成员）' : '将选中的多个节点编为一组'"
           @click="groupActionButtonMode === 'ungroup' ? ungroupSelection() : groupSelection()"
@@ -5684,11 +6257,15 @@ defineExpose({
           :text-mode="overlay.textMode"
           :label="overlay.label"
           :rich-content="overlay.richContent"
+          :board-reference-page-id="overlay.boardReferencePageId"
+          :board-reference-title="overlay.boardReferenceTitle"
+          :host-page-id="pageId"
           :is-editing="editingNodeId === overlay.id"
           :is-editable="isEditable"
           @commit-plain="(text: string) => handleNodeOverlayCommit(overlay.id, text)"
           @cancel="() => handleNodeOverlayCancel(overlay.id)"
           @rich-change="(md: string) => handleRichChange(overlay.id, md)"
+          @select-reference="selectBoardReferenceWrapper(overlay.id)"
         />
 
         <!-- Edge inline text editor -->
@@ -5949,6 +6526,17 @@ defineExpose({
               >
                 从目录同步
               </button>
+              <label v-if="selectedCell.canPreviewBoardReference" class="field inspector-reference-display">
+                <span>画板引用展示</span>
+                <select
+                  :value="selectedCell.boardReferenceDisplay"
+                  :disabled="!isEditable"
+                  @change="updateSelectedBoardReferenceDisplay(($event.target as HTMLSelectElement).value as 'card' | 'content')"
+                >
+                  <option value="card">引用卡片</option>
+                  <option value="content">内容预览（可编辑）</option>
+                </select>
+              </label>
             </div>
 
             <div v-else-if="selectedCell.sourceLocator" class="field">

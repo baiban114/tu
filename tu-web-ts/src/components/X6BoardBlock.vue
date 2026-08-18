@@ -11,6 +11,7 @@ import { useWorkspaceStore } from '@/stores/workspace'
 const props = withDefaults(
   defineProps<{
     mode: 'embedded' | 'page'
+    pageId?: string
     graphData: GraphData
     width?: number | null
     height?: number | null
@@ -28,6 +29,7 @@ const props = withDefaults(
     headingLevel: 0,
     headingText: '',
     pageTitle: '',
+    pageId: '',
   },
 )
 
@@ -158,6 +160,7 @@ function handleRefBlockPickerVisibleChange(visible: boolean) {
     >
       <X6Component
         ref="x6ComponentRef"
+        :page-id="pageId || undefined"
         :graph-data="graphData"
         :width="effectiveWidth"
         :height="effectiveHeight"

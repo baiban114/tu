@@ -2,6 +2,7 @@
 import { computed, nextTick, ref, watch } from 'vue';
 import type { Block } from '@/api/types';
 import TuEditor from './TuEditor.vue';
+import X6BoardReferencePreview from './X6BoardReferencePreview.vue';
 
 interface Props {
   nodeId: string;
@@ -11,6 +12,9 @@ interface Props {
   richContent: string;
   isEditing: boolean;
   isEditable: boolean;
+  boardReferencePageId: string;
+  boardReferenceTitle: string;
+  hostPageId?: string;
 }
 
 const props = defineProps<Props>();
@@ -19,6 +23,7 @@ const emit = defineEmits<{
   (e: 'commit-plain', text: string): void;
   (e: 'cancel'): void;
   (e: 'rich-change', markdown: string): void;
+  (e: 'select-reference'): void;
 }>();
 
 const plainText = ref(props.label);
@@ -114,7 +119,21 @@ defineExpose({
 
 <template>
   <div
-    v-if="textMode === 'rich'"
+    v-if="boardReferencePageId"
+    class="x6-node-overlay x6-node-overlay--board-reference"
+    :style="styleProps"
+  >
+    <X6BoardReferencePreview
+      :page-id="boardReferencePageId"
+      :host-page-id="hostPageId"
+      :title="boardReferenceTitle"
+      :editable="isEditable"
+      @select-wrapper="emit('select-reference')"
+    />
+  </div>
+
+  <div
+    v-else-if="textMode === 'rich'"
     class="x6-node-overlay"
     :class="isEditing ? 'x6-node-overlay--rich-edit' : 'x6-node-overlay--rich-preview'"
     :style="richOverlayStyle"
@@ -151,6 +170,13 @@ defineExpose({
 <style scoped>
 .x6-node-overlay {
   pointer-events: none;
+}
+
+.x6-node-overlay--board-reference {
+  position: absolute;
+  overflow: hidden;
+  pointer-events: auto;
+  z-index: 1000;
 }
 
 .x6-node-overlay--rich-preview {
