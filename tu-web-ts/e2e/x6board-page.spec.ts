@@ -44,6 +44,35 @@ async function pasteImageFile(page: Page) {
   })
 }
 
+async function measureReferencedBoardInterfaceEndpointGap(page: Page, edgeId: string) {
+  return page.evaluate((id) => {
+    const preview = document.querySelector('.x6-board-reference-preview')
+    const dock = preview?.querySelector<SVGCircleElement>(
+      `[data-interface-edge-id="${id}"] .x6-board-reference-preview__interface-dock`,
+    )
+    const edgeElement = preview?.querySelector<SVGGElement>(
+      `.x6-edge[data-cell-id="${CSS.escape(id)}"]`,
+    )
+    const path = edgeElement?.querySelector<SVGPathElement>('.x6-edge-connection')
+      ?? edgeElement?.querySelector<SVGPathElement>('path')
+    const pathMatrix = path?.getScreenCTM()
+    if (!dock || !path || !pathMatrix) return null
+
+    const edgeEnds = [0, path.getTotalLength()].map((length) => {
+      const point = path.getPointAtLength(length)
+      return new DOMPoint(point.x, point.y).matrixTransform(pathMatrix)
+    })
+    const dockRect = dock.getBoundingClientRect()
+    const dockCenter = {
+      x: dockRect.left + dockRect.width / 2,
+      y: dockRect.top + dockRect.height / 2,
+    }
+    return Math.min(...edgeEnds.map((point) => (
+      Math.hypot(dockCenter.x - point.x, dockCenter.y - point.y)
+    )))
+  }, edgeId)
+}
+
 test('creates an x6board page without outer content scroll', async ({ page }) => {
   await page.getByTitle('新建页面').click()
   await page.getByRole('menuitem', { name: '画板' }).click()
@@ -501,6 +530,45 @@ test('operation manager persists 设为子元素 and restores the board to befor
   })).toEqual({ parent: null, boxes: before.map((item) => item.bbox) })
 })
 
+test('operation manager displays 30 rollback records per page', async ({ page }) => {
+  await openFreshBoard(page)
+
+  const boardTitle = '三十条回退记录画板'
+  const titleInput = page.locator('.board-canvas-shell__title-input')
+  await titleInput.fill(boardTitle)
+  await titleInput.press('Enter')
+  await expect(page.getByRole('treeitem', { name: boardTitle })).toBeVisible()
+
+  await expect.poll(() => page.evaluate((title) => {
+    const state = JSON.parse(window.localStorage.getItem('tu:mock-state') || '{}')
+    return state.pages?.some((item: { title?: string }) => item.title === title) ?? false
+  }, boardTitle)).toBe(true)
+
+  await page.evaluate((title) => {
+    const storageKey = 'tu:mock-state'
+    const state = JSON.parse(window.localStorage.getItem(storageKey) || '{}')
+    const boardPage = state.pages.find((item: { title?: string }) => item.title === title)
+    const embed = state.contents?.[boardPage.id]?.embeds?.[0]
+    const cells = structuredClone(embed.graphData?.cells ?? [])
+    embed.graphData.operationHistory = Array.from({ length: 30 }, (_, index) => ({
+      id: `board-operation-page-size-${index}`,
+      label: `测试操作 ${index + 1}`,
+      createdAt: Date.now() - index,
+      before: { cells: structuredClone(cells) },
+    }))
+    window.localStorage.setItem(storageKey, JSON.stringify(state))
+  }, boardTitle)
+
+  await page.reload()
+  await page.getByRole('treeitem', { name: boardTitle }).click()
+  await expect(page.locator('.x6-stage')).toBeVisible()
+  await page.locator('.x6-inspector-tab', { hasText: '操作' }).click()
+
+  await expect(page.locator('.x6-operation-item')).toHaveCount(30)
+  await expect(page.locator('.x6-operation-manager__pagination')).toHaveCount(0)
+  await expect(page.locator('.x6-operation-manager__header')).toContainText('每页显示 30 条')
+})
+
 test('rollback remains after immediately switching to another board and back', async ({ page }) => {
   await openFreshBoard(page)
 
@@ -611,7 +679,12 @@ test('extracts selected nodes as a standalone board and turns crossing edges int
       referenceLabel: reference?.attr('label/text'),
       referencePageId: reference?.getData()?.refBlockId,
       crossingSource: crossingEdge?.getSource()?.cell,
+      crossingSourcePort: crossingEdge?.getSource()?.port,
       crossingTarget: crossingEdge?.getTarget()?.cell,
+      extractedInterfaces: reference?.getData()?.extractedInterfaces,
+      interfacePorts: reference?.getPorts()
+        .filter((port: any) => String(port.id).startsWith('board-interface-'))
+        .map((port: any) => port.id),
     }
   })).toEqual({
     nodes: expect.arrayContaining(['x6-decision-node', 'x6-finish-node']),
@@ -620,7 +693,15 @@ test('extracts selected nodes as a standalone board and turns crossing edges int
     referenceLabel: '画板引用：开始 等组件',
     referencePageId: expect.any(String),
     crossingSource: expect.stringMatching(/^board-page-ref-/),
+    crossingSourcePort: 'board-interface-x6-edge-2',
     crossingTarget: 'x6-decision-node',
+    extractedInterfaces: [expect.objectContaining({
+      edgeId: 'x6-edge-2',
+      portId: 'board-interface-x6-edge-2',
+      side: expect.stringMatching(/^(top|right|bottom|left)$/),
+      ratio: expect.any(Number),
+    })],
+    interfacePorts: ['board-interface-x6-edge-2'],
   })
   await expect(page.locator('.x6-node[data-cell-id="x6-start-node"]')).toHaveCount(0)
   await expect(page.locator('.x6-node[data-cell-id="x6-process-node"]')).toHaveCount(0)
@@ -783,12 +864,15 @@ test('board reference content mode renders proportionally and writes edits back 
     g.select(g.getCellById('x6-process-node'))
   })
   await page.getByRole('button', { name: '提取为画板页' }).click()
+  await expect(page.locator('.page-tree .el-tree-node.is-current .node-label'))
+    .not.toHaveText('未命名画板')
   const extractedTitle = await page.locator('.page-tree .el-tree-node.is-current .node-label').textContent()
   expect(extractedTitle).toBeTruthy()
 
   await page.locator('.page-tree .tree-node').filter({ hasText: '未命名画板' }).first().click()
   const referenceId = await page.evaluate(() => {
-    const g = (window as any).__x6graph
+    const g = (window as any).__x6graph;
+    (window as any).__outerBoardGraph = g
     return g.getNodes().find((node: any) => node.getData()?.extractedBoardReference)?.id
   })
   expect(referenceId).toBeTruthy()
@@ -799,6 +883,13 @@ test('board reference content mode renders proportionally and writes edits back 
   await expect(preview).toBeVisible()
   await expect(preview.locator('.x6-node[data-cell-id="x6-start-node"]')).toBeVisible()
   await expect(preview.locator('.x6-node[data-cell-id="x6-process-node"]')).toBeVisible()
+
+  // The editable preview intercepts the outer X6 node click. Clicking its
+  // wrapper must still create the same native transform handles as a normal node.
+  await page.evaluate(() => (window as any).__outerBoardGraph.cleanSelection())
+  await expect(page.locator('.x6-widget-transform-resize')).toHaveCount(0)
+  await preview.locator('.x6-board-reference-preview__header').click()
+  await expect(page.locator('.x6-widget-transform-resize')).toHaveCount(8)
 
   const geometry = await page.evaluate((id) => {
     const wrapper = document.querySelector(`.x6-node[data-cell-id="${id}"]`)?.getBoundingClientRect()
@@ -822,6 +913,201 @@ test('board reference content mode renders proportionally and writes edits back 
   expect(Math.abs(geometry!.preview.width - geometry!.wrapper.width)).toBeLessThanOrEqual(8)
   expect(Math.abs(geometry!.preview.height - geometry!.wrapper.height)).toBeLessThanOrEqual(8)
 
+  const interfaceDock = preview.locator('[data-interface-edge-id="x6-edge-2"]')
+  await expect(interfaceDock).toBeVisible()
+  const dockGeometry = await interfaceDock.evaluate((element) => {
+    const dock = element.getBoundingClientRect()
+    const wrapper = element.closest('.x6-board-reference-preview')?.getBoundingClientRect()
+    if (!wrapper) return null
+    return {
+      distanceToBorder: Math.min(
+        Math.abs(dock.left - wrapper.left),
+        Math.abs(dock.right - wrapper.right),
+        Math.abs(dock.top - wrapper.top),
+        Math.abs(dock.bottom - wrapper.bottom),
+      ),
+    }
+  })
+  expect(dockGeometry).not.toBeNull()
+  expect(dockGeometry!.distanceToBorder).toBeLessThanOrEqual(6)
+  await expect.poll(async () => {
+    return measureReferencedBoardInterfaceEndpointGap(page, 'x6-edge-2')
+  }).toBeLessThanOrEqual(4)
+
+  const previewBeforeDrag = await preview.boundingBox()
+  expect(previewBeforeDrag).not.toBeNull()
+  const header = preview.locator('.x6-board-reference-preview__header')
+  const headerBox = await header.boundingBox()
+  expect(headerBox).not.toBeNull()
+  await header.evaluate((element, points) => {
+    const pointerId = 71
+    element.dispatchEvent(new PointerEvent('pointerdown', {
+      bubbles: true,
+      cancelable: true,
+      button: 0,
+      pointerId,
+      clientX: points.startX,
+      clientY: points.startY,
+    }))
+    window.dispatchEvent(new PointerEvent('pointermove', {
+      pointerId,
+      clientX: points.endX,
+      clientY: points.endY,
+    }))
+    window.dispatchEvent(new PointerEvent('pointerup', {
+      pointerId,
+      clientX: points.endX,
+      clientY: points.endY,
+    }))
+  }, {
+    startX: headerBox!.x + headerBox!.width / 2,
+    startY: headerBox!.y + headerBox!.height / 2,
+    endX: headerBox!.x + headerBox!.width / 2 + 72,
+    endY: headerBox!.y + headerBox!.height / 2 + 44,
+  })
+  await expect.poll(async () => {
+    const moved = await preview.boundingBox()
+    if (!moved) return null
+    return {
+      dx: Math.round(moved.x - previewBeforeDrag!.x),
+      dy: Math.round(moved.y - previewBeforeDrag!.y),
+    }
+  }).toEqual({ dx: 72, dy: 44 })
+  await expect(preview.locator('.x6-node[data-cell-id="x6-start-node"]')).toBeVisible()
+
+  const previewBeforeResize = await preview.boundingBox()
+  expect(previewBeforeResize).not.toBeNull()
+  const nativeResizeHandles = page.locator('.x6-widget-transform-resize')
+  await expect(nativeResizeHandles).toHaveCount(8)
+  for (const position of ['top-left', 'top-right', 'bottom-right', 'bottom-left']) {
+    await expect(page.locator(`.x6-widget-transform-resize[data-position="${position}"]`)).toHaveCount(1)
+  }
+  const resizeHandle = page.locator('.x6-widget-transform-resize[data-position="top-right"]')
+  await expect(resizeHandle).toBeVisible()
+  const resizeHandleBox = await resizeHandle.boundingBox()
+  expect(resizeHandleBox).not.toBeNull()
+  await page.mouse.move(
+    resizeHandleBox!.x + resizeHandleBox!.width / 2,
+    resizeHandleBox!.y + resizeHandleBox!.height / 2,
+  )
+  await page.mouse.down()
+  await page.mouse.move(
+    resizeHandleBox!.x + resizeHandleBox!.width / 2 + 64,
+    resizeHandleBox!.y + resizeHandleBox!.height / 2 - 40,
+    { steps: 6 },
+  )
+  await page.mouse.up()
+  await expect.poll(async () => {
+    const resized = await preview.boundingBox()
+    if (!resized) return false
+    const dy = resized.y - previewBeforeResize!.y
+    const dw = resized.width - previewBeforeResize!.width
+    const dh = resized.height - previewBeforeResize!.height
+    return dy < -30 && dw > 50 && dh > 30 && Math.abs(dy + dh) <= 2
+  }).toBe(true)
+  await expect(preview.locator('.x6-node[data-cell-id="x6-start-node"]')).toBeVisible()
+  await expect.poll(async () => {
+    return measureReferencedBoardInterfaceEndpointGap(page, 'x6-edge-2')
+  }).toBeLessThanOrEqual(4)
+
+  const previewBeforeNorthWestResize = await preview.boundingBox()
+  expect(previewBeforeNorthWestResize).not.toBeNull()
+  const northWestHandle = page.locator('.x6-widget-transform-resize[data-position="top-left"]')
+  const northWestHandleBox = await northWestHandle.boundingBox()
+  expect(northWestHandleBox).not.toBeNull()
+  await page.mouse.move(
+    northWestHandleBox!.x + northWestHandleBox!.width / 2,
+    northWestHandleBox!.y + northWestHandleBox!.height / 2,
+  )
+  await page.mouse.down()
+  await page.mouse.move(
+    northWestHandleBox!.x + northWestHandleBox!.width / 2 - 24,
+    northWestHandleBox!.y + northWestHandleBox!.height / 2 - 20,
+    { steps: 4 },
+  )
+  await page.mouse.up()
+  await expect.poll(async () => {
+    const resized = await preview.boundingBox()
+    if (!resized) return false
+    const dx = resized.x - previewBeforeNorthWestResize!.x
+    const dy = resized.y - previewBeforeNorthWestResize!.y
+    const dw = resized.width - previewBeforeNorthWestResize!.width
+    const dh = resized.height - previewBeforeNorthWestResize!.height
+    return dx < -15
+      && dy < -15
+      && dw > 15
+      && dh > 15
+      && Math.abs(dx + dw) <= 2
+      && Math.abs(dy + dh) <= 2
+  }).toBe(true)
+
+  const movedPreviewBox = await preview.boundingBox()
+  expect(movedPreviewBox).not.toBeNull()
+  const dockHandle = interfaceDock.locator('.x6-board-reference-preview__interface-dock')
+  const dockHandleBox = await dockHandle.boundingBox()
+  expect(dockHandleBox).not.toBeNull()
+  await dockHandle.evaluate((element, points) => {
+    const pointerId = 91
+    element.dispatchEvent(new PointerEvent('pointerdown', {
+      bubbles: true,
+      cancelable: true,
+      button: 0,
+      pointerId,
+      clientX: points.startX,
+      clientY: points.startY,
+    }))
+    window.dispatchEvent(new PointerEvent('pointermove', {
+      pointerId,
+      clientX: points.startX - 8,
+      clientY: points.startY,
+    }))
+    window.dispatchEvent(new PointerEvent('pointermove', {
+      pointerId,
+      clientX: points.endX,
+      clientY: points.endY,
+    }))
+    window.dispatchEvent(new PointerEvent('pointerup', {
+      pointerId,
+      clientX: points.endX,
+      clientY: points.endY,
+    }))
+  }, {
+    startX: dockHandleBox!.x + dockHandleBox!.width / 2,
+    startY: dockHandleBox!.y + dockHandleBox!.height / 2,
+    endX: movedPreviewBox!.x + 2,
+    endY: movedPreviewBox!.y + movedPreviewBox!.height * 0.66,
+  })
+
+  await expect.poll(async () => {
+    const dock = await dockHandle.boundingBox()
+    if (!dock) return null
+    return Math.round((dock.x + dock.width / 2) - movedPreviewBox!.x)
+  }).toBeLessThanOrEqual(6)
+  const interfaceAlignment = await page.evaluate(({ id, portId }) => {
+    const previewElement = document.querySelector('.x6-board-reference-preview')
+    const dock = previewElement?.querySelector('.x6-board-reference-preview__interface-dock')?.getBoundingClientRect()
+    const outerEdge = Array.from(document.querySelectorAll(`.x6-edge[data-cell-id="${id}"]`))
+      .find((element) => !previewElement?.contains(element))
+    const path = outerEdge?.querySelector<SVGPathElement>('.x6-edge-connection')
+      ?? outerEdge?.querySelector<SVGPathElement>('path')
+    const matrix = path?.getScreenCTM()
+    const edgeEnds = path && matrix
+      ? [0, path.getTotalLength()].map((length) => {
+        const point = path.getPointAtLength(length)
+        return new DOMPoint(point.x, point.y).matrixTransform(matrix)
+      })
+      : []
+    if (!dock || !edgeEnds.length) return null
+    const dockCenter = { x: dock.left + dock.width / 2, y: dock.top + dock.height / 2 }
+    return {
+      edgeDistance: Math.min(...edgeEnds.map((point) => (
+        Math.hypot(dockCenter.x - point.x, dockCenter.y - point.y)
+      ))),
+    }
+  }, { id: 'x6-edge-2' })
+  expect(interfaceAlignment).not.toBeNull()
+  expect(interfaceAlignment!.edgeDistance).toBeLessThanOrEqual(12)
+
   await expect.poll(() => page.evaluate(() => (
     (window as any).__x6graph?.getCellById('x6-start-node')?.id
   ))).toBe('x6-start-node')
@@ -835,6 +1121,22 @@ test('board reference content mode renders proportionally and writes edits back 
   await expect.poll(() => page.evaluate(() => (
     (window as any).__x6graph?.getCellById('x6-start-node')?.attr('label/text')
   ))).toBe('主机（引用内同步）')
+
+  const restoredSourceTreeNode = page.locator('.page-tree .tree-node').filter({ hasText: '未命名画板' }).first()
+  await expect(async () => {
+    await restoredSourceTreeNode.click()
+    await expect(page.locator('.page-tree .el-tree-node.is-current .node-label')).toHaveText('未命名画板')
+  }).toPass()
+  const restoredPreview = page.locator('.x6-board-reference-preview')
+  await expect(restoredPreview).toBeVisible()
+  await expect.poll(async () => {
+    const restoredBox = await restoredPreview.boundingBox()
+    const restoredDock = await restoredPreview
+      .locator('[data-interface-edge-id="x6-edge-2"] .x6-board-reference-preview__interface-dock')
+      .boundingBox()
+    if (!restoredBox || !restoredDock) return null
+    return Math.round((restoredDock.x + restoredDock.width / 2) - restoredBox.x)
+  }).toBeLessThanOrEqual(6)
 })
 
 test('deleting a selected group container with the Delete key dissolves it without crashing', async ({ page }) => {

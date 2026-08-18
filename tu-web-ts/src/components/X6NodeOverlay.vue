@@ -15,6 +15,13 @@ interface Props {
   boardReferencePageId: string;
   boardReferenceTitle: string;
   hostPageId?: string;
+  boardReferenceInterfaces: Array<{
+    edgeId: string;
+    portId: string;
+    direction: 'in' | 'out';
+    side: 'top' | 'right' | 'bottom' | 'left';
+    ratio: number;
+  }>;
 }
 
 const props = defineProps<Props>();
@@ -24,6 +31,16 @@ const emit = defineEmits<{
   (e: 'cancel'): void;
   (e: 'rich-change', markdown: string): void;
   (e: 'select-reference'): void;
+  (e: 'drag-reference-start'): void;
+  (e: 'drag-reference-move', delta: { dx: number; dy: number }): void;
+  (e: 'drag-reference-end'): void;
+  (e: 'drag-interface-start', portId: string): void;
+  (e: 'drag-interface-move', payload: {
+    portId: string;
+    side: 'top' | 'right' | 'bottom' | 'left';
+    ratio: number;
+  }): void;
+  (e: 'drag-interface-end', portId: string): void;
 }>();
 
 const plainText = ref(props.label);
@@ -128,7 +145,14 @@ defineExpose({
       :host-page-id="hostPageId"
       :title="boardReferenceTitle"
       :editable="isEditable"
+      :interfaces="boardReferenceInterfaces"
       @select-wrapper="emit('select-reference')"
+      @drag-wrapper-start="emit('drag-reference-start')"
+      @drag-wrapper-move="(delta) => emit('drag-reference-move', delta)"
+      @drag-wrapper-end="emit('drag-reference-end')"
+      @drag-interface-start="(portId) => emit('drag-interface-start', portId)"
+      @drag-interface-move="(payload) => emit('drag-interface-move', payload)"
+      @drag-interface-end="(portId) => emit('drag-interface-end', portId)"
     />
   </div>
 

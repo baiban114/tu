@@ -41,7 +41,6 @@ import type {
   GraphData,
 } from '@/api/types';
 import type { PageItem } from '@/api/page';
-import { DEFAULT_PAGE_SIZE } from '@/constants/pagination';
 import type { UmlClassDefinition, UmlModel } from '@/stores/objectModel';
 import {
   X6_MATERIAL_MIME,
@@ -85,6 +84,9 @@ import {
   getCellSize,
   extractNodeLabel,
   createNodePorts,
+  createBoardReferencePorts,
+  getBoardInterfacePortArgs,
+  type BoardInterfaceSide,
   createNodeMetadata,
   createEdgeMetadata,
   createUmlClassNode,
@@ -402,6 +404,7 @@ const inspectorZAxisOpen = ref(true);
 const toolbarVisible = ref(props.toolbarEnabled);
 const inspectorVisible = ref(props.inspectorEnabled && props.inspectorDefaultVisible);
 const BOARD_OPERATION_HISTORY_LIMIT = 30;
+const BOARD_OPERATION_HISTORY_PAGE_SIZE = 30;
 const operationHistory = ref<BoardOperationHistoryEntry[]>([]);
 const operationHistoryPage = ref(1);
 const rollbackConfirmId = ref<string | null>(null);
@@ -411,12 +414,12 @@ let pendingOperationBefore: BoardOperationSnapshot | null = null;
 let lastCommittedOperationSnapshot = '';
 
 const pagedOperationHistory = computed(() => {
-  const start = (operationHistoryPage.value - 1) * DEFAULT_PAGE_SIZE;
-  return operationHistory.value.slice(start, start + DEFAULT_PAGE_SIZE);
+  const start = (operationHistoryPage.value - 1) * BOARD_OPERATION_HISTORY_PAGE_SIZE;
+  return operationHistory.value.slice(start, start + BOARD_OPERATION_HISTORY_PAGE_SIZE);
 });
 
 const operationHistoryPageCount = computed(() => (
-  Math.max(1, Math.ceil(operationHistory.value.length / DEFAULT_PAGE_SIZE))
+  Math.max(1, Math.ceil(operationHistory.value.length / BOARD_OPERATION_HISTORY_PAGE_SIZE))
 ));
 type CanvasInteractionMode = 'select' | 'pan';
 const canvasInteractionMode = ref<CanvasInteractionMode>('select');
@@ -426,6 +429,12 @@ let stagePointerInside = false;
 let mindmapDragActiveNodeId: string | null = null;
 let mindmapDragMoved = false;
 let mindmapDragSessionStarted = false;
+let boardReferenceDragNodeId: string | null = null;
+let boardInterfaceDrag: { nodeId: string; portId: string } | null = null;
+const referenceInterfaceOriginalTerminals = new Map<string, {
+  direction: ExtractedBoardInterfaceDirection;
+  terminal: unknown;
+}>();
 
 // Node overlay state — unified for plain and rich text editing
 const editingNodeId = ref<string | null>(null);
@@ -437,6 +446,13 @@ const nodeOverlays = ref<Array<{
   richContent: string;
   boardReferencePageId: string;
   boardReferenceTitle: string;
+  boardReferenceInterfaces: Array<{
+    edgeId: string;
+    portId: string;
+    direction: ExtractedBoardInterfaceDirection;
+    side: BoardInterfaceSide;
+    ratio: number;
+  }>;
 }>>([]);
 const graphSourceRegion = ref<{
   kind: string;
@@ -791,6 +807,16 @@ function stripVolatileCellContent(data: GraphData): GraphData {
   } as GraphData;
 }
 
+function restoreReferenceInterfaceTerminal(cell: CellData): CellData {
+  const original = referenceInterfaceOriginalTerminals.get(String(cell.id));
+  if (!original) return cell;
+  const terminal = JSON.parse(JSON.stringify(original.terminal)) as unknown;
+  return {
+    ...cell,
+    ...(original.direction === 'out' ? { target: terminal } : { source: terminal }),
+  } as CellData;
+}
+
 function serializeGraphData(): GraphData {
   if (!graph) {
     return { cells: [], nodes: [], edges: [], uml: objectModelStore.model };
@@ -799,12 +825,12 @@ function serializeGraphData(): GraphData {
   const nodes = graph.getNodes().map((node) => node.toJSON() as CellData);
   const edges = graph.getEdges()
     .filter((edge) => edge.id !== MINDMAP_DRAG_PREVIEW_EDGE_ID)
-    .map((edge) => edge.toJSON() as CellData);
+    .map((edge) => restoreReferenceInterfaceTerminal(edge.toJSON() as CellData));
   const blueprintMeta = props.graphData?.blueprintMeta ?? undefined;
   return {
-    cells: (graph.toJSON().cells as CellData[]).filter(
-      (cell) => cell.id !== MINDMAP_DRAG_PREVIEW_EDGE_ID,
-    ),
+    cells: (graph.toJSON().cells as CellData[])
+      .filter((cell) => cell.id !== MINDMAP_DRAG_PREVIEW_EDGE_ID)
+      .map(restoreReferenceInterfaceTerminal),
     nodes,
     edges,
     ...(blueprintMeta ? { blueprintMeta } : {}),
@@ -849,7 +875,7 @@ function loadOperationHistory(data?: GraphData) {
     : [];
   operationHistoryPage.value = Math.min(
     operationHistoryPage.value,
-    Math.max(1, Math.ceil(operationHistory.value.length / DEFAULT_PAGE_SIZE)),
+    Math.max(1, Math.ceil(operationHistory.value.length / BOARD_OPERATION_HISTORY_PAGE_SIZE)),
   );
   rollbackConfirmId.value = null;
 }
@@ -1296,6 +1322,26 @@ function updateNodeOverlays() {
         boardReferenceTitle: typeof data.refBlockId === 'string'
           ? buildRefSourceLabel(data.refBlockId, data.refType === 'page' ? 'page' : 'block')
           : '',
+        boardReferenceInterfaces: Array.isArray(data.extractedInterfaces)
+          ? data.extractedInterfaces.flatMap((item: unknown) => {
+            if (!item || typeof item !== 'object') return [];
+            const value = item as Record<string, unknown>;
+            const side = value.side;
+            if (
+              typeof value.edgeId !== 'string'
+              || typeof value.portId !== 'string'
+              || typeof value.ratio !== 'number'
+              || !['top', 'right', 'bottom', 'left'].includes(String(side))
+            ) return [];
+            return [{
+              edgeId: value.edgeId,
+              portId: value.portId,
+              direction: value.direction === 'in' ? 'in' : 'out',
+              side: side as BoardInterfaceSide,
+              ratio: Math.min(0.92, Math.max(0.08, value.ratio)),
+            }];
+          })
+          : [],
       };
     });
   updateGraphSourceRegion();
@@ -2124,6 +2170,7 @@ function applyGraphData(data?: GraphData, fitView = false) {
   lastStructuralSnapshot = structuralSnapshot;
   graph.fromJSON({ cells: normalizedData.cells ?? [] });
   restoreLoadedNodeWorldPositions(normalizedData);
+  const migratedBoardReferenceInterfaces = ensureBoardReferenceInterfacePorts();
   graph.cleanSelection();
   graph.getEdges().forEach((edge) => ensureEdgeHitTarget(edge));
   syncTaskFlowEdgeState();
@@ -2159,7 +2206,7 @@ function applyGraphData(data?: GraphData, fitView = false) {
       }
     }
     isApplyingExternalData = false;
-    if (isMindmap.value) {
+    if (isMindmap.value || migratedBoardReferenceInterfaces) {
       const laidOut = normalizeGraphData(serializeGraphData());
       const laidOutSnapshot = JSON.stringify(laidOut);
       if (laidOutSnapshot !== snapshot) {
@@ -2368,6 +2415,94 @@ interface ExtractedBoardInterfaceData {
   externalCellId: string;
   externalLabel: string;
   originalTerminal: unknown;
+  side: BoardInterfaceSide;
+  ratio: number;
+  portId: string;
+}
+
+/** Upgrade references extracted before dedicated border ports were introduced. */
+function ensureBoardReferenceInterfacePorts(): boolean {
+  if (!graph) return false;
+  let changed = false;
+  graph.getNodes().forEach((node) => {
+    const data = node.getData<Record<string, unknown>>() ?? {};
+    if (!data.extractedBoardReference || !Array.isArray(data.extractedInterfaces)) return;
+    const rawItems = data.extractedInterfaces.filter((item): item is Record<string, unknown> => (
+      Boolean(item) && typeof item === 'object'
+    ));
+    if (!rawItems.length) return;
+    const normalizedItems = rawItems.flatMap((item, index) => {
+      const nested = item.boardInterface && typeof item.boardInterface === 'object'
+        ? item.boardInterface as Record<string, unknown>
+        : {};
+      const edgeId = typeof item.edgeId === 'string' ? item.edgeId : '';
+      if (!edgeId) return [];
+      const direction: ExtractedBoardInterfaceDirection = item.direction === 'in' || nested.direction === 'in'
+        ? 'in'
+        : 'out';
+      const rawSide = item.side ?? nested.side;
+      const side: BoardInterfaceSide = ['top', 'right', 'bottom', 'left'].includes(String(rawSide))
+        ? rawSide as BoardInterfaceSide
+        : direction === 'in' ? 'left' : 'right';
+      const rawRatio = typeof item.ratio === 'number'
+        ? item.ratio
+        : typeof nested.ratio === 'number' ? nested.ratio : (index + 1) / (rawItems.length + 1);
+      const ratio = Math.min(0.92, Math.max(0.08, rawRatio));
+      const portId = typeof item.portId === 'string'
+        ? item.portId
+        : typeof nested.portId === 'string' ? nested.portId : `board-interface-${edgeId}`;
+      return [{ ...item, edgeId, portId, direction, side, ratio }];
+    });
+    if (!normalizedItems.length) return;
+
+    const needsMigration = JSON.stringify(normalizedItems) !== JSON.stringify(rawItems);
+    const interfacePorts = normalizedItems.map(({ portId, side, ratio }) => ({ portId, side, ratio }));
+    node.setProp('ports', createBoardReferencePorts(interfacePorts));
+    normalizedItems.forEach((item) => {
+      const edge = graph?.getCellById(item.edgeId);
+      if (!edge || !graph?.isEdge(edge)) return;
+      const source = edge.getSource();
+      const target = edge.getTarget();
+      if (
+        getCellIdFromTerminal(source) === node.id
+        && (source as unknown as Record<string, unknown>).port !== item.portId
+      ) {
+        edge.setSource({ ...source, cell: node.id, port: item.portId });
+        changed = true;
+      }
+      if (
+        getCellIdFromTerminal(target) === node.id
+        && (target as unknown as Record<string, unknown>).port !== item.portId
+      ) {
+        edge.setTarget({ ...target, cell: node.id, port: item.portId });
+        changed = true;
+      }
+    });
+    if (needsMigration) {
+      node.setData({ ...data, extractedInterfaces: normalizedItems });
+      changed = true;
+    }
+  });
+  return changed;
+}
+
+function resolveBoardInterfaceDock(
+  point: { x: number; y: number },
+  bounds: { minX: number; minY: number; maxX: number; maxY: number },
+): { side: BoardInterfaceSide; ratio: number } {
+  const overflows: Array<{ side: BoardInterfaceSide; distance: number }> = [
+    { side: 'left', distance: bounds.minX - point.x },
+    { side: 'right', distance: point.x - bounds.maxX },
+    { side: 'top', distance: bounds.minY - point.y },
+    { side: 'bottom', distance: point.y - bounds.maxY },
+  ];
+  const side = overflows.sort((left, right) => right.distance - left.distance)[0]?.side ?? 'right';
+  const width = Math.max(1, bounds.maxX - bounds.minX);
+  const height = Math.max(1, bounds.maxY - bounds.minY);
+  const rawRatio = side === 'left' || side === 'right'
+    ? (point.y - bounds.minY) / height
+    : (point.x - bounds.minX) / width;
+  return { side, ratio: Math.min(0.92, Math.max(0.08, rawRatio)) };
 }
 
 function getCellIdFromTerminal(terminal: unknown): string {
@@ -2574,12 +2709,16 @@ function buildSelectionBoardGraphData(): GraphData | null {
     const internalNode = sourceInside ? sourceNode : targetNode;
     const externalNode = sourceInside ? targetNode : sourceNode;
     const interfacePoint = computeExternalInterfacePoint(internalNode, externalNode, bounds);
+    const dock = resolveBoardInterfaceDock(interfacePoint, bounds);
     const originalTerminal = direction === 'out' ? json.target : json.source;
     const interfaceData: ExtractedBoardInterfaceData = {
       direction,
       externalCellId: externalNode.id,
       externalLabel: getBoardNodeLabel(externalNode),
       originalTerminal,
+      side: dock.side,
+      ratio: dock.ratio,
+      portId: `board-interface-${edge.id}`,
     };
     const existingData = json.data && typeof json.data === 'object' ? json.data : {};
     json.data = { ...existingData, boardInterface: interfaceData };
@@ -2691,8 +2830,24 @@ function replaceSelectionWithBoardReference(
   const refHeight = 84;
   const refId = createId('board-page-ref');
   const interfaceSummary = extractedData.edges
-    .map((edge) => ({ edgeId: edge.id, boardInterface: edge.data?.boardInterface }))
+    .map((edge) => {
+      const boardInterface = edge.data?.boardInterface as ExtractedBoardInterfaceData | undefined;
+      return {
+        edgeId: edge.id,
+        portId: boardInterface?.portId ?? `board-interface-${edge.id}`,
+        direction: boardInterface?.direction,
+        side: boardInterface?.side,
+        ratio: boardInterface?.ratio,
+        boardInterface,
+      };
+    })
     .filter((item) => item.boardInterface && typeof item.boardInterface === 'object');
+  const interfacePorts = interfaceSummary.flatMap((item) => (
+    item.side && typeof item.ratio === 'number'
+      ? [{ portId: item.portId, side: item.side, ratio: item.ratio }]
+      : []
+  ));
+  const interfacesByEdgeId = new Map(interfaceSummary.map((item) => [item.edgeId, item]));
 
   markBoardOperation('提取为画板页');
   g.startBatch('extract-selection-as-board-page');
@@ -2705,7 +2860,7 @@ function replaceSelectionWithBoardReference(
       y: minY + Math.max(0, (maxY - minY - refHeight) / 2),
       width: refWidth,
       height: refHeight,
-      ports: createNodePorts(),
+      ports: createBoardReferencePorts(interfacePorts),
       attrs: {
         body: {
           fill: '#f5f3ff',
@@ -2737,8 +2892,12 @@ function replaceSelectionWithBoardReference(
     // Preserve the source graph's external connectivity by reconnecting every
     // crossing edge to the new reference node before the extracted nodes leave.
     boundaryEdges.forEach(({ edge, direction }) => {
-      if (direction === 'out') edge.setSource({ cell: refId });
-      else edge.setTarget({ cell: refId });
+      const boardInterface = interfacesByEdgeId.get(edge.id);
+      const terminal = boardInterface?.portId
+        ? { cell: refId, port: boardInterface.portId }
+        : { cell: refId };
+      if (direction === 'out') edge.setSource(terminal);
+      else edge.setTarget(terminal);
     });
 
     // Detach selected nodes from any non-selected parent so that removing them
@@ -3976,6 +4135,8 @@ function pasteSelection() {
     pendingOperationBefore = null;
     return;
   }
+
+  referenceInterfaceOriginalTerminals.clear();
   graph.resetSelection(pasted);
   refreshSelectedCellState();
   scheduleSync();
@@ -4590,7 +4751,115 @@ function selectBoardReferenceWrapper(nodeId: string) {
   const node = graph.getCellById(nodeId);
   if (!node || !graph.isNode(node)) return;
   graph.resetSelection([node]);
+  // The editable preview overlay consumes the native `node:click`, so the
+  // Transform plugin cannot create its standard resize handles automatically.
+  // Reuse the same native widget explicitly after selecting the wrapper.
+  if (isEditable.value) {
+    graph.clearTransformWidgets();
+    graph.createTransformWidget(node);
+  }
   refreshSelectedCellState();
+}
+
+function startBoardReferenceDrag(nodeId: string) {
+  if (!graph || !isEditable.value || boardReferenceDragNodeId) return;
+  const node = graph.getCellById(nodeId);
+  if (!node || !graph.isNode(node)) return;
+  boardReferenceDragNodeId = nodeId;
+  graph.resetSelection([node]);
+  markBoardOperation('移动画板引用');
+  startUserInteraction();
+}
+
+function moveBoardReference(nodeId: string, delta: { dx: number; dy: number }) {
+  if (!graph || boardReferenceDragNodeId !== nodeId) return;
+  const node = graph.getCellById(nodeId);
+  if (!node || !graph.isNode(node)) return;
+  const zoom = Math.max(0.01, graph.zoom());
+  node.translate(delta.dx / zoom, delta.dy / zoom);
+  updateNodeOverlays();
+}
+
+function finishBoardReferenceDrag(nodeId: string) {
+  if (boardReferenceDragNodeId !== nodeId) return;
+  boardReferenceDragNodeId = null;
+  finishUserInteraction();
+}
+
+function startBoardInterfaceDrag(nodeId: string, portId: string) {
+  if (!graph || !isEditable.value || boardInterfaceDrag) return;
+  const node = graph.getCellById(nodeId);
+  if (!node || !graph.isNode(node)) return;
+  boardInterfaceDrag = { nodeId, portId };
+  graph.resetSelection([node]);
+  markBoardOperation('调整画板接口锚点');
+  startUserInteraction();
+}
+
+function moveBoardInterface(
+  nodeId: string,
+  payload: { portId: string; side: BoardInterfaceSide; ratio: number },
+) {
+  if (
+    !graph
+    || boardInterfaceDrag?.nodeId !== nodeId
+    || boardInterfaceDrag.portId !== payload.portId
+  ) return;
+  const node = graph.getCellById(nodeId);
+  if (!node || !graph.isNode(node)) return;
+  const data = node.getData<Record<string, unknown>>() ?? {};
+  if (!Array.isArray(data.extractedInterfaces)) return;
+  const ratio = Math.min(0.92, Math.max(0.08, payload.ratio));
+  let matched = false;
+  let matchedEdgeId = '';
+  let matchedDirection: ExtractedBoardInterfaceDirection = 'out';
+  const nextInterfaces = data.extractedInterfaces.map((rawItem) => {
+    if (!rawItem || typeof rawItem !== 'object') return rawItem;
+    const item = rawItem as Record<string, unknown>;
+    if (item.portId !== payload.portId) return item;
+    matched = true;
+    matchedEdgeId = typeof item.edgeId === 'string' ? item.edgeId : '';
+    matchedDirection = item.direction === 'in' ? 'in' : 'out';
+    const boardInterface = item.boardInterface && typeof item.boardInterface === 'object'
+      ? item.boardInterface as Record<string, unknown>
+      : null;
+    return {
+      ...item,
+      side: payload.side,
+      ratio,
+      ...(boardInterface
+        ? { boardInterface: { ...boardInterface, side: payload.side, ratio } }
+        : {}),
+    };
+  });
+  if (!matched) return;
+
+  node.setData({ ...data, extractedInterfaces: nextInterfaces });
+  node.setPortProp(payload.portId, 'args', getBoardInterfacePortArgs({
+    side: payload.side,
+    ratio,
+  }));
+  // Position + size changes can make X6 fall back to a node-level terminal.
+  // The extracted interface identity is edge-based, so restore its dedicated
+  // port unconditionally instead of trusting the current rendered terminal.
+  const interfaceEdge = matchedEdgeId ? graph.getCellById(matchedEdgeId) : null;
+  if (interfaceEdge && graph.isEdge(interfaceEdge)) {
+    if (matchedDirection === 'out') {
+      interfaceEdge.setSource({ cell: nodeId });
+      interfaceEdge.setSource({ cell: nodeId, port: payload.portId });
+    } else {
+      interfaceEdge.setTarget({ cell: nodeId });
+      interfaceEdge.setTarget({ cell: nodeId, port: payload.portId });
+    }
+  }
+  updateNodeOverlays();
+  scheduleSync();
+}
+
+function finishBoardInterfaceDrag(nodeId: string, portId: string) {
+  if (boardInterfaceDrag?.nodeId !== nodeId || boardInterfaceDrag.portId !== portId) return;
+  boardInterfaceDrag = null;
+  finishUserInteraction();
 }
 
 function updateSelectedBoardReferenceDisplay(mode: 'card' | 'content') {
@@ -5887,6 +6156,50 @@ watch(
   },
 );
 
+function dockReferenceInterfaceTerminals(items: Array<{
+  edgeId: string;
+  direction: ExtractedBoardInterfaceDirection;
+  clientX: number;
+  clientY: number;
+}>) {
+  if (!graph || !items.length) return;
+  const historyEnabled = graph.isHistoryEnabled();
+  const previousApplyingExternalData = isApplyingExternalData;
+  if (historyEnabled) graph.disableHistory();
+  isApplyingExternalData = true;
+  try {
+    for (const item of items) {
+      const edge = graph.getCellById(item.edgeId);
+      if (!edge || !graph.isEdge(edge)) continue;
+      if (!referenceInterfaceOriginalTerminals.has(item.edgeId)) {
+        const terminal = item.direction === 'out' ? edge.getTarget() : edge.getSource();
+        referenceInterfaceOriginalTerminals.set(item.edgeId, {
+          direction: item.direction,
+          terminal: JSON.parse(JSON.stringify(terminal)) as unknown,
+        });
+      }
+      const local = graph.clientToLocal(item.clientX, item.clientY);
+      const current = item.direction === 'out' ? edge.getTarget() : edge.getSource();
+      if (
+        typeof current.x === 'number'
+        && typeof current.y === 'number'
+        && Math.abs(current.x - local.x) < 0.1
+        && Math.abs(current.y - local.y) < 0.1
+      ) {
+        continue;
+      }
+      if (item.direction === 'out') {
+        edge.setTarget({ x: local.x, y: local.y });
+      } else {
+        edge.setSource({ x: local.x, y: local.y });
+      }
+    }
+  } finally {
+    isApplyingExternalData = previousApplyingExternalData;
+    if (historyEnabled) graph.enableHistory();
+  }
+}
+
 defineExpose({
   getMarkdownLinkAnchor,
   insertMarkdownLink,
@@ -5894,6 +6207,7 @@ defineExpose({
   updateInsertedImageWidth,
   insertRefBlock,
   fitGraph,
+  dockReferenceInterfaceTerminals,
 });
 </script>
 
@@ -6251,7 +6565,7 @@ defineExpose({
         <X6NodeOverlay
           v-for="overlay in nodeOverlays"
           :key="overlay.id"
-          :ref="(el) => setNodeOverlayRef(el, overlay.id)"
+          :ref="(el: unknown) => setNodeOverlayRef(el, overlay.id)"
           :node-id="overlay.id"
           :style-props="overlay.style"
           :text-mode="overlay.textMode"
@@ -6259,6 +6573,7 @@ defineExpose({
           :rich-content="overlay.richContent"
           :board-reference-page-id="overlay.boardReferencePageId"
           :board-reference-title="overlay.boardReferenceTitle"
+          :board-reference-interfaces="overlay.boardReferenceInterfaces"
           :host-page-id="pageId"
           :is-editing="editingNodeId === overlay.id"
           :is-editable="isEditable"
@@ -6266,6 +6581,12 @@ defineExpose({
           @cancel="() => handleNodeOverlayCancel(overlay.id)"
           @rich-change="(md: string) => handleRichChange(overlay.id, md)"
           @select-reference="selectBoardReferenceWrapper(overlay.id)"
+          @drag-reference-start="startBoardReferenceDrag(overlay.id)"
+          @drag-reference-move="(delta: { dx: number; dy: number }) => moveBoardReference(overlay.id, delta)"
+          @drag-reference-end="finishBoardReferenceDrag(overlay.id)"
+          @drag-interface-start="startBoardInterfaceDrag(overlay.id, $event)"
+          @drag-interface-move="moveBoardInterface(overlay.id, $event)"
+          @drag-interface-end="finishBoardInterfaceDrag(overlay.id, $event)"
         />
 
         <!-- Edge inline text editor -->
@@ -6773,7 +7094,10 @@ defineExpose({
           <header class="x6-operation-manager__header">
             <div>
               <h4>操作管理</h4>
-              <p>保留最近 {{ BOARD_OPERATION_HISTORY_LIMIT }} 次已保存操作，可恢复到任一操作发生之前。</p>
+              <p>
+                保留最近 {{ BOARD_OPERATION_HISTORY_LIMIT }} 次已保存操作，每页显示
+                {{ BOARD_OPERATION_HISTORY_PAGE_SIZE }} 条，可恢复到任一操作发生之前。
+              </p>
             </div>
           </header>
 
@@ -6820,7 +7144,10 @@ defineExpose({
             </li>
           </ol>
 
-          <footer v-if="operationHistory.length > DEFAULT_PAGE_SIZE" class="x6-operation-manager__pagination">
+          <footer
+            v-if="operationHistory.length > BOARD_OPERATION_HISTORY_PAGE_SIZE"
+            class="x6-operation-manager__pagination"
+          >
             <button
               type="button"
               class="operation-button"
@@ -7861,7 +8188,9 @@ defineExpose({
   display: none !important;
 }
 
-.x6-canvas :deep(.x6-widget-transform) {
+.x6-editor :deep(.x6-widget-transform) {
+  /* Keep the standard X6 resize handles above editable board previews. */
+  z-index: 1100 !important;
   border-color: transparent !important;
   box-shadow: none !important;
 }
