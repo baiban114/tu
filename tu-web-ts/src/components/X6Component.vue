@@ -323,6 +323,7 @@ const nodeOverlayRefs = ref<Record<string, {
   insertMarkdownLink?: (label: string, url: string, display?: 'link' | 'image') => boolean;
   updateInsertedLinkDisplay?: (display: 'link' | 'image') => boolean;
   updateInsertedImageWidth?: (widthPercent: number) => boolean;
+  clearNestedReferenceSelection?: () => void;
 }>>({});
 
 // --- Pasted link card node (HTML shape) ---
@@ -475,6 +476,7 @@ const nodeOverlays = ref<Array<{
     direction: ExtractedBoardInterfaceDirection;
     side: BoardInterfaceSide;
     ratio: number;
+    referenceEdge?: CellData;
   }>;
 }>>([]);
 const graphSourceRegion = ref<{
@@ -984,6 +986,14 @@ function flushGraphData(): GraphData | null {
   return emitGraphData();
 }
 
+function clearSelection() {
+  if (!graph) return;
+  graph.cleanSelection();
+  graph.clearTransformWidgets();
+  refreshSelectedCellState();
+  syncEdgeTools();
+}
+
 function updateUndoRedoState() {
   if (!graph) return;
   canUndo.value = graph.canUndo();
@@ -1396,6 +1406,9 @@ function updateNodeOverlays() {
               direction: value.direction === 'in' ? 'in' : 'out',
               side: side as BoardInterfaceSide,
               ratio: Math.min(0.92, Math.max(0.08, value.ratio)),
+              ...(value.referenceEdge && typeof value.referenceEdge === 'object'
+                ? { referenceEdge: value.referenceEdge as CellData }
+                : {}),
             }];
           })
           : [],
@@ -1666,12 +1679,19 @@ function setNodeOverlayRef(el: unknown, nodeId: string) {
     nodeOverlayRefs.value[nodeId] = el as {
       getMarkdownLinkAnchor?: () => { top: number; left: number } | undefined;
       insertMarkdownLink?: (label: string, url: string, display?: 'link' | 'image') => boolean;
-      updateInsertedLinkDisplay?: (display: 'link' | 'image') => boolean;
-      updateInsertedImageWidth?: (widthPercent: number) => boolean;
+    updateInsertedLinkDisplay?: (display: 'link' | 'image') => boolean;
+    updateInsertedImageWidth?: (widthPercent: number) => boolean;
+    clearNestedReferenceSelection?: () => void;
     };
   } else {
     delete nodeOverlayRefs.value[nodeId];
   }
+}
+
+function clearNestedReferenceSelections() {
+  Object.values(nodeOverlayRefs.value).forEach((overlay) => {
+    overlay.clearNestedReferenceSelection?.();
+  });
 }
 
 function insertMarkdownLink(label: string, url: string, display: 'link' | 'image' = 'link'): boolean {
@@ -2845,6 +2865,9 @@ function replaceSelectionWithBoardReference(
         side: boardInterface?.side,
         ratio: boardInterface?.ratio,
         boardInterface,
+        // Interface edges are owned by the outer board after extraction. Keep
+        // their initial source-board shape as a one-time default only.
+        referenceEdge: JSON.parse(JSON.stringify(edge)) as CellData,
       };
     })
     .filter((item) => item.boardInterface && typeof item.boardInterface === 'object');
@@ -4996,6 +5019,32 @@ function finishBoardInterfaceDrag(nodeId: string, portId: string) {
   finishUserInteraction();
 }
 
+function initializeBoardReferenceInterfaceSnapshots(
+  nodeId: string,
+  snapshots: Array<{ edgeId: string; referenceEdge: CellData }>,
+) {
+  if (!graph || !snapshots.length) return;
+  const node = graph.getCellById(nodeId);
+  if (!node || !graph.isNode(node)) return;
+  const data = node.getData<Record<string, unknown>>() ?? {};
+  if (!Array.isArray(data.extractedInterfaces)) return;
+  const byEdgeId = new Map(snapshots.map((item) => [item.edgeId, item.referenceEdge]));
+  let changed = false;
+  const extractedInterfaces = data.extractedInterfaces.map((rawItem) => {
+    if (!rawItem || typeof rawItem !== 'object') return rawItem;
+    const item = rawItem as Record<string, unknown>;
+    const edgeId = typeof item.edgeId === 'string' ? item.edgeId : '';
+    const referenceEdge = byEdgeId.get(edgeId);
+    if (!referenceEdge || item.referenceEdge) return item;
+    changed = true;
+    return { ...item, referenceEdge };
+  });
+  if (!changed) return;
+  node.setData({ ...data, extractedInterfaces });
+  updateNodeOverlays();
+  scheduleSync();
+}
+
 function updateSelectedBoardReferenceDisplay(mode: 'card' | 'content') {
   if (!graph || !isEditable.value) return;
   const state = selectedCell.value;
@@ -5840,6 +5889,7 @@ function bindGraphEvents() {
     if (editingNodeId.value != null) {
       handleNodeOverlayCancel(editingNodeId.value);
     }
+    clearNestedReferenceSelections();
     pendingNodeInternalClickId = null;
   });
 
@@ -5871,6 +5921,7 @@ function bindGraphEvents() {
       handleStraightLineClick(x, y);
       return;
     }
+    clearNestedReferenceSelections();
 
     const shouldHandleInternalClick = pendingNodeInternalClickId === node.id;
     pendingNodeInternalClickId = null;
@@ -5912,6 +5963,7 @@ function bindGraphEvents() {
 
   // 直线模式下点击已有连线也视为自由点
   graph.on('edge:click', ({ x, y }) => {
+    clearNestedReferenceSelections();
     if (isStraightLineMode.value) {
       handleStraightLineClick(x, y);
     }
@@ -6388,6 +6440,7 @@ defineExpose({
   insertRefBlock,
   fitGraph,
   flushGraphData,
+  clearSelection,
   dockReferenceInterfaceTerminals,
   translateViewportByClientDelta,
   scaleViewportByRatio,
@@ -6773,6 +6826,7 @@ defineExpose({
           @drag-interface-start="startBoardInterfaceDrag(overlay.id, $event)"
           @drag-interface-move="moveBoardInterface(overlay.id, $event)"
           @drag-interface-end="finishBoardInterfaceDrag(overlay.id, $event)"
+          @initialize-interface-snapshots="initializeBoardReferenceInterfaceSnapshots(overlay.id, $event)"
         />
 
         <!-- Edge inline text editor -->

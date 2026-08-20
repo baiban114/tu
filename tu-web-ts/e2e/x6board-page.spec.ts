@@ -937,6 +937,28 @@ test('board reference content mode renders proportionally and writes edits back 
   await expect(preview.locator('.x6-node[data-cell-id="x6-start-node"]')).toBeVisible()
   await expect(preview.locator('.x6-node[data-cell-id="x6-process-node"]')).toBeVisible()
 
+  // Selecting inside the reference must be cleared by a click in the outer
+  // board as well, not only by another click inside the reference.
+  const outerNodeBox = await page.evaluate((refId) => {
+    const outer = (window as any).__outerBoardGraph
+    const node = outer.getNodes().find((item: any) => item.id !== refId)
+    const element = node && outer.findViewByCell(node)?.container as HTMLElement | undefined
+    if (!element) return null
+    const rect = element.getBoundingClientRect()
+    return { x: rect.x, y: rect.y, width: rect.width, height: rect.height }
+  }, referenceId)
+  expect(outerNodeBox).not.toBeNull()
+  await page.evaluate(() => {
+    const nested = (window as any).__x6graph
+    nested.resetSelection([nested.getCellById('x6-start-node')])
+  })
+  await expect.poll(() => page.evaluate(() => (window as any).__x6graph.getSelectedCells().length)).toBe(1)
+  await page.mouse.click(
+    outerNodeBox!.x + outerNodeBox!.width / 2,
+    outerNodeBox!.y + outerNodeBox!.height / 2,
+  )
+  await expect.poll(() => page.evaluate(() => (window as any).__x6graph.getSelectedCells().length)).toBe(0)
+
   const boundedTerminal = await page.evaluate(() => {
     const g = (window as any).__x6graph
     const edge = g.getCellById('x6-edge-1')
@@ -1322,6 +1344,65 @@ test('board reference content mode renders proportionally and writes edits back 
     if (!restoredBox || !restoredDock) return null
     return Math.round((restoredDock.x + restoredDock.width / 2) - restoredBox.x)
   }).toBeLessThanOrEqual(6)
+})
+
+test('source-board interface edge edits do not change the reference board after its initial default', async ({ page }) => {
+  await openFreshBoard(page)
+
+  await page.evaluate(() => {
+    const graph = (window as any).__x6graph
+    graph.cleanSelection()
+    graph.select(graph.getCellById('x6-start-node'))
+    graph.select(graph.getCellById('x6-process-node'))
+  })
+  await page.getByRole('button', { name: '提取为画板页' }).click()
+  await expect(page.locator('.page-tree .el-tree-node.is-current .node-label'))
+    .not.toHaveText('未命名画板')
+  const extractedTitle = await page.locator('.page-tree .el-tree-node.is-current .node-label').textContent()
+  expect(extractedTitle).toBeTruthy()
+
+  await page.locator('.page-tree .tree-node').filter({ hasText: '未命名画板' }).first().click()
+  const referenceId = await page.evaluate(() => (
+    (window as any).__x6graph.getNodes().find((node: any) => (
+      node.getData()?.extractedBoardReference
+    ))?.id
+  ))
+  expect(referenceId).toBeTruthy()
+  await page.locator(`.x6-node[data-cell-id="${referenceId}"]`).click()
+  await page.locator('.inspector-reference-display select').selectOption('content')
+
+  const preview = page.locator('.x6-board-reference-preview')
+  await expect(preview).toBeVisible()
+  const initialReferenceInterface = await page.evaluate(() => {
+    const graph = (window as any).__x6graph
+    const edge = graph.getCellById('x6-edge-2')
+    return {
+      vertices: structuredClone(edge.getVertices()),
+      stroke: edge.attr('line/stroke'),
+    }
+  })
+
+  await page.locator('.page-tree .tree-node').filter({ hasText: extractedTitle! }).first().click()
+  await page.evaluate(() => {
+    const graph = (window as any).__x6graph
+    const edge = graph.getCellById('x6-edge-2')
+    edge.setVertices([{ x: 280, y: 36 }])
+    edge.attr('line/stroke', '#ef4444')
+  })
+  await expect.poll(() => page.evaluate(() => {
+    const edge = (window as any).__x6graph.getCellById('x6-edge-2')
+    return { vertices: edge.getVertices(), stroke: edge.attr('line/stroke') }
+  })).toEqual({ vertices: [{ x: 280, y: 36 }], stroke: '#ef4444' })
+
+  await page.locator('.page-tree .tree-node').filter({ hasText: '未命名画板' }).first().click()
+  await page.locator(`.x6-node[data-cell-id="${referenceId}"]`).click()
+  await page.locator('.inspector-reference-display select').selectOption('content')
+  await expect(preview).toBeVisible()
+  await expect.poll(() => page.evaluate(() => {
+    const graph = (window as any).__x6graph
+    const edge = graph.getCellById('x6-edge-2')
+    return { vertices: structuredClone(edge.getVertices()), stroke: edge.attr('line/stroke') }
+  })).toEqual(initialReferenceInterface)
 })
 
 test('unused board reference border anchors disappear after detaching or deleting their edge', async ({ page }) => {

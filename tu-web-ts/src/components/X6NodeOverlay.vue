@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue';
 import type { Block } from '@/api/types';
+import type { CellData } from '@/components/x6/cellUtils';
 import TuEditor from './TuEditor.vue';
 import X6BoardReferencePreview from './X6BoardReferencePreview.vue';
 
@@ -23,6 +24,7 @@ interface Props {
     direction: 'in' | 'out';
     side: 'top' | 'right' | 'bottom' | 'left';
     ratio: number;
+    referenceEdge?: CellData;
   }>;
 }
 
@@ -43,11 +45,13 @@ const emit = defineEmits<{
     ratio: number;
   }): void;
   (e: 'drag-interface-end', portId: string): void;
+  (e: 'initialize-interface-snapshots', snapshots: Array<{ edgeId: string; referenceEdge: CellData }>): void;
 }>();
 
 const plainText = ref(props.label);
 const textareaRef = ref<HTMLTextAreaElement | null>(null);
 const tuEditorRef = ref<InstanceType<typeof TuEditor> | null>(null);
+const boardReferencePreviewRef = ref<InstanceType<typeof X6BoardReferencePreview> | null>(null);
 
 const INLINE_BLOCK_ID = 'x6-node-inline-editor';
 
@@ -128,11 +132,16 @@ function updateInsertedImageWidth(_widthPercent: number): boolean {
   return false;
 }
 
+function clearNestedReferenceSelection() {
+  boardReferencePreviewRef.value?.clearNestedSelection();
+}
+
 defineExpose({
   getMarkdownLinkAnchor,
   insertMarkdownLink,
   updateInsertedLinkDisplay,
   updateInsertedImageWidth,
+  clearNestedReferenceSelection,
 });
 </script>
 
@@ -143,6 +152,7 @@ defineExpose({
     :style="styleProps"
   >
     <X6BoardReferencePreview
+      ref="boardReferencePreviewRef"
       :page-id="boardReferencePageId"
       :host-page-id="hostPageId"
       :title="boardReferenceTitle"
@@ -157,6 +167,7 @@ defineExpose({
       @drag-interface-start="(portId) => emit('drag-interface-start', portId)"
       @drag-interface-move="(payload) => emit('drag-interface-move', payload)"
       @drag-interface-end="(portId) => emit('drag-interface-end', portId)"
+      @initialize-interface-snapshots="emit('initialize-interface-snapshots', $event)"
     />
   </div>
 

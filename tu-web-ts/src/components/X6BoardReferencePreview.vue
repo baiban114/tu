@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type { GraphData, PageContent } from '@/api/types'
+import type { CellData } from '@/components/x6/cellUtils'
 import { getPageContent } from '@/api/page'
 import { useWorkspaceStore } from '@/stores/workspace'
 import { containsSelfBoardReference } from '@/components/x6'
@@ -9,6 +10,7 @@ const X6Component = defineAsyncComponent(() => import('./X6Component.vue'))
 
 interface ReferencedBoardExpose {
   flushGraphData: () => GraphData | null
+  clearSelection: () => void
   dockReferenceInterfaceTerminals: (items: Array<{
     edgeId: string
     direction: 'in' | 'out'
@@ -32,6 +34,7 @@ const props = defineProps<{
     direction: 'in' | 'out'
     side: 'top' | 'right' | 'bottom' | 'left'
     ratio: number
+    referenceEdge?: CellData
   }>
 }>()
 
@@ -47,6 +50,7 @@ const emit = defineEmits<{
     ratio: number
   }]
   'drag-interface-end': [portId: string]
+  'initialize-interface-snapshots': [snapshots: Array<{ edgeId: string; referenceEdge: CellData }>]
 }>()
 
 const workspaceStore = useWorkspaceStore()
@@ -111,6 +115,46 @@ const interfaceDocks = computed(() => effectiveInterfaces.value.map((item) => {
         : { x: width.value * item.ratio, y: height.value }
   return { ...item, ...dock }
 }))
+
+function cloneCell(cell: CellData): CellData {
+  return JSON.parse(JSON.stringify(cell)) as CellData
+}
+
+function findEdge(data: GraphData, edgeId: string): CellData | null {
+  const cells = data.cells ?? []
+  const cell = cells.find((item) => item.id === edgeId)
+    ?? data.edges.find((item) => item.id === edgeId)
+  return cell ? cell as CellData : null
+}
+
+function replaceInterfaceEdges(
+  data: GraphData,
+  replacements: Map<string, CellData>,
+): GraphData {
+  if (!replacements.size) return data
+  const replace = (cell: CellData) => replacements.get(String(cell.id)) ?? cell
+  return {
+    ...data,
+    cells: data.cells?.map((cell) => replace(cell as CellData)) as typeof data.cells,
+    nodes: data.nodes.map((node) => replace(node as CellData)) as typeof data.nodes,
+    edges: data.edges.map((edge) => replace(edge as CellData)) as typeof data.edges,
+  }
+}
+
+function resolveReferenceInterfaceOverrides(source: GraphData) {
+  const replacements = new Map<string, CellData>()
+  const missingSnapshots: Array<{ edgeId: string; referenceEdge: CellData }> = []
+  for (const item of props.interfaces ?? []) {
+    const referenceEdge = item.referenceEdge ?? findEdge(source, item.edgeId)
+    if (!referenceEdge) continue
+    const clone = cloneCell(referenceEdge)
+    replacements.set(item.edgeId, clone)
+    if (!item.referenceEdge) {
+      missingSnapshots.push({ edgeId: item.edgeId, referenceEdge: cloneCell(clone) })
+    }
+  }
+  return { replacements, missingSnapshots }
+}
 
 function dockRenderedInterfaceTerminals() {
   interfaceMeasureFrame = null
@@ -197,7 +241,9 @@ async function loadReferencedBoard() {
     loadedPageId = requestedPageId
     content.value = pageContent
     embedId.value = embed.id
-    graphData.value = embed.graphData
+    const { replacements, missingSnapshots } = resolveReferenceInterfaceOverrides(embed.graphData)
+    if (missingSnapshots.length) emit('initialize-interface-snapshots', missingSnapshots)
+    graphData.value = replaceInterfaceEdges(embed.graphData, replacements)
     await nextTick()
     updateSize()
   } catch (reason) {
@@ -250,15 +296,33 @@ function onGraphDataChange(next: GraphData) {
     })()
     return
   }
-  graphData.value = next
+  // Interface lines model a boundary owned by the outer/reference board. Do
+  // not let edits from the embedded source-board preview write their endpoint,
+  // route, bends, or style back to the source board.
+  const sourceEmbed = pageContent.embeds.find((embed) => embed.id === targetEmbedId)
+  const sourceGraph = sourceEmbed?.graphData
+  const sourceInterfaces = new Map<string, CellData>()
+  if (sourceGraph) {
+    for (const item of props.interfaces ?? []) {
+      const sourceEdge = findEdge(sourceGraph, item.edgeId)
+      if (sourceEdge) sourceInterfaces.set(item.edgeId, cloneCell(sourceEdge))
+    }
+  }
+  const nextSourceGraph = replaceInterfaceEdges(next, sourceInterfaces)
+  const { replacements } = resolveReferenceInterfaceOverrides(nextSourceGraph)
+  graphData.value = replaceInterfaceEdges(nextSourceGraph, replacements)
   pendingSave = {
     pageId: targetPageId,
     embedId: targetEmbedId,
     baseContent: pageContent,
-    graphData: next,
+    graphData: nextSourceGraph,
   }
   scheduleInterfaceMeasurement()
   void flushSave()
+}
+
+function clearNestedSelection() {
+  nestedBoardRef.value?.clearSelection();
 }
 
 function onHeaderPointerDown(event: PointerEvent) {
@@ -431,6 +495,10 @@ onBeforeUnmount(() => {
   interfaceMutationObserver?.disconnect()
   interfaceMutationObserver = null
   void flushSave()
+})
+
+defineExpose({
+  clearNestedSelection,
 })
 </script>
 
