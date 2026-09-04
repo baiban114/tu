@@ -28,11 +28,11 @@ Backend:
 
 - `http://localhost:18080`
 
-RAG service:
+RAG:
 
 - Java entrypoint: `POST http://localhost:18080/api/rag/query`
-- FastAPI internal service: `http://localhost:19080`
-- Qdrant: `http://localhost:6333`
+- Internal service: `tu-rag-service` at `http://localhost:19080`
+- Qdrant HTTP: `http://localhost:6333`
 
 Elasticsearch (page full-text search):
 
@@ -137,7 +137,7 @@ Main application source remains under:
 
 ## RAG Integration
 
-The backend exposes RAG through Java and delegates retrieval/indexing to the standalone Python service in `../tu-rag-service`.
+The Java backend delegates indexing, deletion, and retrieval to `tu-rag-service`. The Python service owns its deterministic local embedding and the existing 256-dimensional Qdrant collection `tu_rag_chunks`, so no commercial embedding provider or API key is required. Spring AI remains responsible for chat model integration and the agent tool loop, not vector storage.
 
 Frontend-facing endpoints:
 
@@ -145,12 +145,17 @@ Frontend-facing endpoints:
 - `POST /api/rag/reindex/page/{pageId}`
 - `POST /api/rag/reindex/kb/{kbId}`
 
-Java calls the FastAPI service configured by:
+Configuration:
 
-- `RAG_ENABLED`, default `true`
-- `RAG_SERVICE_URL`, default `http://localhost:19080`
+- `rag.enabled: true`
+- `rag.service-url: http://localhost:19080`
+- `rag.timeout: 10s`
 
-Page content saves, block updates, and block sync trigger best-effort page reindexing. Page and knowledge-base deletion trigger best-effort vector cleanup. If the RAG service is unavailable, ordinary editing and deletion continue; explicit RAG API calls return an API error.
+These defaults live in `tu-backend-app/src/main/resources/application.yml`, so local IDEA startup needs no RAG VM options or environment variables. Docker Compose fixes the container address to `http://tu-rag-service:19080`; the Python service is configured there with `QDRANT_COLLECTION=tu_rag_chunks` and `RAG_VECTOR_SIZE=256`.
+
+Page content saves, block updates, and block sync trigger best-effort page reindexing. Page and knowledge-base deletion trigger best-effort vector cleanup. If Python RAG is unavailable, Agent RAG tools and the knowledge-chat endpoint fall back to knowledge-base-scoped Elasticsearch keyword retrieval. If Elasticsearch is also unavailable, tools return a structured empty-evidence result and allow the model tool loop to continue.
+
+Pages with `pageType=x6board` are excluded from RAG. Reindexing or flushing such a page removes any vectors previously stored for it. Embedded `x6` blocks inside document pages remain eligible for extraction.
 
 ## External Resource Management
 

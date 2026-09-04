@@ -7,6 +7,7 @@ final class AiAgentToolLabels {
     private static final Map<String, String> LABELS = Map.of(
         "searchKnowledgeBasePages", "搜索知识库",
         "queryKnowledgeBaseRag", "语义检索（RAG）",
+        "queryCurrentKnowledgeBase", "检索当前知识库",
         "searchWeb", "联网搜索"
     );
 

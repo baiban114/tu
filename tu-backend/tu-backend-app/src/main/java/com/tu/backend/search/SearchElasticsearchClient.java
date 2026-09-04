@@ -128,6 +128,43 @@ public class SearchElasticsearchClient {
         );
     }
 
+    public SearchResponse<SearchDocument> searchKnowledgeBase(String query, String kbId, int limit) throws IOException {
+        return client.search(s -> s
+            .index(properties.getIndex())
+            .size(Math.clamp(limit, 1, 50))
+            .query(q -> q.bool(b -> b
+                .must(m -> m.multiMatch(mm -> mm
+                    .query(query)
+                    .fields("title^3", "pageTitle^2", "body")
+                ))
+                .filter(f -> f.term(t -> t.field("kbId").value(kbId)))
+            ))
+            .highlight(h -> h
+                .fields(
+                    NamedValue.of("body", HighlightField.of(hf -> hf
+                        .preTags("<em>")
+                        .postTags("</em>")
+                        .fragmentSize(120)
+                        .numberOfFragments(1)
+                    )),
+                    NamedValue.of("pageTitle", HighlightField.of(hf -> hf
+                        .preTags("<em>")
+                        .postTags("</em>")
+                        .fragmentSize(80)
+                        .numberOfFragments(1)
+                    )),
+                    NamedValue.of("title", HighlightField.of(hf -> hf
+                        .preTags("<em>")
+                        .postTags("</em>")
+                        .fragmentSize(80)
+                        .numberOfFragments(1)
+                    ))
+                )
+            ),
+            SearchDocument.class
+        );
+    }
+
     public List<Hit<SearchDocument>> parseHits(SearchResponse<SearchDocument> response) {
         if (response.hits() == null || response.hits().hits() == null) {
             return List.of();

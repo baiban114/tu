@@ -96,7 +96,9 @@ defineExpose({
 
 .table-cell-rich-editor__tu :deep(.tu-editor-content) {
   min-height: 38px;
-  padding: 9px 10px;
+  height: 100%;
+  box-sizing: border-box;
+  padding: 4px 5px;
   line-height: 1.45;
   overflow-wrap: anywhere;
   --tiptap-handle-gutter: 0;

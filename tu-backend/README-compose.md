@@ -4,7 +4,7 @@ The compose files are split by responsibility.
 
 ## Files
 
-- `docker-compose.yml`: application services only (`tu-backend`, `tu-gateway`, `tu-integration-service`, `tu-rag-service`).
+- `docker-compose.yml`: application services only (`tu-backend`, `tu-gateway`, `tu-integration-service`, `tu-rag-service`). The backend calls `tu-rag-service` for RAG and crawling; Python owns embedding and Qdrant access.
 - `docker-compose.infra.yml`: shared infrastructure and external dependencies (`nacos`, databases, `qdrant`, `elasticsearch`, `kaneo`).
 - `docker-compose.dev.yml`: local development overrides that wire app services to the infra service names.
 
@@ -24,7 +24,7 @@ Copy `.env.example` to `.env`, adjust external infrastructure addresses, then ru
 docker compose up -d --build
 ```
 
-Use this when Nacos, MySQL, Qdrant, and external systems are managed outside the application stack.
+Use this when Nacos, MySQL, Qdrant, and external systems are managed outside the application stack. `tu-rag-service` connects to Qdrant over HTTP port `6333`; Java does not connect to Qdrant directly.
 
 ## Infra Only
 

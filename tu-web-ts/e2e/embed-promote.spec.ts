@@ -31,3 +31,18 @@ test('promotes embedded mindmap to standalone page', async ({ page }) => {
   await expect(page.locator('.ProseMirror')).toBeVisible()
   await expect(page.locator('.resizable-block-wrapper').filter({ hasText: '思维导图' })).toHaveCount(0)
 })
+
+test('renders embedded mindmap without a source frame or label', async ({ page }) => {
+  const editor = page.locator('.ProseMirror').first()
+  await expect(editor).toBeVisible()
+  await editor.click()
+  await editor.pressSequentially('/思维导图')
+
+  const slashItem = page.locator('.slash-command-menu__item').filter({ hasText: '思维导图' })
+  await expect(slashItem).toBeVisible()
+  await slashItem.click()
+
+  const mindmapCanvas = page.locator('.x6-block-view .x6-editor--mindmap').last()
+  await expect(mindmapCanvas).toBeVisible()
+  await expect(mindmapCanvas.locator('.x6-source-region')).toHaveCount(0)
+})

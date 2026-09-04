@@ -26,6 +26,17 @@ public class SearchService {
     }
 
     public SearchResponseDto search(String query, int limit) {
+        return search(query, null, limit);
+    }
+
+    public SearchResponseDto searchKnowledgeBase(String query, String kbId, int limit) {
+        if (kbId == null || kbId.isBlank()) {
+            return new SearchResponseDto(List.of(), true, null);
+        }
+        return search(query, kbId, limit);
+    }
+
+    private SearchResponseDto search(String query, String kbId, int limit) {
         if (!searchProperties.isEnabled()) {
             return new SearchResponseDto(List.of(), false, "search disabled");
         }
@@ -40,7 +51,9 @@ public class SearchService {
         }
 
         try {
-            var response = searchClient.search(trimmed, limit);
+            var response = kbId == null
+                ? searchClient.search(trimmed, limit)
+                : searchClient.searchKnowledgeBase(trimmed, kbId, limit);
             List<SearchHitDto> hits = new ArrayList<>();
             for (Hit<SearchDocument> hit : searchClient.parseHits(response)) {
                 SearchDocument source = hit.source();

@@ -1,12 +1,30 @@
 package com.tu.backend.rag;
 
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotNull;
+import java.time.Duration;
 import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.validation.annotation.Validated;
 
 @ConfigurationProperties(prefix = "rag")
+@Validated
 public class RagProperties {
 
-    private String serviceUrl = "http://localhost:19080";
     private boolean enabled = true;
+
+    @NotBlank
+    private String serviceUrl = "http://localhost:19080";
+
+    @NotNull
+    private Duration timeout = Duration.ofSeconds(10);
+
+    public boolean isEnabled() {
+        return enabled;
+    }
+
+    public void setEnabled(boolean enabled) {
+        this.enabled = enabled;
+    }
 
     public String getServiceUrl() {
         return serviceUrl;
@@ -16,11 +34,11 @@ public class RagProperties {
         this.serviceUrl = serviceUrl;
     }
 
-    public boolean isEnabled() {
-        return enabled;
+    public Duration getTimeout() {
+        return timeout;
     }
 
-    public void setEnabled(boolean enabled) {
-        this.enabled = enabled;
+    public void setTimeout(Duration timeout) {
+        this.timeout = timeout;
     }
 }

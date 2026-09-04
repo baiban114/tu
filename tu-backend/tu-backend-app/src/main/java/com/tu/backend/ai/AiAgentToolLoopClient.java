@@ -12,12 +12,31 @@ public interface AiAgentToolLoopClient {
         return runToolLoop(config, systemPrompt, userPrompt, executionContext, null, toolProviders);
     }
 
-    AiAgentToolLoopResult runToolLoop(
-        AiAgentRuntimeConfig config,
-        String systemPrompt,
-        String userPrompt,
+    AiAgentToolLoopResult runToolLoop(
+        AiAgentRuntimeConfig config,
+        String systemPrompt,
+        String userPrompt,
         AiAgentExecutionContext executionContext,
-        AiAgentProgressListener progressListener,
-        Object... toolProviders
-    );
-}
+        AiAgentProgressListener progressListener,
+        Object... toolProviders
+    );
+
+    default AiAgentToolLoopResult runToolLoopLimited(
+        AiAgentRuntimeConfig config,
+        String systemPrompt,
+        String userPrompt,
+        AiAgentExecutionContext executionContext,
+        AiAgentProgressListener progressListener,
+        int maxToolRounds,
+        Object... toolProviders
+    ) {
+        return runToolLoop(
+            config,
+            systemPrompt,
+            userPrompt,
+            executionContext,
+            progressListener,
+            toolProviders
+        );
+    }
+}

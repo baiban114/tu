@@ -19,7 +19,7 @@ services:
       SPRING_DATASOURCE_PASSWORD: tu123456
       TU_SECRET_ENCRYPTION_KEY: ${TU_SECRET_ENCRYPTION_KEY:-MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=}
       RAG_SERVICE_URL: http://tu-rag-service:19080
-      QDRANT_URL: http://qdrant:6333
+      CRAWL_SERVICE_URL: http://tu-rag-service:19080
       INTEGRATION_SERVICE_URL: http://tu-integration-service:18100
       ELASTICSEARCH_URIS: http://elasticsearch:9200
       SEARCH_ENABLED: "true"

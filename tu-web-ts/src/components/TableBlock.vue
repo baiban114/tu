@@ -33,7 +33,17 @@ interface ResizeState {
 const MIN_COLUMN_WIDTH = 80;
 const MIN_ROW_HEIGHT = 38;
 const DEFAULT_COLUMN_WIDTH = 160;
-const DEFAULT_ROW_HEIGHT = 38;
+// Leave enough room for the common two-line cell value before the cell needs to scroll.
+const DEFAULT_ROW_HEIGHT = 64;
+const LEGACY_DEFAULT_ROW_HEIGHT = 38;
+const CELL_HORIZONTAL_PADDING = 5;
+const CELL_VERTICAL_PADDING = 4;
+const HEADER_RIGHT_PADDING = 46;
+
+function normalizeRowHeight(value?: number): number {
+  if (value == null || value === LEGACY_DEFAULT_ROW_HEIGHT) return DEFAULT_ROW_HEIGHT;
+  return Math.max(MIN_ROW_HEIGHT, value);
+}
 
 const props = withDefaults(defineProps<{
   data?: TableBlockData;
@@ -96,10 +106,7 @@ const normalizedData = computed<TableBlockData>(() => {
     MIN_COLUMN_WIDTH,
     props.data?.columnWidths?.[index] ?? DEFAULT_COLUMN_WIDTH,
   ));
-  const rowHeights = normalizedRows.map((_, index) => Math.max(
-    MIN_ROW_HEIGHT,
-    props.data?.rowHeights?.[index] ?? DEFAULT_ROW_HEIGHT,
-  ));
+  const rowHeights = normalizedRows.map((_, index) => normalizeRowHeight(props.data?.rowHeights?.[index]));
   return {
     textMode: resolveTextMode(props.data),
     headers: [...headers],
@@ -181,9 +188,8 @@ function commit(next: TableBlockData) {
     next.columnWidths?.[index] ?? normalizedData.value.columnWidths?.[index] ?? DEFAULT_COLUMN_WIDTH,
   ));
   const normalizedRows = next.rows.map((row) => next.headers.map((_, index) => row[index] ?? ''));
-  const rowHeights = normalizedRows.map((_, index) => Math.max(
-    MIN_ROW_HEIGHT,
-    next.rowHeights?.[index] ?? normalizedData.value.rowHeights?.[index] ?? DEFAULT_ROW_HEIGHT,
+  const rowHeights = normalizedRows.map((_, index) => normalizeRowHeight(
+    next.rowHeights?.[index] ?? normalizedData.value.rowHeights?.[index],
   ));
 
   emit('change', {
@@ -227,33 +233,37 @@ function handleResizeMouseMove(event: MouseEvent) {
   }
 }
 
-function startColumnResize(event: MouseEvent, columnIndex: number) {
+function startColumnResize(event: MouseEvent, columnIndex: number, direction: 'left' | 'right' = 'right') {
   if (!props.editable) return;
+  const targetColumn = direction === 'left' ? columnIndex - 1 : columnIndex;
+  if (targetColumn < 0) return;
   event.preventDefault();
   event.stopPropagation();
   stopResize();
   resizing.value = {
     kind: 'column',
-    index: columnIndex,
+    index: targetColumn,
     startClientX: event.clientX,
     startClientY: event.clientY,
-    startSize: getColumnWidth(columnIndex),
+    startSize: getColumnWidth(targetColumn),
   };
   document.addEventListener('mousemove', handleResizeMouseMove);
   document.addEventListener('mouseup', stopResize);
 }
 
-function startRowResize(event: MouseEvent, rowIndex: number) {
+function startRowResize(event: MouseEvent, rowIndex: number, direction: 'top' | 'bottom' = 'bottom') {
   if (!props.editable) return;
+  const targetRow = direction === 'top' ? rowIndex - 1 : rowIndex;
+  if (targetRow < 0) return;
   event.preventDefault();
   event.stopPropagation();
   stopResize();
   resizing.value = {
     kind: 'row',
-    index: rowIndex,
+    index: targetRow,
     startClientX: event.clientX,
     startClientY: event.clientY,
-    startSize: getRowHeight(rowIndex),
+    startSize: getRowHeight(targetRow),
   };
   document.addEventListener('mousemove', handleResizeMouseMove);
   document.addEventListener('mouseup', stopResize);
@@ -484,6 +494,33 @@ function handleCellMouseMove(event: MouseEvent, row: number, column: number) {
   setHoverBorder(event, direction ? { row, column, direction } : null);
 }
 
+function resizeDirectionAtPoint(event: MouseEvent, target: HTMLElement, edge = 8): BorderDirection | null {
+  const rect = target.getBoundingClientRect();
+  const x = event.clientX - rect.left;
+  const y = event.clientY - rect.top;
+  if (y <= edge) return 'top';
+  if (rect.height - y <= edge) return 'bottom';
+  if (x <= edge) return 'left';
+  if (rect.width - x <= edge) return 'right';
+  return null;
+}
+
+function handleCellMouseDown(event: MouseEvent, row: number, column: number) {
+  if (!props.editable) return;
+  const direction = resizeDirectionAtPoint(event, event.currentTarget as HTMLElement);
+  if (direction === 'top' || direction === 'bottom') {
+    startRowResize(event, row, direction);
+  } else if (direction === 'left' || direction === 'right') {
+    startColumnResize(event, column, direction);
+  }
+}
+
+function handleHeaderMouseDown(event: MouseEvent, column: number) {
+  if (!props.editable) return;
+  const direction = resizeDirectionAtPoint(event, event.currentTarget as HTMLElement, 10);
+  if (direction === 'left' || direction === 'right') startColumnResize(event, column, direction);
+}
+
 function handleHeaderMouseMove(event: MouseEvent, column: number) {
   hoveredColumn.value = column;
   const target = event.currentTarget as HTMLElement;
@@ -530,6 +567,11 @@ function headerBorderClass(columnIndex: number): Record<string, boolean> {
   };
 }
 
+function isResizeHover(row: number | null, column: number, direction: BorderDirection): boolean {
+  const border = hoverBorder.value;
+  return border?.row === row && border.column === column && border.direction === direction;
+}
+
 function applyBorderInsert(border: HoverBorder) {
   if (border.direction === 'top') {
     insertRow(border.row ?? 0, border.column ?? activeCell.value?.column ?? 0);
@@ -564,6 +606,41 @@ function insertColumnFromToolbar(position: 'before' | 'after') {
 
   const columnIndex = activeColumnForToolbar.value ?? activeCell.value?.column ?? normalizedData.value.headers.length - 1;
   insertColumn(position === 'before' ? columnIndex : columnIndex + 1);
+}
+
+function estimateCellTextWidth(value: string): number {
+  const canvas = document.createElement('canvas');
+  const context = canvas.getContext('2d');
+  if (!context) return Math.max(...value.split('\n').map((line) => line.length * 14), 0);
+  context.font = '14px sans-serif';
+  return Math.max(...value.split('\n').map((line) => context.measureText(line).width), 0);
+}
+
+function autoFitColumnWidths() {
+  const data = normalizedData.value;
+  const columnWidths = data.headers.map((header, columnIndex) => {
+    const headerWidth = estimateCellTextWidth(header) + CELL_HORIZONTAL_PADDING + HEADER_RIGHT_PADDING;
+    const contentWidth = Math.max(
+      ...data.rows.map((row) => estimateCellTextWidth(row[columnIndex] ?? '')),
+      0,
+    ) + CELL_HORIZONTAL_PADDING * 2;
+    return Math.max(MIN_COLUMN_WIDTH, Math.ceil(Math.max(headerWidth, contentWidth)));
+  });
+  commit({ ...data, columnWidths });
+}
+
+function autoFitRowHeights() {
+  const data = normalizedData.value;
+  const rowHeights = data.rows.map((row) => Math.ceil(Math.max(...row.map((value, columnIndex) => {
+    const width = Math.max(MIN_COLUMN_WIDTH, data.columnWidths?.[columnIndex] ?? DEFAULT_COLUMN_WIDTH)
+      - CELL_HORIZONTAL_PADDING * 2;
+    const explicitLines = String(value ?? '').split('\n');
+    const wrappedLines = explicitLines.reduce((total, line) => (
+      total + Math.max(1, Math.ceil(estimateCellTextWidth(line) / Math.max(width, 1)))
+    ), 0);
+    return wrappedLines * 21 + CELL_VERTICAL_PADDING * 2;
+  }), DEFAULT_ROW_HEIGHT)));
+  commit({ ...data, rowHeights });
 }
 
 function htmlToPlainText(html: string): string {
@@ -673,9 +750,11 @@ defineExpose({
               :class="{
                 'table-block__header-cell--active': isColumnActive(columnIndex),
                 'table-block__header-cell--selected': selectedColumn === columnIndex,
+                'table-block__header-cell--resize-hover': isResizeHover(null, columnIndex, 'left') || isResizeHover(null, columnIndex, 'right'),
               }"
               @mouseenter="hoveredColumn = columnIndex"
               @mousemove="handleHeaderMouseMove($event, columnIndex)"
+              @mousedown="handleHeaderMouseDown($event, columnIndex)"
               @click="selectColumn(columnIndex)"
               @contextmenu.prevent.stop="openColumnMenu($event, columnIndex)"
               @focusout="handleColumnHeaderFocusout($event, columnIndex)"
@@ -719,8 +798,11 @@ defineExpose({
                 'table-block__cell--row-selected': selectedRow === rowIndex,
                 'table-block__cell--column-selected': selectedColumn === columnIndex,
                 'table-block__cell--active': isCellActive(rowIndex, columnIndex),
+                'table-block__cell--resize-row-hover': isResizeHover(rowIndex, columnIndex, 'top') || isResizeHover(rowIndex, columnIndex, 'bottom'),
+                'table-block__cell--resize-column-hover': isResizeHover(rowIndex, columnIndex, 'left') || isResizeHover(rowIndex, columnIndex, 'right'),
               }"
               @mousemove="handleCellMouseMove($event, rowIndex, columnIndex)"
+              @mousedown="handleCellMouseDown($event, rowIndex, columnIndex)"
             >
               <div class="table-block__cell-wrap" :class="borderClass(rowIndex, columnIndex)">
                 <TableCellRichEditor
@@ -773,6 +855,8 @@ defineExpose({
       </label>
       <button type="button" @click="addRow">添加行</button>
       <button type="button" @click="addColumn">添加列</button>
+      <button type="button" @click="autoFitRowHeights">自适应行高</button>
+      <button type="button" @click="autoFitColumnWidths">自适应列宽</button>
     </div>
 
     <Teleport to="body">
@@ -865,6 +949,17 @@ tbody tr:last-child th {
   box-shadow: inset 0 0 0 2px #1677ff;
 }
 
+.table-block__header-cell--resize-hover,
+.table-block__cell--resize-column-hover,
+.table-block__cell--resize-column-hover :deep(*) {
+  cursor: col-resize;
+}
+
+.table-block__cell--resize-row-hover,
+.table-block__cell--resize-row-hover :deep(*) {
+  cursor: row-resize;
+}
+
 .table-block__header-wrap,
 .table-block__cell-wrap {
   position: relative;
@@ -872,7 +967,16 @@ tbody tr:last-child th {
 }
 
 .table-block__cell-wrap {
+  /* Percentage heights are unreliable for children of table cells. Inherit the
+     explicit row height so the editor receives the full available cell box. */
+  height: inherit;
+}
+
+.table-block__cell-wrap > textarea,
+.table-block__cell-wrap > span,
+.table-block :deep(.table-block__rich-editor) {
   height: 100%;
+  box-sizing: border-box;
 }
 
 input,
@@ -886,7 +990,7 @@ textarea {
   width: 100%;
   min-height: 38px;
   border: 0;
-  padding: 9px 10px;
+  padding: 4px 5px;
   background: transparent;
   line-height: 1.45;
   outline: none;
@@ -904,7 +1008,7 @@ input {
 
 span {
   display: block;
-  padding: 9px 10px;
+  padding: 4px 5px;
   white-space: pre-wrap;
 }
 

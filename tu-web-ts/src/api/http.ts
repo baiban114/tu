@@ -11,11 +11,23 @@ function buildUrl(path: string): string {
   return `${API_BASE_URL}${path}`;
 }
 
+function currentUserId(): string {
+  try {
+    const raw = localStorage.getItem('tu.auth.user');
+    if (!raw) return 'dev-local-user';
+    const value = JSON.parse(raw) as { id?: unknown };
+    return typeof value.id === 'string' && value.id.trim() ? value.id : 'dev-local-user';
+  } catch {
+    return 'dev-local-user';
+  }
+}
+
 export async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(buildUrl(path), {
     ...init,
     headers: {
       'Content-Type': 'application/json',
+      'X-User-Id': currentUserId(),
       ...(init?.headers || {}),
     },
   });
@@ -43,4 +55,3 @@ export async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
   return payload.data;
 }
-

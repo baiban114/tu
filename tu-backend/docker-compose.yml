@@ -12,8 +12,8 @@ services:
       SPRING_DATASOURCE_PASSWORD: ${SPRING_DATASOURCE_PASSWORD}
       SPRING_JPA_HIBERNATE_DDL_AUTO: ${SPRING_JPA_HIBERNATE_DDL_AUTO:-update}
       TU_SECRET_ENCRYPTION_KEY: ${TU_SECRET_ENCRYPTION_KEY:-MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=}
-      RAG_SERVICE_URL: ${RAG_SERVICE_URL}
-      RAG_ENABLED: ${RAG_ENABLED:-true}
+      RAG_SERVICE_URL: http://tu-rag-service:19080
+      CRAWL_SERVICE_URL: ${CRAWL_SERVICE_URL:-http://tu-rag-service:19080}
       INTEGRATION_SERVICE_URL: ${INTEGRATION_SERVICE_URL:-http://tu-integration-service:18100}
       SEARCH_ENABLED: ${SEARCH_ENABLED:-true}
       ELASTICSEARCH_URIS: ${ELASTICSEARCH_URIS:-http://elasticsearch:9200}
@@ -51,8 +51,8 @@ services:
       dockerfile: Dockerfile
     container_name: tu-rag-service
     environment:
-      QDRANT_URL: ${QDRANT_URL}
-      QDRANT_COLLECTION: ${QDRANT_COLLECTION:-tu_rag_chunks}
-      RAG_VECTOR_SIZE: ${RAG_VECTOR_SIZE:-256}
+      QDRANT_URL: http://qdrant:6333
+      QDRANT_COLLECTION: tu_rag_chunks
+      RAG_VECTOR_SIZE: 256
     ports:
       - "${TU_RAG_PORT:-19080}:19080"

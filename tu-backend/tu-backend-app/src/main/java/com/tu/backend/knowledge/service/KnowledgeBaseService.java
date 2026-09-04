@@ -1,6 +1,7 @@
 package com.tu.backend.knowledge.service;
 
 import com.tu.backend.common.BusinessException;
+import com.tu.backend.auth.security.CurrentUserIdResolver;
 import com.tu.backend.content.entity.PageContentEntity;
 import com.tu.backend.content.repository.PageContentRepository;
 import com.tu.backend.knowledge.dto.CreateKnowledgeBaseRequest;
@@ -39,6 +40,8 @@ public class KnowledgeBaseService {
     private final ObjectMapper objectMapper;
     private final KnowledgeRelationService knowledgeRelationService;
     private final KnowledgePointService knowledgePointService;
+    private final CurrentUserIdResolver currentUserIdResolver;
+    private final KnowledgeBaseAccessService knowledgeBaseAccessService;
 
     public KnowledgeBaseService(
         KnowledgeBaseRepository knowledgeBaseRepository,
@@ -47,7 +50,9 @@ public class KnowledgeBaseService {
         PageContentRepository pageContentRepository,
         ObjectMapper objectMapper,
         KnowledgeRelationService knowledgeRelationService,
-        KnowledgePointService knowledgePointService
+        KnowledgePointService knowledgePointService,
+        CurrentUserIdResolver currentUserIdResolver,
+        KnowledgeBaseAccessService knowledgeBaseAccessService
     ) {
         this.knowledgeBaseRepository = knowledgeBaseRepository;
         this.pageService = pageService;
@@ -56,11 +61,13 @@ public class KnowledgeBaseService {
         this.objectMapper = objectMapper;
         this.knowledgeRelationService = knowledgeRelationService;
         this.knowledgePointService = knowledgePointService;
+        this.currentUserIdResolver = currentUserIdResolver;
+        this.knowledgeBaseAccessService = knowledgeBaseAccessService;
     }
 
     @Transactional(readOnly = true)
     public List<KnowledgeBaseDto> list() {
-        return knowledgeBaseRepository.findAll()
+        return knowledgeBaseAccessService.listAccessible()
             .stream()
             .map(this::toDto)
             .toList();
@@ -78,6 +85,7 @@ public class KnowledgeBaseService {
         entity.setName(normalizedName);
         entity.setIcon(request.icon() == null || request.icon().isBlank() ? "📘" : request.icon().trim());
         entity.setDescription(request.description() == null || request.description().isBlank() ? null : request.description().trim());
+        entity.setOwnerUserId(currentUserIdResolver.resolve());
         return toDto(knowledgeBaseRepository.save(entity));
     }
 
@@ -102,6 +110,7 @@ public class KnowledgeBaseService {
         kb.setName(kbName);
         kb.setIcon(request.icon() == null || request.icon().isBlank() ? "📚" : request.icon().trim());
         kb.setDescription(request.description() == null || request.description().isBlank() ? null : request.description().trim());
+        kb.setOwnerUserId(currentUserIdResolver.resolve());
         KnowledgeBaseEntity savedKb = knowledgeBaseRepository.save(kb);
 
         for (int i = 0; i < roots.size(); i++) {
@@ -114,8 +123,7 @@ public class KnowledgeBaseService {
 
     @Transactional
     public KnowledgeBaseDto update(String id, UpdateKnowledgeBaseRequest request) {
-        KnowledgeBaseEntity entity = knowledgeBaseRepository.findById(id)
-            .orElseThrow(() -> new BusinessException(40001, "knowledge base not found"));
+        KnowledgeBaseEntity entity = knowledgeBaseAccessService.requireAccessible(id);
 
         String normalizedName = request.name().trim();
         if (!entity.getName().equals(normalizedName) && knowledgeBaseRepository.existsByName(normalizedName)) {
@@ -128,8 +136,7 @@ public class KnowledgeBaseService {
 
     @Transactional
     public void delete(String id) {
-        KnowledgeBaseEntity entity = knowledgeBaseRepository.findById(id)
-            .orElseThrow(() -> new BusinessException(40001, "knowledge base not found"));
+        KnowledgeBaseEntity entity = knowledgeBaseAccessService.requireAccessible(id);
         pageService.deleteByKnowledgeBaseId(id);
         knowledgePointService.deleteByKbId(id);
         knowledgeRelationService.deleteByKbId(id);

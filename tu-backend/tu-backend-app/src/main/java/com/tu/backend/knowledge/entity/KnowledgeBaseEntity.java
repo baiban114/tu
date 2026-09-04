@@ -26,6 +26,9 @@ public class KnowledgeBaseEntity {
     @Column(length = 255)
     private String description;
 
+    @Column(name = "owner_user_id", length = 64)
+    private String ownerUserId;
+
     @Column(name = "created_at", nullable = false)
     private LocalDateTime createdAt;
 
@@ -76,6 +79,14 @@ public class KnowledgeBaseEntity {
         this.description = description;
     }
 
+    public String getOwnerUserId() {
+        return ownerUserId;
+    }
+
+    public void setOwnerUserId(String ownerUserId) {
+        this.ownerUserId = ownerUserId;
+    }
+
     public LocalDateTime getCreatedAt() {
         return createdAt;
     }
@@ -84,4 +95,3 @@ public class KnowledgeBaseEntity {
         return updatedAt;
     }
 }
-

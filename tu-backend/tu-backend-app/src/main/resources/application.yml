@@ -56,8 +56,9 @@ logging:
     org.hibernate.SQL: info
 
 rag:
-  enabled: ${RAG_ENABLED:true}
-  service-url: ${RAG_SERVICE_URL:http://localhost:19080}
+  enabled: true
+  service-url: http://localhost:19080
+  timeout: 10s
 
 crawl:
   enabled: ${CRAWL_ENABLED:true}

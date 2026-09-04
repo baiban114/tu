@@ -622,7 +622,8 @@ Rules:
 
 - 从 Java 后端读取页面内容，抽取 `richtext`、`table`、`container` 子块文本。
 - `x6` 和 `line` 第一版只索引标题或可提取文本。
-- 调用 FastAPI 内部 `/internal/rag/index`。
+- `pageType=x6board` 的画板页不进入 RAG；触发重建时会删除该页可能残留的历史向量。文档页内嵌的 `x6` 块不受影响。
+- Java 后端将页面文档发送到 Python `tu-rag-service`；Python 负责切分、本地确定性 Embedding，并替换 Qdrant `tu_rag_chunks` 中该页面的向量。
 
 #### 4.5.3 重建知识库索引
 
@@ -633,3 +634,21 @@ Rules:
 
 - 遍历知识库下所有页面并逐页重建索引。
 - 普通页面保存、块同步、块内容更新会自动触发单页 best-effort 重建索引。
+- 继续复用 Python RAG 的 256 维 `tu_rag_chunks` collection；需要修复历史缺失索引时可主动调用本接口。
+
+#### 4.5.4 知识库专业问答
+
+- Method: `POST`
+- Path: `/api/ai/knowledge-chat`
+- Header: `X-User-Id`（前端自动传递；本地开发缺省为 `dev-local-user`）
+
+请求体包含 `question`、可选的 `kbId`、可选的 `conversationId`、可选的最近 12 条 `messages`，以及可选的 `mode`（`fast`，默认；或 `deep`）。显式传入 `kbId` 时后端校验知识库属于当前用户并只检索该库；未传时，根据问题意图从当前用户可访问的知识库候选中选择。完整回答生成后，用户消息与助手消息在同一事务内写入当前用户会话；不传 `conversationId` 时创建新会话。响应中的 `conversationId`、`selectedKbId`、`selectedKbName` 表示实际会话与知识库。Python RAG 不可达时自动降级为选中知识库范围内的 Elasticsearch 关键词检索。
+
+`fast` 使用固定 RAG 管线并流式生成答案；模型返回的 `reasoning_content` 或 `reasoning` 通过 `reasoningContent` 原样返回并持久化。`deep` 使用最多 3 轮 ReAct，只注册绑定当前已授权知识库的只读检索工具，禁止跨知识库和联网检索；工具检索到的来源使用稳定的 `[来源N]` 编号。每轮模型实际返回的 reasoning 通过 `reasoning_delta` 转发，合并后写入最终 `reasoningContent` 并随会话持久化。
+
+流式问答使用 `POST /api/ai/knowledge-chat/stream`，请求体与鉴权头相同，响应类型为 `text/event-stream`。快速模式事件顺序为 `started`、零到多个 `reasoning_delta`、零到多个 `answer_delta`，最后以 `completed` 携带完整 `KnowledgeChatResponse`。深度模式在 `started` 后交错发送 `model_call`、`tool_call`、`tool_done` 等可观察进度（字段包括 `message`、`round`、`toolName`）与各轮 `reasoning_delta`，随后发送 `answer_delta` 和 `completed`；失败时发送 `failed`。客户端以 `completed.result` 校准最终正文、思维链、来源及实际选中的知识库。
+
+会话历史接口：
+
+- `GET /api/ai/knowledge-chat/conversations?page=0&pageSize=20`：按会话开始时间倒序分页。
+- `GET /api/ai/knowledge-chat/conversations/{conversationId}`：读取当前用户的完整会话消息。

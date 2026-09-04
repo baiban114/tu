@@ -18,7 +18,6 @@ import com.tu.backend.rag.dto.RagQueryResponse;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
 
@@ -26,13 +25,14 @@ import java.util.List;
 public class RagIndexService {
 
     private static final Logger log = LoggerFactory.getLogger(RagIndexService.class);
+    private static final String PAGE_TYPE_X6_BOARD = "x6board";
 
     private final PageRepository pageRepository;
     private final PageContentRepository pageContentRepository;
     private final KnowledgeBaseRepository knowledgeBaseRepository;
     private final ObjectMapper objectMapper;
     private final RagDocumentExtractor documentExtractor;
-    private final RagClient ragClient;
+    private final RagStore ragStore;
 
     public RagIndexService(
         PageRepository pageRepository,
@@ -40,30 +40,27 @@ public class RagIndexService {
         KnowledgeBaseRepository knowledgeBaseRepository,
         ObjectMapper objectMapper,
         RagDocumentExtractor documentExtractor,
-        RagClient ragClient
+        RagStore ragStore
     ) {
         this.pageRepository = pageRepository;
         this.pageContentRepository = pageContentRepository;
         this.knowledgeBaseRepository = knowledgeBaseRepository;
         this.objectMapper = objectMapper;
         this.documentExtractor = documentExtractor;
-        this.ragClient = ragClient;
+        this.ragStore = ragStore;
     }
 
-    @Transactional(readOnly = true)
     public RagQueryResponse query(RagQueryRequest request) {
         if (!knowledgeBaseRepository.existsById(request.kbId())) {
             throw new BusinessException(40001, "knowledge base not found");
         }
-        return ragClient.query(request);
+        return ragStore.query(request);
     }
 
-    @Transactional(readOnly = true)
     public void reindexPage(String pageId) {
         indexPage(pageId);
     }
 
-    @Transactional(readOnly = true)
     public void reindexKnowledgeBase(String kbId) {
         if (!knowledgeBaseRepository.existsById(kbId)) {
             throw new BusinessException(40001, "knowledge base not found");
@@ -73,14 +70,17 @@ public class RagIndexService {
         }
     }
 
-    @Transactional(readOnly = true)
     public void indexPage(String pageId) {
         PageEntity page = pageRepository.findById(pageId)
             .orElseThrow(() -> new BusinessException(40001, "page not found"));
+        if (PAGE_TYPE_X6_BOARD.equalsIgnoreCase(page.getPageType())) {
+            ragStore.delete(new RagDeleteRequest(page.getKbId(), pageId, null));
+            return;
+        }
         PageContentEntity content = pageContentRepository.findById(pageId)
             .orElse(null);
         if (content == null) {
-            ragClient.delete(new RagDeleteRequest(page.getKbId(), pageId, null));
+            ragStore.delete(new RagDeleteRequest(page.getKbId(), pageId, null));
             return;
         }
 
@@ -92,38 +92,38 @@ public class RagIndexService {
             blocks,
             content.getUpdatedAt() == null ? page.getUpdatedAt() : content.getUpdatedAt()
         );
-        ragClient.index(new RagIndexRequest(page.getKbId(), page.getId(), documents));
+        ragStore.index(new RagIndexRequest(page.getKbId(), page.getId(), documents));
     }
 
     public void indexPageBestEffort(String pageId) {
         try {
             indexPage(pageId);
         } catch (RuntimeException ex) {
-            log.warn("Failed to index page {} for RAG: {}", pageId, ex.getMessage());
+            log.warn("Failed to index page {} for RAG", pageId, ex);
         }
     }
 
     public void deletePageBestEffort(String kbId, String pageId) {
         try {
-            ragClient.delete(new RagDeleteRequest(kbId, pageId, null));
+            ragStore.delete(new RagDeleteRequest(kbId, pageId, null));
         } catch (RuntimeException ex) {
-            log.warn("Failed to delete page {} from RAG: {}", pageId, ex.getMessage());
+            log.warn("Failed to delete page {} from RAG", pageId, ex);
         }
     }
 
     public void deletePagesBestEffort(String kbId, List<String> pageIds) {
         try {
-            ragClient.delete(new RagDeleteRequest(kbId, null, pageIds));
+            ragStore.delete(new RagDeleteRequest(kbId, null, pageIds));
         } catch (RuntimeException ex) {
-            log.warn("Failed to delete pages from RAG for kb {}: {}", kbId, ex.getMessage());
+            log.warn("Failed to delete pages from RAG for kb {}", kbId, ex);
         }
     }
 
     public void deleteKnowledgeBaseBestEffort(String kbId) {
         try {
-            ragClient.delete(new RagDeleteRequest(kbId, null, null));
+            ragStore.delete(new RagDeleteRequest(kbId, null, null));
         } catch (RuntimeException ex) {
-            log.warn("Failed to delete knowledge base {} from RAG: {}", kbId, ex.getMessage());
+            log.warn("Failed to delete knowledge base {} from RAG", kbId, ex);
         }
     }
 

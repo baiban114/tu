@@ -93,6 +93,7 @@ import {
   formatUmlClassLabel,
   createTaskNode,
   createMindmapNode,
+  MINDMAP_KIND,
   createStarterGraphData,
   resolveBlueprintStarter,
   getBlueprintRegionLabel,
@@ -1329,7 +1330,7 @@ function getNodeOverlayStyle(node: Node): Record<string, string> {
 
 function updateGraphSourceRegion() {
   const kind = props.graphSourceKind ?? props.graphData?.blueprintMeta?.kind;
-  if (!graph || !kind) {
+  if (!graph || !kind || kind === MINDMAP_KIND) {
     graphSourceRegion.value = null;
     return;
   }

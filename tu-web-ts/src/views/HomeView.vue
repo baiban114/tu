@@ -353,6 +353,7 @@ watch(
 
     <div class="workspace__right">
       <div class="workspace-topbar">
+        <RouterLink class="workspace-topbar__link" to="/knowledge-chat">知识库问答</RouterLink>
         <RouterLink class="workspace-topbar__link" to="/tasks">任务管理</RouterLink>
         <RouterLink class="workspace-topbar__link" to="/resources">引用与资源</RouterLink>
         <RouterLink class="workspace-topbar__link" :to="{ path: '/resources', query: { tab: 'objects' } }">对象管理</RouterLink>

@@ -6,6 +6,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.tu.backend.common.BusinessException;
 import java.util.List;
+import java.util.Map;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.chat.messages.AssistantMessage;
@@ -117,6 +118,45 @@ class OpenAiAgentToolLoopClientTest {
     }
 
     @Test
+    void testRunToolLoop_whenReasoningMetadataExists_emitsCompleteThinkingProgress() {
+        String reasoningContent = "逐步核对知识库证据。\n".repeat(300);
+        java.util.ArrayList<AiAgentProgressEvent> events = new java.util.ArrayList<>();
+        AiAgentProgressListener listener = new AiAgentProgressListener() {
+            @Override
+            public void onEvent(AiAgentProgressEvent event) {
+                events.add(event);
+            }
+
+            @Override
+            public boolean isCancelled() {
+                return false;
+            }
+        };
+        OpenAiCompatibleChatClient client = client((config, options) -> prompt -> new ChatResponse(
+            List.of(new Generation(AssistantMessage.builder()
+                .content("最终回答")
+                .properties(Map.of("reasoningContent", reasoningContent))
+                .build())),
+            ChatResponseMetadata.builder().model("model-a").build()
+        ));
+
+        client.runToolLoop(
+            config(),
+            "system",
+            "user",
+            new AiAgentExecutionContext("kb-1", "Java", false),
+            listener,
+            new StubTools()
+        );
+
+        assertThat(events)
+            .filteredOn(event -> AiAgentProgressEvent.phaseThinking().equals(event.phase()))
+            .singleElement()
+            .extracting(AiAgentProgressEvent::message)
+            .isEqualTo(reasoningContent.strip());
+    }
+
+    @Test
     void executesToolLoopUntilModelStopsCallingTools() {
         ChatModel chatModel = prompt -> {
             if (prompt.getInstructions().size() <= 2) {
@@ -164,6 +204,30 @@ class OpenAiAgentToolLoopClientTest {
         ))
             .isInstanceOf(BusinessException.class)
             .hasMessageContaining("exceeded max tool loop rounds");
+    }
+
+    @Test
+    void testRunToolLoopLimited_whenRequestedLimitIsLower_usesRequestedLimit() {
+        AiAgentProperties properties = new AiAgentProperties();
+        properties.getToolLoop().setMaxToolRounds(8);
+        OpenAiCompatibleChatClient client = new OpenAiCompatibleChatClient(
+            objectMapper,
+            (config, options) -> prompt -> responseWithToolCall(),
+            ToolCallingManager.builder().build(),
+            properties
+        );
+
+        assertThatThrownBy(() -> client.runToolLoopLimited(
+            config(),
+            "system",
+            "user",
+            new AiAgentExecutionContext("kb-1", "Java", false),
+            null,
+            3,
+            new StubTools()
+        ))
+            .isInstanceOf(BusinessException.class)
+            .hasMessageContaining("exceeded max tool loop rounds: 3");
     }
 
     private OpenAiCompatibleChatClient client(OpenAiCompatibleChatClient.ChatModelFactory factory) {

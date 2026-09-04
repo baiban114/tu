@@ -37,7 +37,7 @@ test.beforeEach(async ({ page }) => {
               tableData: {
                 textMode: 'plain',
                 headers: ['E2E-A', 'E2E-B'],
-                rows: [['a1', 'b1'], ['a2', 'b2']],
+                rows: [['第一行\n第二行', 'b1'], ['a2', 'b2']],
                 columnWidths: [120, 140],
                 rowHeights: [38, 38],
               },
@@ -115,6 +115,28 @@ test('inserts a plain table column from the column menu', async ({ page }) => {
       widths: embed.tableData.columnWidths.length,
     }
   }).toEqual({ headers: 3, cells: 3, widths: 3 })
+})
+
+test('opens a two-line plain table cell without a vertical scrollbar', async ({ page }) => {
+  const cell = page.locator('.table-block').last().locator('tbody td').first()
+  const textarea = cell.locator('textarea')
+  await expect(textarea).toHaveValue('第一行\n第二行')
+
+  const metrics = await textarea.evaluate((element) => {
+    const style = window.getComputedStyle(element)
+    return {
+      cellHeight: element.closest('td')?.getBoundingClientRect().height || 0,
+      clientHeight: element.clientHeight,
+      scrollHeight: element.scrollHeight,
+      paddingBlock: parseFloat(style.paddingTop) + parseFloat(style.paddingBottom),
+      paddingInline: parseFloat(style.paddingLeft) + parseFloat(style.paddingRight),
+    }
+  })
+
+  expect(metrics.cellHeight).toBeGreaterThanOrEqual(64)
+  expect(metrics.scrollHeight).toBeLessThanOrEqual(metrics.clientHeight)
+  expect(metrics.paddingBlock).toBe(8)
+  expect(metrics.paddingInline).toBe(10)
 })
 
 test('inserts a multi-table field from the field menu', async ({ page }) => {

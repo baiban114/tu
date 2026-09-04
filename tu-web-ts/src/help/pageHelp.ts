@@ -18,7 +18,7 @@ const SUB = {
   backend: { name: 'tu-backend', role: '知识库、页面/块、资源、标注与设置等业务 API。' },
   gateway: { name: 'tu-gateway', role: '统一入口代理前端 `/api` 到后端服务。' },
   es: { name: 'Elasticsearch', role: '页面全文检索（标题与块正文）。' },
-  rag: { name: 'tu-rag-service + Qdrant', role: '语义检索与知识库 RAG 索引。' },
+  rag: { name: 'Spring AI Alibaba + Qdrant', role: 'DashScope 向量化、语义检索与知识库 RAG 索引。' },
   minio: { name: 'MinIO / S3', role: '图片与 PDF 等文件对象存储。' },
   ai: { name: 'AI Agent', role: '学习计划、文档标记、学习文档编排等 OpenAI-compatible 工具循环。' },
   kaneo: { name: 'Kaneo（经 tu-integration-service）', role: '外部任务系统读写与页面/块关联。' },

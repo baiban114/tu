@@ -11,6 +11,11 @@ const router = createRouter({
     },
 
     {
+      path: '/knowledge-chat',
+      name: 'knowledge-chat',
+      component: () => import('../views/KnowledgeChatView.vue'),
+    },
+    {
       path: '/resources',
       name: 'resources',
       component: () => import('../views/ResourceManagerView.vue'),

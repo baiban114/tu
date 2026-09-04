@@ -7,6 +7,28 @@ public record AiChatCompletionResult(
     Long durationMs,
     Integer promptTokens,
     Integer completionTokens,
-    Integer totalTokens
+    Integer totalTokens,
+    String reasoningContent
 ) {
+
+    public AiChatCompletionResult(
+        String content,
+        String requestBodyJson,
+        String rawResponseBody,
+        Long durationMs,
+        Integer promptTokens,
+        Integer completionTokens,
+        Integer totalTokens
+    ) {
+        this(
+            content,
+            requestBodyJson,
+            rawResponseBody,
+            durationMs,
+            promptTokens,
+            completionTokens,
+            totalTokens,
+            ""
+        );
+    }
 }

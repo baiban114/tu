@@ -8,8 +8,10 @@ import com.openai.core.Timeout;
 import com.tu.backend.common.BusinessException;
 import java.time.Duration;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
+import java.util.stream.Stream;
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.metadata.ChatResponseMetadata;
@@ -109,6 +111,101 @@ class OpenAiCompatibleChatClientTest {
     }
 
     @Test
+    void testCompleteJson_whenReasoningMetadataExists_preservesCompleteReasoningContent() {
+        String reasoningContent = "step\n".repeat(2000);
+        OpenAiCompatibleChatClient client = client((config, options) -> prompt -> new ChatResponse(
+            List.of(new Generation(AssistantMessage.builder()
+                .content("{\"ok\":true}")
+                .properties(Map.of("reasoningContent", reasoningContent))
+                .build())),
+            ChatResponseMetadata.builder().id("chatcmpl-test").model("model-a").build()
+        ));
+
+        AiChatCompletionResult result = client.completeJson(
+            new AiAgentRuntimeConfig(true, "https://api.example.com", "sk-secret", "model-a", 30, 300, 300),
+            "system",
+            "user"
+        );
+
+        assertThat(result.reasoningContent()).isEqualTo(reasoningContent);
+        assertThat(result.rawResponseBody()).contains("reasoningContent");
+    }
+
+    @Test
+    void testRawChunkFromJson_whenDeepSeekFieldExists_readsReasoningContentAndUsage() {
+        String payload = """
+            {"choices":[{"delta":{"reasoning_content":"逐步分析","content":"答案"}}],
+             "usage":{"prompt_tokens":12,"completion_tokens":8,"total_tokens":20}}
+            """;
+
+        OpenAiCompatibleChatClient.RawChatChunk chunk = OpenAiCompatibleChatClient.rawChunkFromJson(
+            objectMapper,
+            payload
+        );
+
+        assertThat(chunk.reasoningContent()).isEqualTo("逐步分析");
+        assertThat(chunk.content()).isEqualTo("答案");
+        assertThat(chunk.promptTokens()).isEqualTo(12);
+        assertThat(chunk.completionTokens()).isEqualTo(8);
+        assertThat(chunk.totalTokens()).isEqualTo(20);
+    }
+
+    @Test
+    void testRawChunkFromJson_whenFallbackFieldExists_readsReasoningContent() {
+        String payload = """
+            {"choices":[{"delta":{"reasoning":"备用推理"}}]}
+            """;
+
+        OpenAiCompatibleChatClient.RawChatChunk chunk = OpenAiCompatibleChatClient.rawChunkFromJson(
+            objectMapper,
+            payload
+        );
+
+        assertThat(chunk.reasoningContent()).isEqualTo("备用推理");
+        assertThat(chunk.content()).isEmpty();
+        assertThat(chunk.totalTokens()).isNull();
+    }
+
+    @Test
+    void testStreamText_whenRawChunksContainReasoning_emitsReasoningBeforeAnswer() {
+        OpenAiCompatibleChatClient client = new OpenAiCompatibleChatClient(
+            objectMapper,
+            (config, options) -> responseModel("unused", null),
+            (config, systemPrompt, userPrompt) -> rawStream(List.of(
+                new OpenAiCompatibleChatClient.RawChatChunk("", "先分析", null, null, null),
+                new OpenAiCompatibleChatClient.RawChatChunk("", "再检索", null, null, null),
+                new OpenAiCompatibleChatClient.RawChatChunk("答案", "", null, null, null),
+                new OpenAiCompatibleChatClient.RawChatChunk("完成", "", 12, 8, 20)
+            ))
+        );
+        StringBuilder reasoning = new StringBuilder();
+        StringBuilder answer = new StringBuilder();
+
+        AiChatCompletionResult result = client.streamText(
+            new AiAgentRuntimeConfig(true, "https://api.example.com", "sk-secret", "model-a", 30, 300, 300),
+            "system",
+            "user",
+            new AiChatStreamListener() {
+                @Override
+                public void onReasoningDelta(String delta) {
+                    reasoning.append(delta);
+                }
+
+                @Override
+                public void onAnswerDelta(String delta) {
+                    answer.append(delta);
+                }
+            }
+        );
+
+        assertThat(reasoning.toString()).isEqualTo("先分析再检索");
+        assertThat(answer.toString()).isEqualTo("答案完成");
+        assertThat(result.reasoningContent()).isEqualTo("先分析再检索");
+        assertThat(result.content()).isEqualTo("答案完成");
+        assertThat(result.totalTokens()).isEqualTo(20);
+    }
+
+    @Test
     void keepsTokenMetricsNullWhenUsageIsMissing() {
         OpenAiCompatibleChatClient client = client((config, options) -> responseModel("{\"ok\":true}", null));
 
@@ -148,6 +245,21 @@ class OpenAiCompatibleChatClientTest {
 
     private OpenAiCompatibleChatClient client(OpenAiCompatibleChatClient.ChatModelFactory factory) {
         return new OpenAiCompatibleChatClient(objectMapper, factory);
+    }
+
+    private OpenAiCompatibleChatClient.RawChatStream rawStream(
+        List<OpenAiCompatibleChatClient.RawChatChunk> chunks
+    ) {
+        return new OpenAiCompatibleChatClient.RawChatStream() {
+            @Override
+            public Stream<OpenAiCompatibleChatClient.RawChatChunk> stream() {
+                return chunks.stream();
+            }
+
+            @Override
+            public void close() {
+            }
+        };
     }
 
     private ChatModel responseModel(String content, Usage usage) {

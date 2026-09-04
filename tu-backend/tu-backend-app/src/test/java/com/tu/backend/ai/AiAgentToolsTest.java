@@ -7,7 +7,8 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.when;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.tu.backend.rag.RagClient;
+import com.tu.backend.common.BusinessException;
+import com.tu.backend.rag.RagIndexService;
 import com.tu.backend.rag.dto.RagQueryRequest;
 import com.tu.backend.rag.dto.RagQueryResponse;
 import com.tu.backend.rag.dto.RagSourceDto;
@@ -28,7 +29,7 @@ class AiAgentToolsTest {
     private SearchService searchService;
 
     @Mock
-    private RagClient ragClient;
+    private RagIndexService ragIndexService;
 
     private final ObjectMapper objectMapper = new ObjectMapper();
 
@@ -44,7 +45,7 @@ class AiAgentToolsTest {
             true,
             null
         ));
-        AiAgentTools tools = new AiAgentTools(searchService, ragClient, objectMapper);
+        AiAgentTools tools = new AiAgentTools(searchService, ragIndexService, objectMapper);
 
         String result = tools.searchKnowledgeBasePages("java", 5);
 
@@ -54,7 +55,7 @@ class AiAgentToolsTest {
 
     @Test
     void queryKnowledgeBaseRagRequiresKbId() {
-        AiAgentTools tools = new AiAgentTools(searchService, ragClient, objectMapper);
+        AiAgentTools tools = new AiAgentTools(searchService, ragIndexService, objectMapper);
 
         String result = tools.queryKnowledgeBaseRag("how to learn java", 5);
 
@@ -64,15 +65,66 @@ class AiAgentToolsTest {
     @Test
     void queryKnowledgeBaseRagUsesExecutionContext() {
         AiAgentExecutionContextHolder.set(new AiAgentExecutionContext("kb-1", "Java", false));
-        when(ragClient.query(any(RagQueryRequest.class))).thenReturn(new RagQueryResponse(
+        when(ragIndexService.query(any(RagQueryRequest.class))).thenReturn(new RagQueryResponse(
             "Start with syntax basics.",
             List.of(new RagSourceDto("kb-1", "p-1", "b-1", "Syntax", "content", "richtext", 0.9))
         ));
-        AiAgentTools tools = new AiAgentTools(searchService, ragClient, objectMapper);
+        AiAgentTools tools = new AiAgentTools(searchService, ragIndexService, objectMapper);
 
         String result = tools.queryKnowledgeBaseRag("how to learn java", 5);
 
         assertThat(result).contains("\"answer\":\"Start with syntax basics.\"");
         assertThat(result).contains("\"title\":\"Syntax\"");
+    }
+
+    @Test
+    void testQueryKnowledgeBaseRag_whenRagUnavailable_fallsBackToKeywordSearch() {
+        AiAgentExecutionContextHolder.set(new AiAgentExecutionContext("kb-1", "Java", false));
+        when(ragIndexService.query(any(RagQueryRequest.class)))
+            .thenThrow(new BusinessException(50300, "rag service unavailable"));
+        when(searchService.searchKnowledgeBase("how to learn java", "kb-1", 5)).thenReturn(
+            new SearchResponseDto(
+                List.of(new SearchHitDto(
+                    "kb-1", "Notes", "p-1", "Java Intro", "b-1", "richtext", "Syntax", "keyword snippet"
+                )),
+                true,
+                null
+            )
+        );
+        AiAgentTools tools = new AiAgentTools(searchService, ragIndexService, objectMapper);
+
+        String result = tools.queryKnowledgeBaseRag("how to learn java", 5);
+
+        assertThat(result).contains("\"degraded\":true");
+        assertThat(result).contains("\"retrievalMode\":\"keyword\"");
+        assertThat(result).contains("\"content\":\"keyword snippet\"");
+    }
+
+    @Test
+    void testQueryKnowledgeBaseRag_whenAllRetrievalUnavailable_returnsContinuableResult() {
+        AiAgentExecutionContextHolder.set(new AiAgentExecutionContext("kb-1", "Java", false));
+        when(ragIndexService.query(any(RagQueryRequest.class)))
+            .thenThrow(new BusinessException(50300, "rag service unavailable"));
+        when(searchService.searchKnowledgeBase("how to learn java", "kb-1", 5))
+            .thenThrow(new IllegalStateException("elasticsearch unavailable"));
+        AiAgentTools tools = new AiAgentTools(searchService, ragIndexService, objectMapper);
+
+        String result = tools.queryKnowledgeBaseRag("how to learn java", 5);
+
+        assertThat(result).contains("\"degraded\":true");
+        assertThat(result).contains("\"retrievalMode\":\"none\"");
+        assertThat(result).contains("\"sources\":[]");
+    }
+
+    @Test
+    void testSearchKnowledgeBasePages_whenSearchUnavailable_returnsContinuableResult() {
+        when(searchService.search("java", 5)).thenThrow(new IllegalStateException("elasticsearch unavailable"));
+        AiAgentTools tools = new AiAgentTools(searchService, ragIndexService, objectMapper);
+
+        String result = tools.searchKnowledgeBasePages("java", 5);
+
+        assertThat(result).contains("\"degraded\":true");
+        assertThat(result).contains("\"retrievalMode\":\"none\"");
+        assertThat(result).contains("\"hits\":[]");
     }
 }
