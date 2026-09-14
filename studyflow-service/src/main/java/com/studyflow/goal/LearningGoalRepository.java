@@ -4,6 +4,7 @@ import org.springframework.jdbc.core.RowMapper;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Repository;
 
+import java.time.LocalDate;
 import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.Optional;
@@ -25,6 +26,7 @@ public class LearningGoalRepository {
             rs.getString("resource_excerpt_id"),
             rs.getString("snapshot_json"),
             rs.getBoolean("current_flag"),
+            rs.getObject("deadline", LocalDate.class),
             rs.getObject("created_at", OffsetDateTime.class),
             rs.getObject("updated_at", OffsetDateTime.class)
     );
@@ -40,11 +42,11 @@ public class LearningGoalRepository {
                         INSERT INTO learning_goal (
                             id, user_id, title, kb_id, source_kind,
                             knowledge_point_id, resource_item_id, resource_excerpt_id,
-                            snapshot_json, current_flag, created_at, updated_at
+                            snapshot_json, current_flag, deadline, created_at, updated_at
                         ) VALUES (
                             :id, :userId, :title, :kbId, :sourceKind,
                             :knowledgePointId, :resourceItemId, :resourceExcerptId,
-                            :snapshotJson, :currentFlag, :createdAt, :updatedAt
+                            :snapshotJson, :currentFlag, :deadline, :createdAt, :updatedAt
                         )
                         """)
                 .param("id", goal.id())
@@ -57,6 +59,7 @@ public class LearningGoalRepository {
                 .param("resourceExcerptId", goal.resourceExcerptId())
                 .param("snapshotJson", goal.snapshotJson())
                 .param("currentFlag", Boolean.TRUE.equals(goal.currentFlag()))
+                .param("deadline", goal.deadline())
                 .param("createdAt", goal.createdAt())
                 .param("updatedAt", goal.updatedAt())
                 .update();
@@ -73,6 +76,7 @@ public class LearningGoalRepository {
                             resource_excerpt_id = :resourceExcerptId,
                             snapshot_json = :snapshotJson,
                             current_flag = :currentFlag,
+                            deadline = :deadline,
                             updated_at = :updatedAt
                         WHERE id = :id AND user_id = :userId
                         """)
@@ -84,6 +88,7 @@ public class LearningGoalRepository {
                 .param("resourceExcerptId", goal.resourceExcerptId())
                 .param("snapshotJson", goal.snapshotJson())
                 .param("currentFlag", Boolean.TRUE.equals(goal.currentFlag()))
+                .param("deadline", goal.deadline())
                 .param("updatedAt", goal.updatedAt())
                 .param("id", goal.id())
                 .param("userId", goal.userId())
@@ -131,7 +136,7 @@ public class LearningGoalRepository {
         return jdbcClient.sql("""
                         SELECT id, user_id, title, kb_id, source_kind,
                                knowledge_point_id, resource_item_id, resource_excerpt_id,
-                               snapshot_json, current_flag, created_at, updated_at
+                               snapshot_json, current_flag, deadline, created_at, updated_at
                         FROM learning_goal
                         WHERE id = :id AND user_id = :userId
                         """)
@@ -145,7 +150,7 @@ public class LearningGoalRepository {
         return jdbcClient.sql("""
                         SELECT id, user_id, title, kb_id, source_kind,
                                knowledge_point_id, resource_item_id, resource_excerpt_id,
-                               snapshot_json, current_flag, created_at, updated_at
+                               snapshot_json, current_flag, deadline, created_at, updated_at
                         FROM learning_goal
                         WHERE user_id = :userId AND current_flag = TRUE
                         LIMIT 1
@@ -169,7 +174,7 @@ public class LearningGoalRepository {
         return jdbcClient.sql("""
                         SELECT id, user_id, title, kb_id, source_kind,
                                knowledge_point_id, resource_item_id, resource_excerpt_id,
-                               snapshot_json, current_flag, created_at, updated_at
+                               snapshot_json, current_flag, deadline, created_at, updated_at
                         FROM learning_goal
                         WHERE user_id = :userId
                         ORDER BY current_flag DESC, updated_at DESC

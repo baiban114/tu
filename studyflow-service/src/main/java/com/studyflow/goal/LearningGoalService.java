@@ -6,6 +6,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
+import java.time.LocalDate;
 import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.UUID;
@@ -65,6 +66,7 @@ public class LearningGoalService {
                 payload.resourceExcerptId(),
                 payload.snapshotJson(),
                 setCurrent,
+                payload.deadline(),
                 now,
                 now
         );
@@ -95,6 +97,7 @@ public class LearningGoalService {
                 payload.resourceExcerptId(),
                 payload.snapshotJson(),
                 currentFlag,
+                payload.deadline(),
                 existing.createdAt(),
                 now
         );
@@ -164,7 +167,8 @@ public class LearningGoalService {
                 knowledgePointId,
                 resourceItemId,
                 resourceExcerptId,
-                snapshotJson
+                snapshotJson,
+                request.deadline()
         );
     }
 
@@ -196,7 +200,8 @@ public class LearningGoalService {
             String knowledgePointId,
             String resourceItemId,
             String resourceExcerptId,
-            String snapshotJson
+            String snapshotJson,
+            LocalDate deadline
     ) {
     }
 }

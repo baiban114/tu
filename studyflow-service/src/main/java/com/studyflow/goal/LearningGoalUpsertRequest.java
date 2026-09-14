@@ -3,6 +3,8 @@ package com.studyflow.goal;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Size;
 
+import java.time.LocalDate;
+
 /**
  * Create / update learning goal payload.
  *
@@ -14,6 +16,7 @@ import jakarta.validation.constraints.Size;
  * @param resourceExcerptId  optional
  * @param snapshotJson       optional JSON string
  * @param setCurrent         when true, mark as current after write
+ * @param deadline           optional target completion date
  */
 public record LearningGoalUpsertRequest(
         @NotBlank @Size(max = 200) String title,
@@ -23,6 +26,7 @@ public record LearningGoalUpsertRequest(
         @Size(max = 64) String resourceItemId,
         @Size(max = 64) String resourceExcerptId,
         @Size(max = 20_000) String snapshotJson,
-        Boolean setCurrent
+        Boolean setCurrent,
+        LocalDate deadline
 ) {
 }

@@ -9,6 +9,7 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.time.OffsetDateTime;
+import java.time.LocalDate;
 import java.util.List;
 import java.util.Optional;
 
@@ -45,7 +46,8 @@ class LearningGoalServiceTest {
                 null,
                 null,
                 null,
-                Boolean.TRUE
+                Boolean.TRUE,
+                LocalDate.of(2026, 9, 30)
         );
 
         LearningGoal created = service.create("u1", request);
@@ -56,6 +58,7 @@ class LearningGoalServiceTest {
         assertEquals("Dijkstra", captor.getValue().title());
         assertEquals("knowledge_point", captor.getValue().sourceKind());
         assertEquals("kp-1", captor.getValue().knowledgePointId());
+        assertEquals(LocalDate.of(2026, 9, 30), captor.getValue().deadline());
         assertTrue(Boolean.TRUE.equals(captor.getValue().currentFlag()));
         assertEquals("Dijkstra", created.title());
     }
@@ -66,6 +69,7 @@ class LearningGoalServiceTest {
                 "x",
                 null,
                 "knowledge_point",
+                null,
                 null,
                 null,
                 null,
@@ -116,6 +120,7 @@ class LearningGoalServiceTest {
                 null,
                 null,
                 current,
+                LocalDate.of(2026, 9, 30),
                 now,
                 now
         );

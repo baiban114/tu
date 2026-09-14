@@ -22,6 +22,7 @@
         <spring-cloud.version>2025.1.2</spring-cloud.version>
         <spring-cloud-alibaba.version>2025.1.0.0</spring-cloud-alibaba.version>
         <dubbo.version>3.3.6</dubbo.version>
+        <nacos-client.version>2.5.1</nacos-client.version>
         <tu-platform-api.version>0.0.1-SNAPSHOT</tu-platform-api.version>
         <!-- Dubbo 3.3.6 JsonUtil SPI probes fastjson/gson on JDK 25; remove when Dubbo >= 3.3.7 -->
         <fastjson.version>1.2.83</fastjson.version>
@@ -43,6 +44,13 @@
                 <version>${spring-cloud-alibaba.version}</version>
                 <type>pom</type>
                 <scope>import</scope>
+            </dependency>
+            <!-- Dubbo 3.3.6 is compiled against Nacos client 2.5.1. Keep the
+                 shared client on that version to avoid a config-listener busy loop. -->
+            <dependency>
+                <groupId>com.alibaba.nacos</groupId>
+                <artifactId>nacos-client</artifactId>
+                <version>${nacos-client.version}</version>
             </dependency>
         </dependencies>
     </dependencyManagement>

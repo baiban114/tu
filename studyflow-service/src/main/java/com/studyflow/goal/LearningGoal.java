@@ -1,5 +1,6 @@
 package com.studyflow.goal;
 
+import java.time.LocalDate;
 import java.time.OffsetDateTime;
 
 /**
@@ -15,6 +16,7 @@ import java.time.OffsetDateTime;
  * @param resourceExcerptId  optional excerpt id
  * @param snapshotJson       optional display snapshot JSON
  * @param currentFlag        whether this is the user's active goal
+ * @param deadline           optional target completion date
  * @param createdAt          created
  * @param updatedAt          updated
  */
@@ -29,6 +31,7 @@ public record LearningGoal(
         String resourceExcerptId,
         String snapshotJson,
         Boolean currentFlag,
+        LocalDate deadline,
         OffsetDateTime createdAt,
         OffsetDateTime updatedAt
 ) {
