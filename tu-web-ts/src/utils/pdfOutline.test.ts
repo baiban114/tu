@@ -2,6 +2,9 @@ import { describe, expect, it } from 'vitest'
 import {
   buildPdfSidebarTree,
   collectExpandableNodeIds,
+  mergePdfSidebarBookmarks,
+  normalizePdfCustomBookmarks,
+  pdfSidebarNodesToTreeNodes,
   resolveDestPageNumber,
   resolveSidebarNodePage,
   type PdfSidebarNode,
@@ -83,6 +86,26 @@ describe('pdfOutline', () => {
     expect(collectExpandableNodeIds(nodes)).toEqual(['a'])
   })
 
+  it('adapts PDF outline nodes to the shared tree model', () => {
+    const source: PdfSidebarNode[] = [{
+      id: 'outline',
+      title: 'Chapter',
+      pageNumber: 2,
+      children: [{ id: 'custom', title: '未命名书签', pageNumber: 4, children: [], custom: true }],
+    }]
+    expect(pdfSidebarNodesToTreeNodes(source)).toEqual([{
+      id: 'outline',
+      label: 'Chapter',
+      children: [{
+        id: 'custom',
+        label: '未命名书签',
+        children: [],
+        meta: { pageNumber: 4, custom: true },
+      }],
+      meta: { pageNumber: 2, custom: false },
+    }])
+  })
+
   it('buildPdfSidebarTree skips huge page list in full mode without outline', async () => {
     const doc = mockDoc({ outline: null })
     const { nodes, source } = await buildPdfSidebarTree(doc, 1, 120, { viewMode: 'full' })
@@ -100,5 +123,91 @@ describe('pdfOutline', () => {
     expect(source).toBe('outline')
     expect(nodes).toHaveLength(1)
     expect(nodes[0].pageNumber).toBe(1)
+  })
+
+  it('merges persisted bookmarks after the PDF outline', async () => {
+    const ref = { id: 'chapter' }
+    const doc = mockDoc({
+      outline: [{ title: 'Intro', dest: [ref], items: [] }],
+      pageIndexByRef: new Map([[ref, 0]]),
+    })
+    const { nodes, source } = await buildPdfSidebarTree(doc, 1, 20, {
+      customBookmarks: [{ id: 'mine', title: '我的重点', pageNumber: 9 }],
+    })
+    expect(source).toBe('outline')
+    expect(nodes).toHaveLength(2)
+    expect(nodes[1]).toMatchObject({
+      id: 'mine',
+      title: '我的重点',
+      pageNumber: 9,
+      custom: true,
+    })
+  })
+
+  it('uses persisted bookmarks when the PDF has no outline', async () => {
+    const doc = mockDoc({ outline: null })
+    const { nodes, source } = await buildPdfSidebarTree(doc, 3, 8, {
+      customBookmarks: [{ id: 'mine', title: '重点', pageNumber: 4 }],
+    })
+    expect(source).toBe('outline')
+    expect(nodes).toEqual([{
+      id: 'mine',
+      title: '重点',
+      pageNumber: 4,
+      children: [],
+      custom: true,
+    }])
+  })
+
+  it('clamps, deduplicates and appends custom bookmark trees', () => {
+    expect(normalizePdfCustomBookmarks([
+      { id: 'a', title: 'A', pageNumber: 99 },
+      { id: 'a', title: 'duplicate', pageNumber: 2 },
+      { id: 'b', title: '', pageNumber: 5 },
+      { id: 'c', title: 'C', pageNumber: 1 },
+    ], 3, 8)).toEqual([
+      { id: 'a', title: 'A', pageNumber: 8 },
+      { id: 'c', title: 'C', pageNumber: 3 },
+    ])
+
+    expect(mergePdfSidebarBookmarks([
+      { id: 'outline', title: 'Outline', pageNumber: 2, children: [] },
+    ], [{ id: 'custom', title: 'Custom', pageNumber: 7 }], 1, 9)).toEqual([
+      { id: 'outline', title: 'Outline', pageNumber: 2, children: [] },
+      {
+        id: 'custom',
+        title: 'Custom',
+        pageNumber: 7,
+        children: [],
+        custom: true,
+      },
+    ])
+
+    expect(mergePdfSidebarBookmarks([], [
+      { id: 'parent', title: 'Parent', pageNumber: 1 },
+      { id: 'child', title: 'Child', pageNumber: 2, parentId: 'parent' },
+      { id: 'orphan', title: 'Orphan', pageNumber: 3, parentId: 'missing' },
+    ], 1, 9)).toEqual([
+      {
+        id: 'parent',
+        title: 'Parent',
+        pageNumber: 1,
+        children: [{
+          id: 'child',
+          title: 'Child',
+          pageNumber: 2,
+          children: [],
+          custom: true,
+        }],
+        custom: true,
+      },
+      {
+        id: 'orphan',
+        title: 'Orphan',
+        pageNumber: 3,
+        children: [],
+        custom: true,
+      },
+    ])
   })
 })

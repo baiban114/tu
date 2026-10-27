@@ -63,9 +63,12 @@ function onHeaderDragStart(event: DragEvent) {
 
 <template>
   <div
-    v-if="typeLabel || title || titleEditable || compoundBadges.length > 0 || $slots.default || $slots.trailing"
+    v-if="typeLabel || title || titleEditable || compoundBadges.length > 0 || $slots.default || $slots.center || $slots.trailing"
     class="tu-block-chrome-header"
-    :class="{ 'tu-block-chrome-header--drag-handle': dragHandle }"
+    :class="{
+      'tu-block-chrome-header--drag-handle': dragHandle,
+      'tu-block-chrome-header--has-center': Boolean($slots.center),
+    }"
     :data-drag-handle="dragHandle ? '' : undefined"
     :data-node-view-drag-handle="dragHandle ? '' : undefined"
     :draggable="headerDraggable"
@@ -80,6 +83,7 @@ function onHeaderDragStart(event: DragEvent) {
         type="text"
         data-node-view-no-drag
         draggable="false"
+        :aria-label="titlePlaceholder"
         :placeholder="titlePlaceholder"
         :title="title"
         @mousedown.stop
@@ -105,6 +109,13 @@ function onHeaderDragStart(event: DragEvent) {
         @mousedown.stop
         @click.stop="emit('compound-badge-click', badge.annotationId, $event)"
       />
+    </div>
+    <div
+      v-if="$slots.center"
+      class="tu-block-chrome-header__center"
+      data-node-view-no-drag
+    >
+      <slot name="center" />
     </div>
     <div
       v-if="$slots.trailing"
@@ -136,12 +147,34 @@ function onHeaderDragStart(event: DragEvent) {
   gap: 6px;
   min-width: 0;
   flex: 1;
+  container-type: inline-size;
+}
+
+.tu-block-chrome-header--has-center {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  height: 34px;
+  box-sizing: border-box;
+  padding-block: 0;
+}
+
+.tu-block-chrome-header__center {
+  display: flex;
+  flex-shrink: 1;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
 }
 
 .tu-block-chrome-header__trailing {
   display: flex;
+  flex-wrap: nowrap;
   align-items: center;
-  flex-shrink: 0;
+  justify-content: flex-end;
+  gap: 4px;
+  min-width: 0;
+  flex-shrink: 1;
+  justify-self: end;
 }
 
 .tu-block-chrome-header__type-badge {
@@ -183,6 +216,12 @@ function onHeaderDragStart(event: DragEvent) {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+@container (max-width: 720px) {
+  .tu-block-chrome-header__title-input {
+    max-width: 45cqw;
+  }
 }
 
 .tu-block-chrome-header__title-input:hover {

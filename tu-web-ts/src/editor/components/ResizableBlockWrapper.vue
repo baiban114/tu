@@ -208,17 +208,17 @@ onBeforeUnmount(() => {
       @mouseleave="onChromeMouseLeave"
       @compound-badge-click="(annotationId, event) => emit('compound-badge-click', blockId, annotationId, event)"
       @title-change="emit('title-change', $event)"
-    />
-
-    <div
-      v-if="$slots['header-meta']"
-      class="resizable-block-wrapper__header-meta"
-      data-node-view-no-drag
-      @mouseenter="onChromeMouseEnter"
-      @mouseleave="onChromeMouseLeave"
     >
-      <slot name="header-meta" />
-    </div>
+      <template v-if="$slots['header-meta']" #default>
+        <slot name="header-meta" />
+      </template>
+      <template v-if="$slots['toolbar-center']" #center>
+        <slot name="toolbar-center" />
+      </template>
+      <template v-if="$slots.toolbar" #trailing>
+        <slot name="toolbar" />
+      </template>
+    </TuBlockChromeHeader>
 
     <component
       :is="'h' + headingLevel"
@@ -284,20 +284,6 @@ onBeforeUnmount(() => {
 .resizable-block-wrapper--lasso-selected {
   border-color: #fa8c16;
   box-shadow: 0 0 0 2px rgba(250, 140, 22, 0.2), inset 0 0 0 1px rgba(250, 140, 22, 0.08);
-}
-
-.resizable-block-wrapper__header-meta {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 4px 8px;
-  min-width: 0;
-  padding: 6px 10px;
-  font-size: 12px;
-  line-height: 1.4;
-  color: #64748b;
-  border-bottom: 1px solid #e5e7eb;
-  background: #f9fafb;
 }
 
 .resizable-block-wrapper__heading {

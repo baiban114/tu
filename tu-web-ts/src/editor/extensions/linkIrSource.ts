@@ -3,6 +3,10 @@ import type { EditorState, Transaction } from '@tiptap/pm/state'
 import { Plugin, PluginKey, TextSelection } from '@tiptap/pm/state'
 import type { Mark, MarkType } from '@tiptap/pm/model'
 import { Decoration, DecorationSet } from '@tiptap/pm/view'
+import {
+  findMarkdownLink,
+  findMarkdownLinkContaining,
+} from '@/editor/markdownLinkSyntax'
 
 export const linkIrSourceKey = new PluginKey<LinkIrSourceState | null>('tuLinkIrSource')
 
@@ -15,13 +19,6 @@ export const LINK_IR_META = 'tuLinkIr'
  * so links stay rendered as `<a>` instead of flashing into `[label](url)` source.
  */
 export const LINK_IR_SKIP_EXPAND_META = 'tuLinkIrSkipExpand'
-
-const COLLAPSE_RE =
-  /^\[([^\]]*)\]\(([^)\s]+)(?:\s+(?:"([^"]*)"|'([^']*)'))?\)$/
-
-/** Find complete markdown links inside a textblock (not anchored to caret end). */
-const FIND_IN_BLOCK_RE =
-  /\[([^\]]*)\]\(([^)\s]+)(?:\s+(?:"([^"]*)"|'([^']*)'))?\)/g
 
 export interface LinkIrSourceState {
   from: number
@@ -42,7 +39,7 @@ export function formatMarkdownLinkSource(
 }
 
 export function isMarkdownLinkSourceText(text: string): boolean {
-  return COLLAPSE_RE.test(text)
+  return Boolean(parseMarkdownLinkSource(text))
 }
 
 export function parseMarkdownLinkSource(text: string): {
@@ -50,11 +47,11 @@ export function parseMarkdownLinkSource(text: string): {
   href: string
   title: string | null
 } | null {
-  const match = text.match(COLLAPSE_RE)
-  if (!match) return null
-  const label = match[1]?.trim() ?? ''
-  const href = match[2]?.trim() ?? ''
-  const title = (match[3] || match[4] || '').trim() || null
+  const match = findMarkdownLink(text)
+  if (!match || match.index !== 0 || match.source !== text) return null
+  const label = match.label
+  const href = match.href
+  const title = match.title
   if (!href) return null
   return { label, href, title }
 }
@@ -130,15 +127,15 @@ export function findPlainMarkdownLinkSourceAt(
   const blockEnd = $pos.end()
   const blockText = state.doc.textBetween(blockStart, blockEnd, '\0', '\0')
 
-  FIND_IN_BLOCK_RE.lastIndex = 0
-  let match: RegExpExecArray | null
-  while ((match = FIND_IN_BLOCK_RE.exec(blockText)) !== null) {
+  const match = findMarkdownLinkContaining(blockText, safePos - blockStart)
+  if (match) {
     const from = blockStart + match.index
-    const to = from + match[0].length
-    if (safePos < from || safePos > to) continue
-    if (!parseCollapseSource(match[0])) continue
-    if (state.doc.rangeHasMark(from, to, linkType)) continue
-    return { from, to }
+    const to = from + match.source.length
+    if (safePos >= from && safePos <= to) {
+      if (!parseCollapseSource(match.source)) return null
+      if (state.doc.rangeHasMark(from, to, linkType)) return null
+      return { from, to }
+    }
   }
   return null
 }

@@ -13,6 +13,7 @@ import com.tu.backend.contenttree.entity.ContentTreeNodeEntity;
 import com.tu.backend.contenttree.entity.ScopeType;
 import com.tu.backend.contenttree.service.ContentTreeNodeService;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.tu.backend.externalresource.dto.CreatePdfClipExcerptRequest;
 import com.tu.backend.externalresource.dto.CreateResourceChapterRequest;
 import com.tu.backend.externalresource.dto.CreateResourceItemRequest;
 import com.tu.backend.externalresource.dto.CreateResourceExcerptRequest;
@@ -29,6 +30,8 @@ import com.tu.backend.externalresource.repository.ResourcePdfRegionNoteRepositor
 import com.tu.backend.externalresource.repository.ResourceTypeRepository;
 import com.tu.backend.externalresource.repository.ResourceWorkRepository;
 import com.tu.backend.externalresource.service.UrlClusterMatcherService;
+import com.tu.backend.storage.entity.FileAssetEntity;
+import com.tu.backend.storage.repository.FileAssetRepository;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
@@ -160,6 +163,114 @@ class ExternalResourceServiceTest {
         )))
             .isInstanceOf(BusinessException.class)
             .hasMessageContaining("resource excerpts are only supported for book, document, or web-link resources");
+        verify(context.excerptRepository, never()).save(any());
+    }
+
+    @Test
+    void createsPdfClipExcerptForCustomPdfResourceType() {
+        TestContext context = new TestContext();
+        ResourceTypeEntity taskType = type("rt-task", "kaneo-task", "任务");
+        ResourceItemEntity taskItem = item("ri-pdf", "rt-task", null, "扫描版 PDF");
+        taskItem.setAccessUrlsJson("[\"/api/files/file-pdf\"]");
+        FileAssetEntity file = new FileAssetEntity();
+        file.setId("file-pdf");
+        file.setContentType("application/pdf");
+        when(context.typeRepository.findById("rt-task")).thenReturn(Optional.of(taskType));
+        when(context.itemRepository.findById("ri-pdf")).thenReturn(Optional.of(taskItem));
+        when(context.fileAssetRepository.findById("file-pdf")).thenReturn(Optional.of(file));
+        when(context.excerptRepository.findByResourceItemId("ri-pdf")).thenReturn(List.of());
+        when(context.excerptRepository.save(any(ResourceExcerptEntity.class)))
+            .thenAnswer(invocation -> invocation.getArgument(0));
+
+        var dto = context.service.ensurePdfClipExcerpt("ri-pdf", new CreatePdfClipExcerptRequest(
+            3,
+            3,
+            0.2,
+            0.8,
+            null,
+            "file-pdf"
+        ));
+
+        assertThat(dto.resourceItemId()).isEqualTo("ri-pdf");
+        assertThat(dto.locator()).isEqualTo("page:3&clip=0.2-0.8");
+        verify(context.excerptRepository).save(any(ResourceExcerptEntity.class));
+    }
+
+    @Test
+    void reusesPdfClipExcerptForSameCanonicalLocator() {
+        TestContext context = new TestContext();
+        ResourceTypeEntity taskType = type("rt-task", "kaneo-task", "任务");
+        ResourceItemEntity taskItem = item("ri-pdf", "rt-task", null, "扫描版 PDF");
+        taskItem.setAccessUrlsJson("[\"/api/files/file-pdf\"]");
+        ResourceExcerptEntity existing = excerpt("re-existing", "ri-pdf", "裁剪区域", 0);
+        existing.setLocator("page:3&clip=0.2-0.8");
+        FileAssetEntity file = new FileAssetEntity();
+        file.setId("file-pdf");
+        file.setContentType("application/pdf");
+        when(context.typeRepository.findById("rt-task")).thenReturn(Optional.of(taskType));
+        when(context.itemRepository.findById("ri-pdf")).thenReturn(Optional.of(taskItem));
+        when(context.fileAssetRepository.findById("file-pdf")).thenReturn(Optional.of(file));
+        when(context.excerptRepository.findByResourceItemId("ri-pdf"))
+            .thenReturn(List.of(existing));
+
+        var dto = context.service.ensurePdfClipExcerpt("ri-pdf", new CreatePdfClipExcerptRequest(
+            3,
+            3,
+            0.2,
+            0.8,
+            "裁剪区域",
+            "file-pdf"
+        ));
+
+        assertThat(dto.id()).isEqualTo("re-existing");
+        verify(context.excerptRepository, never()).save(any());
+    }
+
+    @Test
+    void rejectsPdfClipExcerptWhenCustomResourceDoesNotReferencePdfFile() {
+        TestContext context = new TestContext();
+        ResourceTypeEntity taskType = type("rt-task", "kaneo-task", "任务");
+        ResourceItemEntity taskItem = item("ri-task", "rt-task", null, "任务资源");
+        taskItem.setAccessUrlsJson("[\"/api/files/file-image\"]");
+        FileAssetEntity file = new FileAssetEntity();
+        file.setId("file-pdf");
+        file.setContentType("application/pdf");
+        when(context.typeRepository.findById("rt-task")).thenReturn(Optional.of(taskType));
+        when(context.itemRepository.findById("ri-task")).thenReturn(Optional.of(taskItem));
+        when(context.fileAssetRepository.findById("file-pdf")).thenReturn(Optional.of(file));
+
+        assertThatThrownBy(() -> context.service.ensurePdfClipExcerpt(
+            "ri-task",
+            new CreatePdfClipExcerptRequest(1, 1, 0.0, 1.0, null, "file-pdf")
+        ))
+            .isInstanceOf(BusinessException.class)
+            .hasMessageContaining(
+                "PDF clip excerpts are only supported for book, document, web-link, or PDF resources"
+            );
+        verify(context.excerptRepository, never()).save(any());
+    }
+
+    @Test
+    void rejectsPdfClipExcerptWhenFileIsNotPdf() {
+        TestContext context = new TestContext();
+        ResourceTypeEntity taskType = type("rt-task", "kaneo-task", "任务");
+        ResourceItemEntity taskItem = item("ri-task", "rt-task", null, "任务资源");
+        taskItem.setAccessUrlsJson("[\"/api/files/file-image\"]");
+        FileAssetEntity file = new FileAssetEntity();
+        file.setId("file-image");
+        file.setContentType("image/png");
+        when(context.typeRepository.findById("rt-task")).thenReturn(Optional.of(taskType));
+        when(context.itemRepository.findById("ri-task")).thenReturn(Optional.of(taskItem));
+        when(context.fileAssetRepository.findById("file-image")).thenReturn(Optional.of(file));
+
+        assertThatThrownBy(() -> context.service.ensurePdfClipExcerpt(
+            "ri-task",
+            new CreatePdfClipExcerptRequest(1, 1, 0.0, 1.0, null, "file-image")
+        ))
+            .isInstanceOf(BusinessException.class)
+            .hasMessageContaining(
+                "PDF clip excerpts are only supported for book, document, web-link, or PDF resources"
+            );
         verify(context.excerptRepository, never()).save(any());
     }
 
@@ -391,6 +502,7 @@ class ExternalResourceServiceTest {
         final ResourceTypeRepository typeRepository = mock(ResourceTypeRepository.class);
         final ResourceWorkRepository workRepository = mock(ResourceWorkRepository.class);
         final ResourceItemRepository itemRepository = mock(ResourceItemRepository.class);
+        final FileAssetRepository fileAssetRepository = mock(FileAssetRepository.class);
         final ResourceExcerptRepository excerptRepository = mock(ResourceExcerptRepository.class);
         final ResourcePdfRegionNoteRepository pdfRegionNoteRepository = mock(ResourcePdfRegionNoteRepository.class);
         final ResourceCrawledDocumentRepository crawledDocumentRepository = mock(ResourceCrawledDocumentRepository.class);
@@ -401,6 +513,7 @@ class ExternalResourceServiceTest {
             typeRepository,
             workRepository,
             itemRepository,
+            fileAssetRepository,
             excerptRepository,
             pdfRegionNoteRepository,
             crawledDocumentRepository,

@@ -1,5 +1,6 @@
 import type { PdfDocumentProxy } from './pdfjsSetup'
 import type { PdfExcerptViewMode } from './pdfExcerpt'
+import type { TreeNode } from './tree'
 
 export type PdfSidebarSource = 'outline' | 'pages' | 'none'
 
@@ -9,12 +10,28 @@ export interface PdfSidebarNode {
   /** 1-based page number from PDF destination; null if unresolved */
   pageNumber: number | null
   children: PdfSidebarNode[]
+  /** Locally edited bookmark, stored on the PDF excerpt block rather than the PDF file. */
+  custom?: boolean
+}
+
+export interface PdfSidebarTreeMeta {
+  pageNumber: number | null
+  custom: boolean
 }
 
 export interface BuildPdfSidebarOptions {
   viewMode?: PdfExcerptViewMode
   /** Skip flat page list when full document has more pages than this threshold */
   skipPageListOver?: number
+  /** Bookmark definitions persisted on the document block. */
+  customBookmarks?: PdfCustomBookmark[]
+}
+
+export interface PdfCustomBookmark {
+  id: string
+  title: string
+  pageNumber: number
+  parentId?: string | null
 }
 
 type RawOutlineItem = {
@@ -77,6 +94,22 @@ export function resolveSidebarNodePage(
   return null
 }
 
+/** Adapt PDF outline and local-bookmark nodes to the shared tree presentation model. */
+export function pdfSidebarNodesToTreeNodes<TMeta extends PdfSidebarTreeMeta = PdfSidebarTreeMeta>(
+  nodes: PdfSidebarNode[],
+  resolveMeta: (node: PdfSidebarNode) => TMeta = (node) => ({
+    pageNumber: node.pageNumber,
+    custom: Boolean(node.custom),
+  }) as TMeta,
+): TreeNode<TMeta>[] {
+  return nodes.map((node) => ({
+    id: node.id,
+    label: node.title,
+    children: pdfSidebarNodesToTreeNodes(node.children, resolveMeta),
+    meta: resolveMeta(node),
+  }))
+}
+
 /** Node ids that have children and can be expanded/collapsed in the sidebar tree. */
 export function collectExpandableNodeIds(nodes: PdfSidebarNode[]): string[] {
   const ids: string[] = []
@@ -90,6 +123,83 @@ export function collectExpandableNodeIds(nodes: PdfSidebarNode[]): string[] {
   }
   walk(nodes)
   return ids
+}
+
+/** Normalize persisted/custom bookmark input without trusting page or title data. */
+export function normalizePdfCustomBookmarks(
+  value: unknown,
+  startPage = 1,
+  endPage = Number.MAX_SAFE_INTEGER,
+): PdfCustomBookmark[] {
+  const safeStart = Math.max(1, Math.floor(startPage) || 1)
+  const safeEnd = Math.max(safeStart, Math.floor(endPage) || safeStart)
+  const seen = new Set<string>()
+  const result: PdfCustomBookmark[] = []
+  if (!Array.isArray(value)) return result
+
+  for (const item of value) {
+    if (!item || typeof item !== 'object') continue
+    const raw = item as Record<string, unknown>
+    const id = String(raw.id || '').trim()
+    const title = String(raw.title || '').trim()
+    const page = Math.floor(Number(raw.pageNumber))
+    const parentId = String(raw.parentId || '').trim() || null
+    if (!id || !title || !Number.isFinite(page) || seen.has(id)) continue
+    seen.add(id)
+    result.push({
+      id,
+      title: title.slice(0, 120),
+      pageNumber: Math.min(safeEnd, Math.max(safeStart, page)),
+      ...(parentId ? { parentId } : {}),
+    })
+  }
+  const byId = new Map(result.map((bookmark) => [bookmark.id, bookmark]))
+  return result.map((bookmark) => {
+    const parentId = bookmark.parentId
+    if (!parentId || !byId.has(parentId) || parentId === bookmark.id) {
+      const { parentId: _parentId, ...root } = bookmark
+      return root
+    }
+    const visited = new Set([bookmark.id])
+    let cursor: string | undefined = parentId
+    while (cursor && byId.has(cursor)) {
+      if (visited.has(cursor)) {
+        const { parentId: _parentId, ...root } = bookmark
+        return root
+      }
+      visited.add(cursor)
+      cursor = byId.get(cursor)?.parentId ?? undefined
+    }
+    return bookmark
+  })
+}
+
+/** Merge document bookmarks into the PDF outline. Custom nodes stay visually distinct. */
+export function mergePdfSidebarBookmarks(
+  nodes: PdfSidebarNode[],
+  bookmarks: unknown,
+  startPage: number,
+  endPage: number,
+): PdfSidebarNode[] {
+  const customBookmarks = normalizePdfCustomBookmarks(bookmarks, startPage, endPage)
+  const customIds = new Set(customBookmarks.map((bookmark) => bookmark.id))
+  const customNodes = new Map(customBookmarks.map((bookmark) => [bookmark.id, {
+    id: bookmark.id,
+    title: bookmark.title,
+    pageNumber: bookmark.pageNumber,
+    children: [] as PdfSidebarNode[],
+    custom: true,
+  }]))
+  const roots: PdfSidebarNode[] = []
+  for (const bookmark of customBookmarks) {
+    const node = customNodes.get(bookmark.id)!
+    const parent = bookmark.parentId && customIds.has(bookmark.parentId)
+      ? customNodes.get(bookmark.parentId)
+      : null
+    if (parent) parent.children.push(node)
+    else roots.push(node)
+  }
+  return [...nodes, ...roots]
 }
 
 async function mapOutlineItems(
@@ -133,6 +243,8 @@ export async function buildPdfSidebarTree(
   const skipPageListOver = options.skipPageListOver ?? 50
   const pageCount = endPage - startPage + 1
 
+  let outlineNodes: PdfSidebarNode[] = []
+  let outlineSource: PdfSidebarSource = 'none'
   try {
     const rawOutline = await doc.getOutline()
     if (Array.isArray(rawOutline) && rawOutline.length > 0) {
@@ -145,11 +257,32 @@ export async function buildPdfSidebarTree(
         clipToRange,
       )
       if (nodes.length > 0) {
-        return { nodes, source: 'outline' }
+        outlineNodes = nodes
+        outlineSource = 'outline'
       }
     }
   } catch {
     // fall through to page list
+  }
+
+  const customBookmarks = normalizePdfCustomBookmarks(
+    options.customBookmarks,
+    startPage,
+    endPage,
+  )
+  if (outlineNodes.length > 0) {
+    return {
+      nodes: mergePdfSidebarBookmarks(outlineNodes, customBookmarks, startPage, endPage),
+      source: outlineSource,
+    }
+  }
+
+  // A purely local bookmark list is more useful than a page list replacement.
+  if (customBookmarks.length > 0) {
+    return {
+      nodes: mergePdfSidebarBookmarks([], customBookmarks, startPage, endPage),
+      source: 'outline',
+    }
   }
 
   if (viewMode === 'full' && pageCount > skipPageListOver) {

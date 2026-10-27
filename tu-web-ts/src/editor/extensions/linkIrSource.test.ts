@@ -43,7 +43,16 @@ describe('link IR source expand/collapse', () => {
       element: el,
       extensions: [
         StarterKit.configure({ link: false }),
-        TuLink.configure({ openOnClick: false, autolink: false }),
+        TuLink.configure({
+          openOnClick: false,
+          autolink: false,
+          protocols: ['http', 'https', 'resource'],
+          isAllowedUri: (url, ctx) => {
+            const value = String(url || '').trim()
+            if (value.startsWith('resource:')) return true
+            return ctx.defaultValidate(url)
+          },
+        }),
       ],
       content: {
         type: 'doc',
@@ -190,7 +199,16 @@ describe('plain markdown link → link on leave', () => {
       element: el,
       extensions: [
         StarterKit.configure({ link: false }),
-        TuLink.configure({ openOnClick: false, autolink: false }),
+        TuLink.configure({
+          openOnClick: false,
+          autolink: false,
+          protocols: ['http', 'https', 'resource'],
+          isAllowedUri: (url, ctx) => {
+            const value = String(url || '').trim()
+            if (value.startsWith('resource:')) return true
+            return ctx.defaultValidate(url)
+          },
+        }),
       ],
       content: {
         type: 'doc',
@@ -253,5 +271,24 @@ describe('plain markdown link → link on leave', () => {
     editor.view.dispatch(tr!)
     expect(editor.getText()).toBe('文字')
     expect(editor.getHTML()).toContain('href="https://example.com"')
+  })
+
+  it('converts a resource title containing brackets instead of treating it as plain text', () => {
+    const source =
+      '[[数据结构(C语言版)].严蔚敏_吴伟民.扫描版](resource:ri-a8bed11a9f1347c59f083d1a7aac1ece)尾'
+    editor = createPlainEditor(source)
+    editor.commands.setTextSelection(8)
+    expect(linkIrSourceKey.getState(editor.state)).toMatchObject({
+      from: 1,
+      to: 1 + source.length - 1,
+    })
+
+    const active = linkIrSourceKey.getState(editor.state)!
+    editor.commands.setTextSelection(active.to + 1)
+    expect(editor.getText()).toBe('[数据结构(C语言版)].严蔚敏_吴伟民.扫描版尾')
+    expect(editor.getHTML()).toContain(
+      'href="resource:ri-a8bed11a9f1347c59f083d1a7aac1ece"',
+    )
+    expect(linkIrSourceKey.getState(editor.state)).toBeNull()
   })
 })

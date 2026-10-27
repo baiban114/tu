@@ -1,6 +1,6 @@
 # 树形结构管理 — 设计方案
 
-> 状态：**P0–P1 已实施**（2026-06）；P2/P3 适配器已落地，TOC UI 替换待 v2
+> 状态：**P0–P1 已实施**（2026-06）；P2/P3 适配器已落地，交互扩展已用于 PDF 书签
 > 关联讨论：页面目录、页面 TOC、外部资源（类型 → 归类 → 实体 → 节选）等层级结构的统一展示与序列化。
 
 ---
@@ -13,13 +13,13 @@
 
 | 能力 | 说明 |
 |------|------|
-| **展示** | 通用多级列表组件：缩进 + 展开/收起 + 选中，初版不替代页面 `el-tree` 的拖拽 |
+| **展示** | 通用多级列表组件：缩进 + 展开/收起 + 选中 + 可选右键菜单/内联重命名/同级拖拽 |
 | **结构输出** | 统一的 `TreeNode` 嵌套 JSON、带路径的扁平列表、Markdown 大纲等 |
 
 ### 1.2 非目标（v1 不做）
 
 - 统一的树形持久化 API 或单表存储
-- 跨域（页面 / 资源 / TOC）的拖拽、合并、删除规则
+- 跨域（页面 / 资源 / TOC）的合并、删除规则；通用拖拽只发出重排意图，由领域层落库
 - 将 `ResourceItemRelation`（图关系）并入父子树
 - AI 自动建树、多用户树共识
 - **知识关联边**（`knowledge_relation`）不进入父子树；与 `ResourceItemRelation` 同层，见 [knowledge-relations.md](./knowledge-relations.md)，Phase 2 投影到 X6 知识点关联图
@@ -45,7 +45,7 @@
 | 模型 | [`KnowledgePoint`](../src/api/types.ts)：`parentId`、`sortOrder`、嵌套 `children?` |
 | 持久化 | `KnowledgePointService.buildTree`；`PATCH /api/knowledge-points/{id}` 支持 reparent + 兄弟重排 |
 | UI | [`KnowledgePointTree.vue`](../src/components/knowledge/KnowledgePointTree.vue) — 与页面目录同为 `el-tree` 可编辑树；用于资源管理「知识点」Tab 与「关联到知识点」弹窗 |
-| 特点 | **软分类**（非前置关系）；`TreeListPanel` 只读浏览，**不**用于知识点编辑 |
+| 特点 | **软分类**（非前置关系）；知识点编辑仍由 `KnowledgePointTree` 负责；`TreeListPanel` 的可选拖动只用于明确声明契约的领域 |
 
 ### 2.2 页面内目录（TOC）
 
@@ -234,12 +234,27 @@ API：`GET/POST/DELETE /api/kbs/{kbId}/resource-links`。
 // Props
 nodes: TreeNode[]
 selectedId?: string | null
+selectedIds?: string[]
+multiSelect?: boolean
 defaultExpandDepth?: number   // 默认 1 或 2
+expandedIds?: string[]        // 可选受控展开
 indentPx?: number             // 默认 16
+draggable?: boolean
+canDrag?: (node) => boolean
+canDrop?: (dragged, target) => boolean
+contextMenuItems?: (node) => TreeContextMenuItem[]
+isRenamable?: (node) => boolean
+getNodeDescription?: (node) => string
+getNodeAriaLabel?: (node) => string
 
 // Events
 select: (node: TreeNode) => void
 toggle: (node: TreeNode, expanded: boolean) => void
+update:expandedIds: (ids: string[]) => void
+reorder: ({ dragged, target, position: 'before' | 'after' }) => void
+rename: ({ node, label }) => void
+menuAction: ({ node, item }) => void
+contextMenuItems: 每个节点返回菜单项，空数组表示不接管右键
 ```
 
 ### 8.2 行为
@@ -247,8 +262,22 @@ toggle: (node: TreeNode, expanded: boolean) => void
 - 递归渲染：每行 `label` + 展开三角（有 children 时）。
 - 点击行：`select`；点击三角：展开/收起（不冒泡触发 select 可选）。
 - 选中态高亮；`selectedId` 外部受控。
+- **右键菜单**：由 `contextMenuItems` 决定节点是否可操作；菜单 Teleport 到 `body`，使用 `useViewportClampedFixedPanel` 保持完整可见，并在可见时注册 document `click` 与 `keydown(Escape)`，隐藏/卸载时注销。菜单根阻止事件冒泡，点击项目只发 `menuAction`。
+- **内联重命名**：`isRenamable` 为 true 的节点可通过 `startRename` 暴露方法进入编辑；输入框按 Enter/失焦提交 `rename`，Escape 取消，空值忽略，输入期间关闭原生拖拽。
+- **同级拖拽**：`draggable` 开启后，合法节点为原生 draggable；目标行上半区写“之前”、下半区写“之后”的视觉提示。组件只在 `canDrag` / `canDrop` 均允许时发 `reorder`，不修改 `nodes`。拖拽与多选框选互斥，避免两种手势争用。
+- **无侵入默认**：未传可选项时仍保持 P1 的只读展开 + 选择行为；业务权限与持久化始终留在领域适配层。
 
-### 8.3 与 `el-tree` 的分工
+### 8.3 复用与领域边界
+
+树组件只处理**结构交互**，不识别书签、章节、页面等业务类型。领域层完成：
+
+1. 将业务模型适配为 `TreeNode`，把权限所需信息放入 `meta`。
+2. 提供 `canDrag` / `canDrop` / `isRenamable` / `contextMenuItems`。
+3. 在 `reorder` / `rename` / `menuAction` 中校验并持久化，再更新传入的 `nodes`。
+
+PDF 书签是该契约的首个可变使用方：PDF outline 只读，自定义书签允许右键重命名/删除和同级排序。详见 [pdf-bookmarks.md](./pdf-bookmarks.md)。
+
+### 8.4 与 `el-tree` 的分工
 
 | 场景 | 组件 |
 |------|------|
@@ -256,6 +285,7 @@ toggle: (node: TreeNode, expanded: boolean) => void
 | 知识点软分类（拖拽、右键、重命名） | **`KnowledgePointTree`**（`el-tree`，管理 + 关联弹窗） |
 | 资源管理浏览、关联归类目标选择、设置页预览 | **新建** `TreeListPanel` |
 | TOC 侧栏 | v2 评估是否替换为 `TreeListPanel`（需保留 scroll-to-pos） |
+| PDF 书签与目录 | **`TreeListPanel`**：目录只读，自定义书签启用右键与拖拽 |
 
 ---
 
@@ -321,7 +351,7 @@ toggle: (node: TreeNode, expanded: boolean) => void
 | 层级 | 内容 |
 |------|------|
 | 单元 | `buildTreeFromFlat`（多根、乱序、孤儿节点）、`buildTreeFromLevels`、`flattenTree` 路径、`resourcesToTreeNodes` 固定样例 |
-| 组件 | `TreeListPanel` 展开/选中（可选 Playwright 快照） |
+| 组件 | `TreeListPanel` 展开/选中/右键生命周期/内联重命名/同级拖拽；验证菜单钳位、外部点击与 Escape |
 | E2E | 资源管理：树中点击实体 → 右侧表单/表格联动（mock 模式即可） |
 
 ---
@@ -367,6 +397,7 @@ tu-web-ts/src/
 | 2026-06 | 采用「规范 `TreeNode` + 适配器 + 简单多级列表」，不合并领域模型 |
 | 2026-06 | 页面目录保留 `el-tree`；资源管理优先上树形浏览 |
 | 2026-06 | v1 不实现通用树的 CRUD/拖拽；`ResourceItemRelation` 不进入树边 |
+| 2026-10 | 通用树增加可选上下文菜单、内联重命名和同级拖拽；权限与持久化由适配层控制 |
 
 ---
 
@@ -379,6 +410,7 @@ tu-web-ts/src/
 | 2026-07 | 合并/拆分归类合并为「关联归类」弹窗（已有归类 / 新建独立归类） |
 | 2026-07 | 文档页「思维导图」：由 TOC 生成只读预览弹窗 |
 | 2026-06 | P2/P3 适配器：`adapters/toc.ts`、`adapters/pages.ts`（导出/复用；页面仍用 `el-tree`） |
+| 2026-10 | PDF 书签侧栏迁移到 `TreeListPanel`；新增当前页快速添加、右键重命名/删除、拖动排序 |
 
 ## 17. 统一内容树 `content_tree_node`（2026-06）
 

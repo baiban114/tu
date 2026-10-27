@@ -11,6 +11,8 @@ import {
   formatPdfExcerptLocator,
   formatPdfExcerptMetaLabel,
   formatPdfExcerptRangeLabel,
+  normalizePdfExcerptBookmarks,
+  reorderPdfExcerptBookmarks,
 } from './pdfExcerpt'
 
 describe('pdfExcerpt serialization', () => {
@@ -190,5 +192,113 @@ describe('pdfExcerpt serialization', () => {
       blockId: 'pe-abc',
       pdfPage: 7,
     })
+  })
+
+  it('roundtrips persistent document bookmarks', () => {
+    const attrs = {
+      blockId: 'pe-bookmarks',
+      fileId: 'file-abc',
+      fileName: 'book.pdf',
+      viewMode: 'full' as const,
+      startPage: 1,
+      endPage: 20,
+      height: 480,
+      clipTop: 0,
+      clipBottom: 1,
+      bookmarks: [
+        { id: 'bookmark-1', title: '内存管理', pageNumber: 7 },
+        { id: 'bookmark-2', title: '调度算法', pageNumber: 12 },
+      ],
+    }
+    const comment = serializePdfExcerptComment(attrs)
+    expect(comment).toContain('bookmarks="')
+    const match = comment.match(/<!--tu:pdf-excerpt\s+([^>]+)-->/)
+    expect(parsePdfExcerptComment(match![1]!)).toMatchObject({
+      blockId: 'pe-bookmarks',
+      viewMode: 'full',
+      startPage: 1,
+      endPage: 20,
+      bookmarks: attrs.bookmarks,
+    })
+  })
+
+  it('drops malformed bookmark payloads without breaking PDF attrs', () => {
+    expect(normalizePdfExcerptBookmarks([
+      { id: 'a', title: '  A  ', pageNumber: 2.8 },
+      { id: 'a', title: 'duplicate', pageNumber: 3 },
+      { id: 'b', title: '', pageNumber: 4 },
+      { id: 'c', title: 'bad page', pageNumber: 0 },
+    ])).toEqual([
+      { id: 'a', title: 'A', pageNumber: 2 },
+    ])
+    const parsed = parsePdfExcerptComment(
+      'id="pe-1" fileId="f1" start="1" end="4" bookmarks="not-json"',
+    )
+    expect(parsed?.blockId).toBe('pe-1')
+    expect(parsed?.bookmarks).toBeUndefined()
+  })
+
+  it('reorders custom bookmarks without mutating the source', () => {
+    const bookmarks = [
+      { id: 'a', title: 'A', pageNumber: 1 },
+      { id: 'b', title: 'B', pageNumber: 2 },
+      { id: 'c', title: 'C', pageNumber: 3 },
+    ]
+    expect(reorderPdfExcerptBookmarks(bookmarks, 'c', 'a', 'before').map(({ id }) => id))
+      .toEqual(['c', 'a', 'b'])
+    expect(reorderPdfExcerptBookmarks(bookmarks, 'a', 'b', 'after').map(({ id }) => id))
+      .toEqual(['b', 'a', 'c'])
+    expect(bookmarks.map(({ id }) => id)).toEqual(['a', 'b', 'c'])
+  })
+
+  it('nests and reorders custom bookmarks while preserving hierarchy', () => {
+    const bookmarks = [
+      { id: 'a', title: 'A', pageNumber: 1 },
+      { id: 'b', title: 'B', pageNumber: 2 },
+      { id: 'c', title: 'C', pageNumber: 3 },
+    ]
+    const nested = reorderPdfExcerptBookmarks(bookmarks, 'b', 'a', 'inside')
+    expect(nested).toEqual([
+      { id: 'a', title: 'A', pageNumber: 1 },
+      { id: 'b', title: 'B', pageNumber: 2, parentId: 'a' },
+      { id: 'c', title: 'C', pageNumber: 3 },
+    ])
+
+    const reordered = reorderPdfExcerptBookmarks(nested, 'c', 'b', 'before')
+    expect(reordered.map(({ id, parentId }) => [id, parentId ?? null])).toEqual([
+      ['a', null],
+      ['c', 'a'],
+      ['b', 'a'],
+    ])
+    expect(normalizePdfExcerptBookmarks(reordered)).toEqual(reordered)
+    expect(reorderPdfExcerptBookmarks(nested, 'a', 'b', 'inside')).toEqual(nested)
+  })
+
+  it('appends nested bookmarks under a parent that already has children', () => {
+    const bookmarks = [
+      { id: 'parent', title: 'Parent', pageNumber: 1 },
+      { id: 'child-a', title: 'Child A', pageNumber: 2, parentId: 'parent' },
+      { id: 'sibling', title: 'Sibling', pageNumber: 3 },
+      { id: 'child-b', title: 'Child B', pageNumber: 4 },
+    ]
+    const reordered = reorderPdfExcerptBookmarks(bookmarks, 'child-b', 'parent', 'inside')
+    expect(reordered.map(({ id }) => id)).toEqual(['parent', 'child-a', 'child-b', 'sibling'])
+    expect(reordered.find(({ id }) => id === 'child-b')?.parentId).toBe('parent')
+  })
+
+  it('drops dangling and cyclic bookmark parents', () => {
+    expect(normalizePdfExcerptBookmarks([
+      { id: 'root', title: 'Root', pageNumber: 1 },
+      { id: 'child', title: 'Child', pageNumber: 2, parentId: 'root' },
+      { id: 'loop-a', title: 'Loop A', pageNumber: 3, parentId: 'loop-b' },
+      { id: 'loop-b', title: 'Loop B', pageNumber: 4, parentId: 'loop-a' },
+      { id: 'orphan', title: 'Orphan', pageNumber: 5, parentId: 'missing' },
+    ])).toEqual([
+      { id: 'root', title: 'Root', pageNumber: 1 },
+      { id: 'child', title: 'Child', pageNumber: 2, parentId: 'root' },
+      { id: 'loop-a', title: 'Loop A', pageNumber: 3 },
+      { id: 'loop-b', title: 'Loop B', pageNumber: 4 },
+      { id: 'orphan', title: 'Orphan', pageNumber: 5 },
+    ])
   })
 })

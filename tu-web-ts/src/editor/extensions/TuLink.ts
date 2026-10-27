@@ -1,29 +1,44 @@
 import { InputRule, PasteRule, mergeAttributes } from '@tiptap/core'
 import Link, { isAllowedUri } from '@tiptap/extension-link'
 import { resourceHrefPageLimitText } from '@/editor/linkLabelSuggestQuery'
+import {
+  type MarkdownLinkMatch,
+  findMarkdownLink,
+  findMarkdownLinkEndingAt,
+} from '@/editor/markdownLinkSyntax'
 import { createLinkIrSourcePlugin } from './linkIrSource'
-
-/** `[label](href)` or `[label](href "title")` / `[label](href 'title')` */
-export const MARKDOWN_LINK_SYNTAX_RE =
-  /\[([^\]]+)\]\(([^)\s]+)(?:\s+(?:"([^"]*)"|'([^']*)'))?\)/g
 
 /**
  * Triggered when the closing `)` is typed. No leading-space requirement so
  * CJK runs like `你好[文字](url)` still convert (CommonMark allows mid-line links).
  */
-export const MARKDOWN_LINK_INPUT_RE =
-  /\[([^\]]+)\]\(([^)\s]+)(?:\s+(?:"([^"]*)"|'([^']*)'))?\)$/
+export function findMarkdownLinkInput(text: string): string | null {
+  return findMarkdownLinkEndingAt(text)?.source ?? null
+}
+
+function asRegExpMatchArray(match: MarkdownLinkMatch): RegExpMatchArray {
+  const groups: Array<string | undefined> = []
+  match.groups.forEach((group, index) => {
+    groups[index] = group
+  })
+  const result = groups as unknown as RegExpMatchArray
+  result.index = match.index
+  result.input = match.source
+  return result
+}
 
 export function parseMarkdownLinkSyntaxMatch(match: RegExpMatchArray): {
   label: string
   href: string
   title: string | null
 } | null {
-  const label = match[1]?.trim() ?? ''
-  const href = match[2]?.trim() ?? ''
-  const title = (match[3] || match[4] || '').trim() || null
-  if (!label || !href) return null
-  return { label, href, title }
+  const parsed = findMarkdownLink(match[0])
+  if (!parsed || !parsed.label || !parsed.href) return null
+  return {
+    label: parsed.label,
+    href: parsed.href,
+    title: parsed.title,
+  }
 }
 
 export const TuLink = Link.extend({
@@ -59,7 +74,17 @@ export const TuLink = Link.extend({
     return [
       ...(this.parent?.() || []),
       new InputRule({
-        find: MARKDOWN_LINK_INPUT_RE,
+        find: (text) => {
+          const match = findMarkdownLinkEndingAt(text)
+          return match
+            ? {
+                index: match.index,
+                text: match.source,
+                replaceWith: match.groups[1],
+                match: asRegExpMatchArray(match),
+              }
+            : null
+        },
         handler: ({ state, range, match }) => {
           const parsed = parseMarkdownLinkSyntaxMatch(match)
           if (!parsed) return null
@@ -99,7 +124,16 @@ export const TuLink = Link.extend({
     return [
       ...(this.parent?.() || []),
       new PasteRule({
-        find: MARKDOWN_LINK_SYNTAX_RE,
+        find: (text) => {
+          const match = findMarkdownLink(text)
+          return match
+            ? [{
+                index: match.index,
+                text: match.source,
+                match: asRegExpMatchArray(match),
+              }]
+            : null
+        },
         handler: ({ state, range, match }) => {
           const parsed = parseMarkdownLinkSyntaxMatch(match)
           if (!parsed) return null

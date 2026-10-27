@@ -1206,6 +1206,7 @@ const updatePdfExcerptBlock = (
         title: String(prev.title || prev.sourceLabel || ''),
         sourceLabel: String(prev.sourceLabel || prev.title || ''),
         notesVisible: Boolean(prev.notesVisible),
+        bookmarks: prev.bookmarks,
         clipTop,
         clipBottom,
       }),

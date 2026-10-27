@@ -5,6 +5,7 @@ import { stopNonHandleNodeViewDragEvent } from './nodeViewDragHandle'
 import {
   createPdfExcerptBlockId,
   normalizePdfClipRatio,
+  normalizePdfExcerptBookmarks,
   PDF_EXCERPT_DEFAULT_HEIGHT,
 } from '@/utils/pdfExcerpt'
 
@@ -28,6 +29,20 @@ export const PdfExcerptBlockNode = Node.create({
       clipTop: { default: 0 },
       clipBottom: { default: 1 },
       notesVisible: { default: false },
+      bookmarks: {
+        default: [],
+        parseHTML: (element) => {
+          try {
+            return normalizePdfExcerptBookmarks(JSON.parse(element.getAttribute('data-bookmarks') || '[]'))
+          } catch {
+            return []
+          }
+        },
+        renderHTML: (attributes) => {
+          const bookmarks = normalizePdfExcerptBookmarks(attributes.bookmarks)
+          return bookmarks.length > 0 ? { 'data-bookmarks': JSON.stringify(bookmarks) } : {}
+        },
+      },
       /** Chrome header title (resource / PDF display name). */
       title: {
         default: '',
@@ -85,6 +100,7 @@ export function createPdfExcerptNodeAttrs(input: {
   sourceHref?: string
   sourceLabel?: string
   notesVisible?: boolean
+  bookmarks?: Array<{ id: string; title: string; pageNumber: number; parentId?: string | null }>
 }) {
   const clip = normalizePdfClipRatio(input.clipTop ?? 0, input.clipBottom ?? 1)
   const title = (input.title || input.sourceLabel || '').trim()
@@ -100,6 +116,7 @@ export function createPdfExcerptNodeAttrs(input: {
     clipTop: clip.clipTop,
     clipBottom: clip.clipBottom,
     notesVisible: Boolean(input.notesVisible),
+    bookmarks: normalizePdfExcerptBookmarks(input.bookmarks),
     title,
     sourceHref: input.sourceHref || '',
     sourceLabel,

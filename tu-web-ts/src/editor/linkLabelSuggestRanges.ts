@@ -1,5 +1,11 @@
 import type { EditorState } from '@tiptap/pm/state'
 import { linkIrSourceKey } from '@/editor/extensions/linkIrSource'
+import {
+  findMarkdownLink,
+  findMarkdownLinkContaining,
+  findMarkdownLinkLabelEnd,
+  unescapeMarkdownText,
+} from '@/editor/markdownLinkSyntax'
 
 export interface LinkLabelEditContext {
   /** Inclusive markdown span to replace (starts at `[`). */
@@ -40,9 +46,11 @@ export function splitMarkdownLinkSourceRanges(
 } | null {
   if (!sourceText.startsWith('[')) return null
 
-  const closeBracket = sourceText.indexOf(']')
+  const completeLink = findMarkdownLink(sourceText)
+  const linkMatch = completeLink?.index === 0 ? completeLink : null
+  const closeBracket = findMarkdownLinkLabelEnd(sourceText)
   if (closeBracket < 0) {
-    const labelText = sourceText.slice(1)
+    const labelText = unescapeMarkdownText(sourceText.slice(1))
     return {
       labelFrom: sourceFrom + 1,
       labelTo: sourceFrom + sourceText.length,
@@ -57,7 +65,7 @@ export function splitMarkdownLinkSourceRanges(
     }
   }
 
-  const labelText = sourceText.slice(1, closeBracket)
+  const labelText = unescapeMarkdownText(sourceText.slice(1, closeBracket))
   const labelFrom = sourceFrom + 1
   const labelTo = sourceFrom + closeBracket
 
@@ -76,40 +84,35 @@ export function splitMarkdownLinkSourceRanges(
     }
   }
 
-  const afterParen = sourceText.slice(closeBracket + 2)
-  const closeParen = afterParen.indexOf(')')
-  if (closeParen < 0) {
-    const hrefText = afterParen
+  if (!linkMatch) {
+    const afterParen = sourceText.slice(closeBracket + 2)
     return {
       labelFrom,
       labelTo,
       hrefFrom: sourceFrom + closeBracket + 2,
       hrefTo: sourceFrom + sourceText.length,
       labelText,
-      hrefText,
-      href: hrefText.trim() || null,
+      hrefText: afterParen,
+      href: afterParen.trim() || null,
       title: null,
       complete: false,
       replaceTo: sourceFrom + sourceText.length,
     }
   }
 
-  const hrefChunk = afterParen.slice(0, closeParen)
-  const titled = hrefChunk.match(/^([^\s]+)(?:\s+(?:"([^"]*)"|'([^']*)'))?$/)
-  const href = (titled?.[1] ?? hrefChunk).trim()
-  const title = (titled?.[2] || titled?.[3] || '').trim() || null
-  const replaceTo = sourceFrom + closeBracket + 2 + closeParen + 1
+  const hrefFrom = closeBracket + 2
+  const hrefTo = sourceFrom + hrefFrom + linkMatch.href.length
   return {
     labelFrom,
     labelTo,
-    hrefFrom: sourceFrom + closeBracket + 2,
-    hrefTo: sourceFrom + closeBracket + 2 + closeParen,
+    hrefFrom: sourceFrom + hrefFrom,
+    hrefTo,
     labelText,
-    hrefText: hrefChunk,
-    href: href || null,
-    title,
-    complete: Boolean(labelText.trim() && href),
-    replaceTo,
+    hrefText: linkMatch.href,
+    href: linkMatch.href,
+    title: linkMatch.title,
+    complete: Boolean(labelText.trim() && linkMatch.href),
+    replaceTo: sourceFrom + linkMatch.source.length,
   }
 }
 
@@ -173,6 +176,15 @@ export function findLinkLabelEditContext(
   const blockText = state.doc.textBetween(blockStart, blockEnd, '\0', '\0')
   const offset = caret - blockStart
   if (offset < 0 || offset > blockText.length) return null
+
+  const match = findMarkdownLinkContaining(blockText, offset)
+  if (match) {
+    const fromOpen = blockText.slice(match.index)
+    const parts = splitMarkdownLinkSourceRanges(fromOpen, blockStart + match.index)
+    if (parts && isCaretInLinkHref(caret, parts.hrefFrom, parts.hrefTo)) {
+      return toEditContext(blockStart + match.index, parts)
+    }
+  }
 
   const before = blockText.slice(0, offset)
   const openIdx = before.lastIndexOf('[')

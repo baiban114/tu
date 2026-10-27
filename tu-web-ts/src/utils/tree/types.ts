@@ -28,6 +28,14 @@ export interface TreeDocument<TMeta = unknown> {
   nodes: TreeNode<TMeta>[];
 }
 
+/** Presentation-neutral item for a tree row's context menu. */
+export interface TreeContextMenuItem {
+  id: string
+  label: string
+  disabled?: boolean
+  danger?: boolean
+}
+
 export interface FlattenTreeOptions {
   includePathLabels?: boolean;
 }

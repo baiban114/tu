@@ -33,6 +33,7 @@ import {
   serializePdfExcerptComment,
 } from '@/utils/pdfExcerpt'
 import { normalizeCodeBlockText } from '@/editor/utils/codeBlockText'
+import { findMarkdownLink } from '@/editor/markdownLinkSyntax'
 
 // ─── Embed placeholder regex ───────────────────────────────────────────────
 const EMBED_RE = /<!--tu:embed\s+id="([^"]+)"\s+type="([^"]+)"\s*-->/g
@@ -719,6 +720,7 @@ function parseMarkdownBlocks(markdown: string): JSONContent[] {
               clipTop: parsedPdf.clipTop,
               clipBottom: parsedPdf.clipBottom,
               notesVisible: Boolean(parsedPdf.notesVisible),
+              bookmarks: parsedPdf.bookmarks || [],
               title: parsedPdf.title || parsedPdf.sourceLabel || '',
               sourceHref: parsedPdf.sourceHref || '',
               sourceLabel: parsedPdf.sourceLabel || parsedPdf.title || '',
@@ -979,17 +981,17 @@ export function parseInlineMarkdown(
       continue
     }
 
-    const linkMatch = remaining.match(/^\[([^\]]*)\]\(([^)\s]+)(?:\s+(?:"([^"]*)"|'([^']*)'))?\)/)
-    if (linkMatch) {
+    const linkMatch = findMarkdownLink(remaining)
+    if (linkMatch?.index === 0) {
       // ProseMirror cannot represent an empty text node. Keep an empty-label link as
       // editable markdown source so href suggestions can fill its label first.
-      if (!linkMatch[1]) {
-        parts.push({ type: 'text', text: linkMatch[0] })
-        remaining = remaining.slice(linkMatch[0].length)
+      if (!linkMatch.label) {
+        parts.push({ type: 'text', text: linkMatch.source })
+        remaining = remaining.slice(linkMatch.source.length)
         continue
       }
-      const href = linkMatch[2]
-      const title = (linkMatch[3] || linkMatch[4] || '').trim() || undefined
+      const href = linkMatch.href
+      const title = linkMatch.title || undefined
       const linkAttrs: Record<string, unknown> = { href }
       if (title) linkAttrs.title = title
       if (linkDisplayMode === 'title' && !appliedLinkDisplayMode) {
@@ -998,10 +1000,10 @@ export function parseInlineMarkdown(
       }
       parts.push({
         type: 'text',
-        text: linkMatch[1],
+        text: linkMatch.label,
         marks: [{ type: 'link', attrs: linkAttrs }],
       })
-      remaining = remaining.slice(linkMatch[0].length)
+      remaining = remaining.slice(linkMatch.source.length)
       continue
     }
 
@@ -1097,6 +1099,7 @@ function nodeToMarkdown(node: JSONContent): string {
         sourceHref: String(node.attrs?.sourceHref || '') || undefined,
         sourceLabel: String(node.attrs?.sourceLabel || node.attrs?.title || '') || undefined,
         notesVisible: Boolean(node.attrs?.notesVisible) || undefined,
+        bookmarks: node.attrs?.bookmarks,
       })
     }
     case 'bulletList':

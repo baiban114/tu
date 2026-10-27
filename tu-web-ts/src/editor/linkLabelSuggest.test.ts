@@ -21,6 +21,7 @@ import {
   resolveChapterDrillParent,
   collectResourceScopeSuggests,
 } from '@/editor/linkLabelSuggest'
+import { linkIrSourceKey } from '@/editor/extensions/linkIrSource'
 import {
   browseChildren,
   deepSearchInSubtree,
@@ -64,6 +65,19 @@ describe('splitMarkdownLinkSourceRanges / caret-in-href', () => {
       href: '王道>',
       hrefFrom: 3,
       complete: false,
+    })
+  })
+
+  it('keeps balanced brackets in the resource link label', () => {
+    const parts = splitMarkdownLinkSourceRanges(
+      '[[数据结构(C语言版)].严蔚敏_吴伟民.扫描版](resource:ri-1)',
+      0,
+    )
+    expect(parts).toMatchObject({
+      labelText: '[数据结构(C语言版)].严蔚敏_吴伟民.扫描版',
+      href: 'resource:ri-1',
+      hrefText: 'resource:ri-1',
+      complete: true,
     })
   })
 })
@@ -442,6 +456,57 @@ describe('findLinkLabelEditContext + applyLinkSuggest', () => {
       description: '第1章',
     })
     expect(editor.getText()).toBe('[王道2027计算机网络](resource:ri:chapter:c1)')
+    editor.destroy()
+  })
+
+  it('applies bracketed resource titles as real links', () => {
+    const el = document.createElement('div')
+    document.body.appendChild(el)
+    const editor = new Editor({
+      element: el,
+      extensions: [
+        StarterKit.configure({ link: false }),
+        TuLink.configure({
+          openOnClick: false,
+          autolink: false,
+          protocols: ['resource'],
+          isAllowedUri: (url) => String(url || '').startsWith('resource:'),
+        }),
+      ],
+      content: {
+        type: 'doc',
+        content: [
+          {
+            type: 'paragraph',
+            content: [
+              { type: 'text', text: '[](资源>' },
+              { type: 'text', text: '尾尾' },
+            ],
+          },
+        ],
+      },
+    })
+
+    editor.commands.setTextSelection(4)
+    const ctx = findLinkLabelEditContext(editor.state)
+    const title = '[数据结构(C语言版)].严蔚敏_吴伟民.扫描版'
+    applyLinkSuggest(editor, ctx!, {
+      id: 'resource:ri-a8bed11a9f1347c59f083d1a7aac1ece',
+      kind: 'resourceItem',
+      label: title,
+      href: 'resource:ri-a8bed11a9f1347c59f083d1a7aac1ece',
+      description: title,
+    })
+    expect(editor.getText()).toBe(
+      `[${title}](resource:ri-a8bed11a9f1347c59f083d1a7aac1ece)`,
+    )
+
+    editor.commands.setTextSelection(5)
+    const active = linkIrSourceKey.getState(editor.state)!
+    expect(active).not.toBeNull()
+    expect(editor.getText()).toBe(
+      `[${title}](resource:ri-a8bed11a9f1347c59f083d1a7aac1ece)`,
+    )
     editor.destroy()
   })
 })

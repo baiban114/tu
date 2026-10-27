@@ -40,6 +40,8 @@ import com.tu.backend.externalresource.repository.ResourceTypeRepository;
 import com.tu.backend.externalresource.repository.ResourceWorkRepository;
 import com.tu.backend.externalresource.util.ExternalUrlNormalizer;
 import com.tu.backend.externalresource.util.PdfClipLocator;
+import com.tu.backend.storage.entity.FileAssetEntity;
+import com.tu.backend.storage.repository.FileAssetRepository;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -50,8 +52,10 @@ import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.net.URI;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -69,6 +73,7 @@ public class ExternalResourceService {
     private final ResourceTypeRepository typeRepository;
     private final ResourceWorkRepository workRepository;
     private final ResourceItemRepository itemRepository;
+    private final FileAssetRepository fileAssetRepository;
     private final ResourceExcerptRepository excerptRepository;
     private final ResourcePdfRegionNoteRepository pdfRegionNoteRepository;
     private final ResourceCrawledDocumentRepository crawledDocumentRepository;
@@ -81,6 +86,7 @@ public class ExternalResourceService {
         ResourceTypeRepository typeRepository,
         ResourceWorkRepository workRepository,
         ResourceItemRepository itemRepository,
+        FileAssetRepository fileAssetRepository,
         ResourceExcerptRepository excerptRepository,
         ResourcePdfRegionNoteRepository pdfRegionNoteRepository,
         ResourceCrawledDocumentRepository crawledDocumentRepository,
@@ -92,6 +98,7 @@ public class ExternalResourceService {
         this.typeRepository = typeRepository;
         this.workRepository = workRepository;
         this.itemRepository = itemRepository;
+        this.fileAssetRepository = fileAssetRepository;
         this.excerptRepository = excerptRepository;
         this.pdfRegionNoteRepository = pdfRegionNoteRepository;
         this.crawledDocumentRepository = crawledDocumentRepository;
@@ -543,7 +550,7 @@ public class ExternalResourceService {
     @Transactional
     public ResourceExcerptDto ensurePdfClipExcerpt(String resourceItemId, CreatePdfClipExcerptRequest request) {
         ResourceItemEntity item = findItem(resourceItemId);
-        ensureExcerptSupportedItem(item);
+        ensurePdfClipExcerptSupportedItem(item, request.fileId());
 
         int startPage = Math.max(1, request.startPage());
         int endPage = Math.max(startPage, request.endPage());
@@ -742,6 +749,44 @@ public class ExternalResourceService {
             && !WEB_LINK_TYPE_CODE.equals(code)
             && !DOCUMENT_TYPE_CODE.equals(code)) {
             throw new BusinessException(40000, "resource excerpts are only supported for book, document, or web-link resources");
+        }
+    }
+
+    private void ensurePdfClipExcerptSupportedItem(ResourceItemEntity item, String fileId) {
+        findType(item.getTypeId());
+        String normalizedFileId = blankToNull(fileId);
+        FileAssetEntity file = normalizedFileId == null ? null : fileAssetRepository.findById(normalizedFileId).orElse(null);
+        String contentType = file == null ? null : file.getContentType();
+        if (contentType == null
+            || !contentType.toLowerCase(Locale.ROOT).startsWith("application/pdf")
+            || !referencesPdfFile(item, normalizedFileId)) {
+            throw new BusinessException(
+                40000,
+                "PDF clip excerpts are only supported for book, document, web-link, or PDF resources"
+            );
+        }
+    }
+
+    private boolean referencesPdfFile(ResourceItemEntity item, String fileId) {
+        return deserializeAccessUrls(item.getAccessUrlsJson()).stream()
+            .anyMatch(url -> fileId.equals(extractStoredFileId(url)))
+            || fileId.equals(extractStoredFileId(item.getSourceUrl()));
+    }
+
+    private String extractStoredFileId(String url) {
+        String value = blankToNull(url);
+        if (value == null) {
+            return null;
+        }
+        try {
+            String path = URI.create(value).getPath();
+            if (path == null || !path.startsWith("/api/files/")) {
+                return null;
+            }
+            String fileId = path.substring("/api/files/".length()).replaceFirst("/+$", "");
+            return fileId.contains("/") || fileId.isBlank() ? null : fileId;
+        } catch (IllegalArgumentException ignored) {
+            return null;
         }
     }
 

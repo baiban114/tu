@@ -3,6 +3,7 @@ export type {
   FlatTreeNode,
   FlatTreeNodeWithPath,
   FlattenTreeOptions,
+  TreeContextMenuItem,
   TreeDocument,
   TreeNode,
 } from './types';

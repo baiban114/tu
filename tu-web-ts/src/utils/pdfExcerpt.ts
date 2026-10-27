@@ -13,7 +13,18 @@ export const PDF_EXCERPT_SIDEBAR_MAX_WIDTH = 480
 export type PdfExcerptViewMode = 'excerpt' | 'full'
 
 function escapeAttr(value: string): string {
-  return value.replace(/"/g, '&quot;')
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+}
+
+function decodeAttr(value: string): string {
+  return value
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&amp;/g, '&')
 }
 
 function parseAttrString(attrsStr: string): Record<string, string> {
@@ -21,7 +32,7 @@ function parseAttrString(attrsStr: string): Record<string, string> {
   const re = /([\w-]+)="([^"]*)"/g
   let match: RegExpExecArray | null
   while ((match = re.exec(attrsStr)) !== null) {
-    attrs[match[1]] = match[2]
+    attrs[match[1]] = decodeAttr(match[2])
   }
   return attrs
 }
@@ -154,6 +165,151 @@ export interface PdfExcerptAttrs {
   sourceLabel?: string
   /** Whether PDF region note overlays are shown. Default false. */
   notesVisible?: boolean
+  /** User-created bookmarks stored with the excerpt block. */
+  bookmarks?: PdfExcerptBookmark[]
+}
+
+export interface PdfExcerptBookmark {
+  id: string
+  title: string
+  pageNumber: number
+  parentId?: string | null
+}
+
+export function createPdfExcerptBookmarkId(): string {
+  return `pdf-bookmark-${crypto.randomUUID().replace(/-/g, '')}`
+}
+
+export function normalizePdfExcerptBookmarks(value: unknown): PdfExcerptBookmark[] {
+  if (!Array.isArray(value)) return []
+  const seen = new Set<string>()
+  const candidates: PdfExcerptBookmark[] = []
+  for (const item of value) {
+    if (!item || typeof item !== 'object') continue
+    const raw = item as Record<string, unknown>
+    const id = String(raw.id || '').trim()
+    const title = String(raw.title || '').trim()
+    const pageNumber = Math.floor(Number(raw.pageNumber))
+    const parentId = String(raw.parentId || '').trim() || null
+    if (!id || !title || !Number.isFinite(pageNumber) || pageNumber < 1 || seen.has(id)) continue
+    seen.add(id)
+    candidates.push({
+      id,
+      title: title.slice(0, 120),
+      pageNumber,
+      ...(parentId ? { parentId } : {}),
+    })
+  }
+
+  const byId = new Map(candidates.map((bookmark) => [bookmark.id, bookmark]))
+  const result: PdfExcerptBookmark[] = []
+  for (const bookmark of candidates) {
+    const parentId = bookmark.parentId ?? null
+    let nextParentId = parentId && byId.has(parentId) ? parentId : null
+    if (nextParentId === bookmark.id) nextParentId = null
+    if (nextParentId) {
+      const visited = new Set([bookmark.id])
+      let cursor = nextParentId
+      while (cursor) {
+        if (visited.has(cursor)) {
+          nextParentId = null
+          break
+        }
+        visited.add(cursor)
+        cursor = byId.get(cursor)?.parentId ?? ''
+      }
+    }
+    result.push({
+      id: bookmark.id,
+      title: bookmark.title,
+      pageNumber: bookmark.pageNumber,
+      ...(nextParentId ? { parentId: nextParentId } : {}),
+    })
+  }
+  return result
+}
+
+/** Move one custom bookmark before/after/inside another while preserving array order. */
+export function reorderPdfExcerptBookmarks(
+  value: unknown,
+  draggedId: string,
+  targetId: string,
+  position: 'before' | 'after' | 'inside',
+): PdfExcerptBookmark[] {
+  const bookmarks = normalizePdfExcerptBookmarks(value)
+  if (draggedId === targetId) return bookmarks
+  const fromIndex = bookmarks.findIndex((item) => item.id === draggedId)
+  const targetIndex = bookmarks.findIndex((item) => item.id === targetId)
+  if (fromIndex < 0 || targetIndex < 0) return bookmarks
+  if (position === 'inside') {
+    const descendants = new Set<string>([draggedId])
+    let changed = true
+    while (changed) {
+      changed = false
+      for (const bookmark of bookmarks) {
+        if (bookmark.parentId && descendants.has(bookmark.parentId) && !descendants.has(bookmark.id)) {
+          descendants.add(bookmark.id)
+          changed = true
+        }
+      }
+    }
+    if (descendants.has(targetId)) return bookmarks
+  }
+  const next = [...bookmarks]
+  const [dragged] = next.splice(fromIndex, 1)
+  if (position === 'inside') {
+    const moved = { ...dragged, parentId: targetId }
+    let insertIndex = -1
+    for (let index = next.length - 1; index >= 0; index -= 1) {
+      let ancestorId = next[index]?.parentId
+      while (ancestorId) {
+        if (ancestorId === targetId) break
+        ancestorId = bookmarks.find((item) => item.id === ancestorId)?.parentId ?? undefined
+      }
+      if (ancestorId === targetId) {
+        insertIndex = index + 1
+        break
+      }
+    }
+    if (insertIndex < 0) {
+      const targetArrayIndex = next.findIndex((item) => item.id === targetId)
+      insertIndex = targetArrayIndex + 1
+      if (insertIndex <= 0) return bookmarks
+    }
+    next.splice(insertIndex, 0, moved)
+    return next
+  }
+  const target = next.find((item) => item.id === targetId)
+  if (!target) return bookmarks
+  const parentId = target.parentId
+  const moved = parentId
+    ? { ...dragged, parentId }
+    : (({ parentId: _parentId, ...rest }) => rest)(dragged)
+  const nextWithMoved = [...next]
+  const siblings = nextWithMoved.filter((item) => (item.parentId ?? null) === (parentId ?? null))
+  const targetSiblingIndex = siblings.findIndex((item) => item.id === targetId)
+  const insertSiblingIndex = targetSiblingIndex + (position === 'before' ? 0 : 1)
+  const nextSibling = siblings[insertSiblingIndex]
+  let lastSiblingArrayIndex = -1
+  for (let index = nextWithMoved.length - 1; index >= 0; index -= 1) {
+    let ancestorId = nextWithMoved[index]?.parentId
+    while (ancestorId) {
+      const ancestor = nextWithMoved.find((item) => item.id === ancestorId)
+      if ((ancestor?.parentId ?? null) === (parentId ?? null)) {
+        lastSiblingArrayIndex = Math.max(lastSiblingArrayIndex, index)
+        break
+      }
+      ancestorId = ancestor?.parentId ?? undefined
+    }
+    if ((nextWithMoved[index]?.parentId ?? null) === (parentId ?? null)) {
+      lastSiblingArrayIndex = index
+    }
+  }
+  const insertArrayIndex = nextSibling
+    ? nextWithMoved.indexOf(nextSibling)
+    : lastSiblingArrayIndex + 1
+  nextWithMoved.splice(Math.max(0, insertArrayIndex), 0, moved)
+  return nextWithMoved
 }
 
 export function parsePdfExcerptComment(attrsStr: string): PdfExcerptAttrs | null {
@@ -170,6 +326,14 @@ export function parsePdfExcerptComment(attrsStr: string): PdfExcerptAttrs | null
   )
   const notesVisibleRaw = String(attrs.notesVisible || '').trim().toLowerCase()
   const notesVisible = notesVisibleRaw === 'true' || notesVisibleRaw === '1'
+  let bookmarks: PdfExcerptBookmark[] = []
+  if (attrs.bookmarks) {
+    try {
+      bookmarks = normalizePdfExcerptBookmarks(JSON.parse(attrs.bookmarks))
+    } catch {
+      bookmarks = []
+    }
+  }
   return {
     blockId,
     fileId,
@@ -184,6 +348,7 @@ export function parsePdfExcerptComment(attrsStr: string): PdfExcerptAttrs | null
     sourceHref: attrs.sourceHref || undefined,
     sourceLabel: attrs.sourceLabel || attrs.title || undefined,
     ...(notesVisible ? { notesVisible: true } : {}),
+    ...(bookmarks.length > 0 ? { bookmarks } : {}),
   }
 }
 
@@ -203,7 +368,11 @@ export function serializePdfExcerptComment(attrs: PdfExcerptAttrs): string {
     ? ` sourceLabel="${escapeAttr(sourceLabel)}"`
     : ''
   const notesVisibleAttr = attrs.notesVisible ? ' notesVisible="true"' : ''
-  return `<!--tu:pdf-excerpt id="${escapeAttr(attrs.blockId)}" fileId="${escapeAttr(attrs.fileId)}" fileName="${escapeAttr(attrs.fileName)}" start="${attrs.startPage}" end="${attrs.endPage}" height="${attrs.height}"${modeAttr}${clipAttr}${titleAttr}${sourceHrefAttr}${sourceLabelAttr}${notesVisibleAttr}-->`
+  const bookmarks = normalizePdfExcerptBookmarks(attrs.bookmarks)
+  const bookmarksAttr = bookmarks.length > 0
+    ? ` bookmarks="${escapeAttr(JSON.stringify(bookmarks))}"`
+    : ''
+  return `<!--tu:pdf-excerpt id="${escapeAttr(attrs.blockId)}" fileId="${escapeAttr(attrs.fileId)}" fileName="${escapeAttr(attrs.fileName)}" start="${attrs.startPage}" end="${attrs.endPage}" height="${attrs.height}"${modeAttr}${clipAttr}${titleAttr}${sourceHrefAttr}${sourceLabelAttr}${notesVisibleAttr}${bookmarksAttr}-->`
 }
 
 export function normalizePdfPageRange(

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, inject, markRaw, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch, type ComputedRef, type Ref } from 'vue'
+import { computed, inject, markRaw, nextTick, onBeforeUnmount, onMounted, reactive, ref, shallowRef, watch, type ComputedRef, type Ref } from 'vue'
 import { nodeViewProps, NodeViewWrapper } from '@tiptap/vue-3'
 import { buildFileUrl } from '@/api/fileStorage'
 import { listResourceExcerptPdfRegionNotes, listResourcePdfRegionNotes } from '@/api/externalResource'
@@ -32,6 +32,10 @@ import {
   clipAttrsFromVerticalHits,
   PDF_EXCERPT_CLIP_SELECT_EVENT,
   PDF_EXCERPT_FIT_HEIGHT_EVENT,
+  createPdfExcerptBookmarkId,
+  normalizePdfExcerptBookmarks,
+  reorderPdfExcerptBookmarks,
+  type PdfExcerptBookmark,
   type PdfPageVerticalHit,
 } from '@/utils/pdfExcerpt'
 import { parseResourceLocator, syncResourceHrefWithPdfPages } from '@/editor/linkLabelSuggestQuery'
@@ -41,12 +45,19 @@ import type { PdfDocumentProxy } from '@/utils/pdfjsSetup'
 import {
   buildPdfSidebarTree,
   collectExpandableNodeIds,
+  mergePdfSidebarBookmarks,
   type PdfSidebarNode,
   type PdfSidebarSource,
 } from '@/utils/pdfOutline'
 import { PdfPageRenderManager } from '@/utils/pdfPageRender'
+import {
+  loadPdfReadingPosition,
+  savePdfReadingPosition,
+  type PdfReadingPosition,
+} from '@/utils/pdfReadingPosition'
 import PdfExcerptSidebar from './PdfExcerptSidebar.vue'
 import { useExpandCollapse } from '@/composables/useExpandCollapse'
+import { ElMessageBox } from 'element-plus'
 
 const props = defineProps(nodeViewProps)
 
@@ -133,9 +144,17 @@ const loadError = ref('')
 const loading = ref(false)
 const largeDocWarning = ref('')
 const pageCanvases = ref<Array<{ pageNumber: number; placeholderHeight: number }>>([])
+const renderedPageNumbers = ref<Set<number>>(new Set())
+/** The first frame can render before the PDF outline finishes loading. */
+const initialPagePlaceholderHeight = 800
+/** Keep the user's scroll intent stable while lazy pages settle to real heights. */
+let scrollAnchor: { pageNumber: number; offset: number } | null = null
+let scrollAnchorApplyRaf = 0
 const docRef = shallowRef<PdfDocumentProxy | null>(null)
 const sidebarNodes = ref<PdfSidebarNode[]>([])
+const baseSidebarNodes = ref<PdfSidebarNode[]>([])
 const sidebarSource = ref<PdfSidebarSource>('pages')
+const baseSidebarSource = ref<PdfSidebarSource>('pages')
 const sidebarOpen = ref(false)
 const sidebarWidth = ref(PDF_EXCERPT_SIDEBAR_DEFAULT_WIDTH)
 const savedSidebarWidth = ref(PDF_EXCERPT_SIDEBAR_DEFAULT_WIDTH)
@@ -143,10 +162,21 @@ const activeNodeId = ref<string | null>(null)
 const sidebarExpand = useExpandCollapse()
 const pagesScrollRef = ref<HTMLElement | null>(null)
 const pdfBlockRef = ref<HTMLElement | null>(null)
+const pageJumpInputRef = ref<HTMLInputElement | null>(null)
 const isPdfBlockHovered = ref(false)
-/** Wheel scrolls PDF pages only after the NodeView is clicked; outside click clears. */
-const pdfWheelScrollActive = ref(false)
+const pdfWheelActiveBlockIds = reactive(new Set<string>())
+const pdfWheelScrollActive = computed({
+  get: () => pdfWheelActiveBlockIds.has(blockId.value),
+  set: (active: boolean) => {
+    if (active) pdfWheelActiveBlockIds.add(blockId.value)
+    else pdfWheelActiveBlockIds.delete(blockId.value)
+  },
+})
 const zoomScale = ref(1)
+const currentPageNumber = ref(startPage.value)
+const restoredReadingPosition = ref<PdfReadingPosition | null>(null)
+const pageJumpDraft = ref(String(startPage.value))
+const pageJumpError = ref('')
 const clipSelectActive = ref(false)
 /** While dragging: document-anchored start + mouse-following end (client Y). */
 const clipDrag = ref<{
@@ -164,6 +194,7 @@ const overlayLayoutTick = ref(0)
 const pdfRegionNotesHiddenForZoom = ref(false)
 /** Persisted on the block (`notesVisible`); default false when unset. */
 const pdfRegionNotesVisible = computed(() => Boolean(props.node.attrs.notesVisible))
+const customBookmarks = computed(() => normalizePdfExcerptBookmarks(props.node.attrs.bookmarks))
 
 let scrollHost: HTMLElement | null = null
 let wheelTarget: HTMLElement | null = null
@@ -174,6 +205,7 @@ let clipSelectRoot: HTMLElement | null = null
 let pendingZoomCenter: { xRatio: number; yRatio: number } | null = null
 let zoomCenterRestoreRaf = 0
 let zoomNoteSettleTimer: ReturnType<typeof setTimeout> | null = null
+let currentPageSyncRaf = 0
 
 const pageRefs = new Map<number, HTMLElement>()
 let renderManager: PdfPageRenderManager | null = null
@@ -189,6 +221,10 @@ let sidebarResizeLayoutRafId = 0
 let sidebarDragging = false
 let sidebarResizeStartX = 0
 let sidebarResizeStartWidth = 0
+let readingPositionReady = false
+let readingPositionWriteTimer: ReturnType<typeof setTimeout> | null = null
+let lastReadingPosition: PdfReadingPosition | null = null
+let restoreReadingPositionInFlight = false
 
 const metaLabel = computed(() => formatPdfExcerptMetaLabel(
   fileName.value,
@@ -356,11 +392,17 @@ const clipPendingConfirmStyle = computed(() => {
 
 const sidebarTitle = computed(() => {
   if (sidebarSource.value === 'outline') return '书签'
-  if (sidebarSource.value === 'pages') return '目录'
+  if (sidebarSource.value === 'pages') {
+    return customBookmarks.value.length > 0 ? '书签与目录' : '目录'
+  }
   return '导航'
 })
 
-const showSidebar = computed(() => sidebarNodes.value.length > 0 || sidebarSource.value === 'none')
+const showSidebar = computed(() => (
+  sidebarNodes.value.length > 0
+  || sidebarSource.value === 'none'
+  || customBookmarks.value.length > 0
+))
 const sidebarExpandableIds = computed(() => collectExpandableNodeIds(sidebarNodes.value))
 const sidebarHasNestedNodes = computed(() => sidebarExpandableIds.value.length > 0)
 const sidebarEmptyHint = computed(() => (
@@ -370,6 +412,26 @@ const sidebarEmptyHint = computed(() => (
 ))
 
 const zoomLabel = computed(() => `${Math.round(zoomScale.value * 100)}%`)
+const pageNavigationStart = computed(() => (
+  pageCanvases.value[0]?.pageNumber
+  ?? Math.min(startPage.value, endPage.value)
+))
+const pageNavigationEnd = computed(() => (
+  pageCanvases.value[pageCanvases.value.length - 1]?.pageNumber
+  ?? Math.max(startPage.value, endPage.value)
+))
+const pageNavigationTotal = computed(() => (
+  docRef.value?.numPages
+  ?? Math.max(pageNavigationStart.value, pageNavigationEnd.value)
+))
+const pageNavigationRangeLabel = computed(() => {
+  const start = pageNavigationStart.value
+  const end = pageNavigationEnd.value
+  return start === end ? `第 ${start} 页` : `第 ${start}–${end} 页`
+})
+const pageJumpErrorId = computed(() => (
+  `pdf-page-jump-error-${blockId.value || fileId.value || 'block'}`.replace(/[^a-zA-Z0-9_-]/g, '-')
+))
 
 /** Show whenever PDF pages are ready (not hover-gated — hover was easy to miss / covered). */
 const showZoomBadge = computed(() => (
@@ -384,6 +446,198 @@ function setPageRef(pageNumber: number, el: unknown) {
   } else {
     pageRefs.delete(pageNumber)
   }
+}
+
+function capturePdfScrollAnchor() {
+  const root = pagesScrollRef.value
+  if (!root) return
+  const rootRect = root.getBoundingClientRect()
+  const probeY = rootRect.top + Math.min(24, rootRect.height / 2)
+  const pages = [...pageCanvases.value].sort((a, b) => a.pageNumber - b.pageNumber)
+  for (const item of pages) {
+    const page = root.querySelector<HTMLElement>(
+      `.pdf-excerpt-block__page[data-page-number="${item.pageNumber}"]`,
+    )
+    if (!page) continue
+    const rect = page.getBoundingClientRect()
+    if (rect.bottom < probeY) continue
+    scrollAnchor = {
+      pageNumber: item.pageNumber,
+      offset: probeY - rect.top,
+    }
+    return
+  }
+  scrollAnchor = null
+}
+
+function restorePdfScrollAnchor() {
+  const anchor = scrollAnchor
+  const root = pagesScrollRef.value
+  if (!anchor || !root) return
+  const page = root.querySelector<HTMLElement>(
+    `.pdf-excerpt-block__page[data-page-number="${anchor.pageNumber}"]`,
+  )
+  if (!page) return
+  const rootRect = root.getBoundingClientRect()
+  const pageRect = page.getBoundingClientRect()
+  const delta = pageRect.top + anchor.offset - (rootRect.top + Math.min(24, rootRect.height / 2))
+  if (Math.abs(delta) >= 1) root.scrollTop += delta
+}
+
+function scheduleRestorePdfScrollAnchor() {
+  if (!scrollAnchor || scrollAnchorApplyRaf) return
+  scrollAnchorApplyRaf = requestAnimationFrame(() => {
+    scrollAnchorApplyRaf = 0
+    restorePdfScrollAnchor()
+    syncCurrentPdfPage()
+  })
+}
+
+function getPdfReadingPosition(): PdfReadingPosition | null {
+  const root = pagesScrollRef.value
+  const key = blockId.value.trim()
+  const file = fileId.value.trim()
+  if (!root || !key || !file || pageCanvases.value.length === 0) return null
+  const rootRect = root.getBoundingClientRect()
+  const centerY = rootRect.top + root.clientHeight / 2
+  let pageNumber = currentPageNumber.value
+  let pageRatio = 0.5
+  let pageRect: DOMRect | null = null
+
+  for (const page of pageCanvases.value) {
+    const host = pageRefs.get(page.pageNumber)
+    const pageEl = host?.closest<HTMLElement>('.pdf-excerpt-block__page')
+    if (!pageEl) continue
+    const rect = pageEl.getBoundingClientRect()
+    if (rect.bottom < centerY || rect.top > centerY) continue
+    pageNumber = page.pageNumber
+    pageRect = rect
+    pageRatio = (centerY - rect.top) / Math.max(rect.height, 1)
+    break
+  }
+
+  if (!pageRect) {
+    const fallbackPage = currentPageNumber.value
+    const host = pageRefs.get(fallbackPage)
+    pageRect = host?.closest<HTMLElement>('.pdf-excerpt-block__page')?.getBoundingClientRect()
+      ?? null
+    if (pageRect) {
+      pageRatio = (centerY - pageRect.top) / Math.max(pageRect.height, 1)
+    } else if (root.scrollTop <= 1) {
+      pageNumber = resolvedStartPage
+      pageRatio = 0
+    } else if (root.scrollTop >= root.scrollHeight - root.clientHeight - 1) {
+      pageNumber = resolvedEndPage
+      pageRatio = 1
+    }
+  }
+
+  return {
+    blockId: key,
+    fileId: file,
+    pageNumber: Math.min(resolvedEndPage, Math.max(resolvedStartPage, pageNumber)),
+    pageOffset: Math.min(1, Math.max(0, Math.round(pageRatio * 1_000) / 1_000)),
+    updatedAt: Date.now(),
+  }
+}
+
+function persistPdfReadingPosition() {
+  if (readingPositionWriteTimer) {
+    clearTimeout(readingPositionWriteTimer)
+    readingPositionWriteTimer = null
+  }
+  if (!readingPositionReady) return
+  const position = getPdfReadingPosition()
+  if (!position || (
+    lastReadingPosition
+    && lastReadingPosition.pageNumber === position.pageNumber
+    && Math.abs(lastReadingPosition.pageOffset - position.pageOffset) < 0.001
+  )) return
+  lastReadingPosition = position
+  savePdfReadingPosition(position)
+}
+
+function schedulePdfReadingPositionSave() {
+  if (!readingPositionReady || readingPositionWriteTimer) return
+  readingPositionWriteTimer = setTimeout(() => {
+    readingPositionWriteTimer = null
+    persistPdfReadingPosition()
+  }, 250)
+}
+
+function restorePdfReadingPosition(position: PdfReadingPosition): boolean {
+  const root = pagesScrollRef.value
+  const host = pageRefs.get(position.pageNumber)
+  const pageEl = host?.closest<HTMLElement>('.pdf-excerpt-block__page')
+  if (!root || !pageEl) return false
+  const rootRect = root.getBoundingClientRect()
+  const pageRect = pageEl.getBoundingClientRect()
+  if (pageRect.height <= 0 || root.clientHeight <= 0) return false
+  const centerOffset = Math.min(1, Math.max(0, position.pageOffset)) * pageRect.height
+  const targetCenterOffset = pageRect.top + centerOffset
+  const targetScrollTop = Math.max(0, Math.min(
+    root.scrollTop + targetCenterOffset - (rootRect.top + root.clientHeight / 2),
+    root.scrollHeight - root.clientHeight,
+  ))
+  root.scrollTop = targetScrollTop
+  applyCurrentPdfPage(position.pageNumber)
+  lastReadingPosition = position
+  return Math.abs(root.scrollTop - targetScrollTop) < 2
+}
+
+function requestSavedPdfPageRender() {
+  const position = restoredReadingPosition.value
+  if (!position || !renderManager) return
+  renderManager.requestRender(position.pageNumber)
+  const before = Math.max(0, position.pageNumber - 1)
+  const after = Math.min(resolvedEndPage, position.pageNumber + 1)
+  if (before >= resolvedStartPage) renderManager.requestRender(before)
+  if (after <= resolvedEndPage) renderManager.requestRender(after)
+}
+
+async function restoreLastPdfReadingPosition(generation = loadGeneration) {
+  const position = restoredReadingPosition.value
+  if (!position) {
+    return
+  }
+  if (restoreReadingPositionInFlight) return
+  restoreReadingPositionInFlight = true
+  if (readingPositionWriteTimer) {
+    clearTimeout(readingPositionWriteTimer)
+    readingPositionWriteTimer = null
+  }
+  for (let attempt = 0; attempt < 24; attempt += 1) {
+    await nextTick()
+    if (generation !== loadGeneration) {
+      restoreReadingPositionInFlight = false
+      return
+    }
+    if (restorePdfReadingPosition(position)) {
+      readingPositionReady = true
+      scheduleCurrentPdfPageSync()
+      setTimeout(() => {
+        if (
+          generation === loadGeneration
+          && restoredReadingPosition.value?.pageNumber === position.pageNumber
+          && restorePdfReadingPosition(position)
+        ) {
+          scheduleCurrentPdfPageSync()
+        }
+      }, 250)
+      restoreReadingPositionInFlight = false
+      return
+    }
+    requestSavedPdfPageRender()
+    await new Promise<void>((resolve) => {
+      if (attempt < 10) {
+        requestAnimationFrame(() => resolve())
+        return
+      }
+      setTimeout(resolve, 16 + Math.min(attempt, 40))
+    })
+  }
+  readingPositionReady = true
+  restoreReadingPositionInFlight = false
 }
 
 function getPlaceholderHeight(pageNumber: number): number {
@@ -403,7 +657,7 @@ function pageClipFor(pageNumber: number) {
 }
 
 function pageFullHeight(page: { pageNumber: number; placeholderHeight: number }): number {
-  return page.placeholderHeight || getPlaceholderHeight(page.pageNumber)
+  return getPlaceholderHeight(page.pageNumber)
 }
 
 function pageClipViewportStyle(page: { pageNumber: number; placeholderHeight: number }) {
@@ -440,6 +694,188 @@ function resetSidebarExpandState(nodes: PdfSidebarNode[]) {
   sidebarExpand.expandAll(collectExpandableNodeIds(nodes))
 }
 
+function refreshSidebarFromBookmarks(bookmarks = customBookmarks.value) {
+  sidebarNodes.value = mergePdfSidebarBookmarks(
+    baseSidebarNodes.value,
+    bookmarks,
+    resolvedStartPage,
+    resolvedEndPage,
+  )
+  sidebarSource.value = baseSidebarNodes.value.length > 0 || bookmarks.length > 0
+    ? baseSidebarSource.value
+    : 'none'
+  resetSidebarExpandState(sidebarNodes.value)
+}
+
+/** The page at the center of the visible PDF viewport is the current reading page. */
+function applyCurrentPdfPage(pageNumber: number) {
+  currentPageNumber.value = pageNumber
+  if (document.activeElement !== pageJumpInputRef.value) {
+    pageJumpDraft.value = String(pageNumber)
+  }
+}
+
+function syncCurrentPdfPage() {
+  if (loading.value || loadError.value || pageCanvases.value.length === 0) return
+  const root = pagesScrollRef.value
+  if (!root) {
+    applyCurrentPdfPage(resolvedStartPage)
+    return
+  }
+  if (root.scrollTop <= 1) {
+    applyCurrentPdfPage(resolvedStartPage)
+    return
+  }
+  if (root.scrollTop >= root.scrollHeight - root.clientHeight - 1) {
+    applyCurrentPdfPage(resolvedEndPage)
+    return
+  }
+  const rootRect = root.getBoundingClientRect()
+  const centerY = rootRect.top + rootRect.height / 2
+  applyCurrentPdfPage(
+    hitTestPageVertical(centerY)?.pageNumber ?? resolvedStartPage,
+  )
+}
+
+function scheduleCurrentPdfPageSync() {
+  if (currentPageSyncRaf) return
+  currentPageSyncRaf = requestAnimationFrame(() => {
+    currentPageSyncRaf = 0
+    syncCurrentPdfPage()
+  })
+}
+
+function onPageJumpInput(event?: Event) {
+  pageJumpError.value = ''
+  const target = event?.target
+  if (target instanceof HTMLInputElement) pageJumpDraft.value = target.value
+}
+
+function onPageJumpFocus(event: FocusEvent) {
+  const input = event.currentTarget as HTMLInputElement
+  input.select()
+  pageJumpError.value = ''
+}
+
+function onPageJumpBlur() {
+  if (!pageJumpDraft.value.trim()) {
+    pageJumpDraft.value = String(currentPageNumber.value)
+  }
+}
+
+function onPageJumpEscape(event: KeyboardEvent) {
+  pageJumpDraft.value = String(currentPageNumber.value)
+  pageJumpError.value = ''
+  const input = event.currentTarget as HTMLInputElement
+  input.blur()
+}
+
+function jumpToPdfPage(pageNumber: number): boolean {
+  const start = pageNavigationStart.value
+  const end = pageNavigationEnd.value
+  if (!Number.isSafeInteger(pageNumber)) {
+    pageJumpError.value = `请输入${pageNavigationRangeLabel.value}范围内的整数`
+    return false
+  }
+  if (pageNumber < start || pageNumber > end) {
+    pageJumpError.value = `仅可跳转到${pageNavigationRangeLabel.value}`
+    return false
+  }
+  pageJumpError.value = ''
+  pageJumpDraft.value = String(pageNumber)
+  applyCurrentPdfPage(pageNumber)
+  scrollToPage(pageNumber)
+  schedulePdfReadingPositionSave()
+  return true
+}
+
+function jumpToCurrentPdfPage() {
+  const raw = pageJumpDraft.value.trim()
+  if (!/^\d+$/.test(raw)) {
+    pageJumpError.value = `请输入${pageNavigationRangeLabel.value}范围内的整数`
+    return
+  }
+  jumpToPdfPage(Number(raw))
+}
+
+function jumpToAdjacentPdfPage(offset: -1 | 1) {
+  jumpToPdfPage(currentPageNumber.value + offset)
+}
+
+function addBookmarkAtCurrentPage() {
+  if (loading.value || loadError.value) return
+  const pageNumber = currentPageNumber.value
+  if (
+    viewMode.value === 'excerpt'
+    && (pageNumber < resolvedStartPage || pageNumber > resolvedEndPage)
+  ) {
+    props.updateAttributes({ startPage: pageNumber, endPage: pageNumber })
+  }
+  const bookmark: PdfExcerptBookmark = {
+    id: createPdfExcerptBookmarkId(),
+    title: '未命名书签',
+    pageNumber,
+  }
+  const bookmarks = [...customBookmarks.value, bookmark]
+  props.updateAttributes({ bookmarks })
+  refreshSidebarFromBookmarks(bookmarks)
+  activeNodeId.value = bookmark.id
+  if (!sidebarOpen.value) sidebarOpen.value = true
+}
+
+function renameBookmark(payload: { nodeId: string; title: string }) {
+  const title = payload.title.trim().slice(0, 120)
+  if (!title) return
+  const bookmarks = customBookmarks.value.map((bookmark) => (
+    bookmark.id === payload.nodeId ? { ...bookmark, title } : bookmark
+  ))
+  props.updateAttributes({ bookmarks })
+  refreshSidebarFromBookmarks(bookmarks)
+}
+
+function reorderBookmarks(payload: {
+  draggedId: string
+  targetId: string
+  position: 'before' | 'after' | 'inside'
+}) {
+  const bookmarks = reorderPdfExcerptBookmarks(
+    customBookmarks.value,
+    payload.draggedId,
+    payload.targetId,
+    payload.position,
+  )
+  props.updateAttributes({ bookmarks })
+  refreshSidebarFromBookmarks(bookmarks)
+}
+
+async function deleteBookmark(nodeId: string) {
+  const bookmark = customBookmarks.value.find((item) => item.id === nodeId)
+  if (!bookmark) return
+  try {
+    await ElMessageBox.confirm(
+      `确定删除书签「${bookmark.title}」吗？`,
+      '删除书签',
+      {
+        confirmButtonText: '删除',
+        cancelButtonText: '取消',
+        type: 'warning',
+      },
+    )
+  } catch {
+    return
+  }
+  props.updateAttributes({
+    bookmarks: customBookmarks.value
+      .filter((item) => item.id !== nodeId)
+      .map((item) => {
+        if (item.parentId !== nodeId) return item
+        const { parentId: _parentId, ...rootBookmark } = item
+        return rootBookmark
+      }),
+  })
+  if (activeNodeId.value === nodeId) activeNodeId.value = null
+}
+
 function toggleSidebar() {
   if (sidebarOpen.value) {
     savedSidebarWidth.value = sidebarWidth.value
@@ -449,6 +885,11 @@ function toggleSidebar() {
   sidebarOpen.value = true
   sidebarWidth.value = savedSidebarWidth.value
   void nextTick().then(() => schedulePdfLayoutAfterSidebarResize())
+}
+
+function openBookmarkEditorFromChrome() {
+  addBookmarkAtCurrentPage()
+  if (!sidebarOpen.value) toggleSidebar()
 }
 
 function clampSidebarWidth(width: number): number {
@@ -485,6 +926,7 @@ function onSidebarResizeMouseUp() {
     renderManager?.handleResize(firstPage)
     renderManager?.flushPendingResize()
   }
+  scheduleCurrentPdfPageSync()
 }
 
 function onSidebarResizeMouseDown(event: MouseEvent) {
@@ -501,9 +943,25 @@ function scrollToPage(pageNumber: number, nodeId: string | null = null) {
   if (pageNumber < resolvedStartPage || pageNumber > resolvedEndPage) return
   activeNodeId.value = nodeId
   renderManager?.requestRender(pageNumber)
+  const root = pagesScrollRef.value
   const el = pageRefs.get(pageNumber)
-  const pageEl = el?.closest('.pdf-excerpt-block__page')
-  pageEl?.scrollIntoView({ behavior: 'instant', block: 'start' })
+  const pageEl = el?.closest<HTMLElement>('.pdf-excerpt-block__page')
+  if (root && pageEl) {
+    const rootRect = root.getBoundingClientRect()
+    const pageRect = pageEl.getBoundingClientRect()
+    const targetTop = root.scrollTop
+      + pageRect.top
+      - rootRect.top
+      - (root.clientHeight - pageRect.height) / 2
+    root.scrollTop = Math.max(0, Math.min(
+      targetTop,
+      root.scrollHeight - root.clientHeight,
+    ))
+  } else {
+    pageEl?.scrollIntoView({ behavior: 'instant', block: 'center' })
+  }
+  applyCurrentPdfPage(pageNumber)
+  scheduleCurrentPdfPageSync()
 }
 
 function navigateSidebar(payload: { nodeId: string; pageNumber: number }) {
@@ -534,7 +992,8 @@ function hitTestPageVertical(clientY: number): PdfPageVerticalHit | null {
   for (const page of pages) {
     const host = pageRefs.get(page.pageNumber)
     if (!host) continue
-    const rect = host.getBoundingClientRect()
+    const pageEl = host.closest<HTMLElement>('.pdf-excerpt-block__page')
+    const rect = (pageEl ?? host).getBoundingClientRect()
     if (rect.height <= 0) continue
     measured.push({ pageNumber: page.pageNumber, top: rect.top, bottom: rect.bottom })
   }
@@ -571,7 +1030,7 @@ function hitTestPageVertical(clientY: number): PdfPageVerticalHit | null {
 function hitToClientY(hit: PdfPageVerticalHit): number | null {
   const host = pageRefs.get(hit.pageNumber)
   if (!host) return null
-  const rect = host.getBoundingClientRect()
+  const rect = (host.closest<HTMLElement>('.pdf-excerpt-block__page') ?? host).getBoundingClientRect()
   if (rect.height <= 0) return null
   return rect.top + hit.ratio * rect.height
 }
@@ -868,6 +1327,26 @@ function onResize(_width: number | null, nextHeight: number | null) {
   props.updateAttributes({ height: clamped })
 }
 
+/**
+ * The scrollbar drag can itself toggle whether a vertical scrollbar consumes
+ * content width. Compare only the usable content width by temporarily ignoring
+ * scrollbar gutters, preventing a resize -> rerender -> resize feedback loop.
+ */
+function onPagesScroll() {
+  capturePdfScrollAnchor()
+  overlayLayoutTick.value += 1
+  const root = pagesScrollRef.value
+  if (root) {
+    if (root.scrollTop <= 1) {
+      applyCurrentPdfPage(resolvedStartPage)
+    } else if (root.scrollTop >= root.scrollHeight - root.clientHeight - 1) {
+      applyCurrentPdfPage(resolvedEndPage)
+    }
+  }
+  scheduleCurrentPdfPageSync()
+  schedulePdfReadingPositionSave()
+}
+
 /** Fixed chrome above the pages scrollport (block header / meta / hints). */
 function measurePdfBlockChromeHeight(): number {
   const wrap = pdfBlockRef.value?.closest('.resizable-block-wrapper') as HTMLElement | null
@@ -962,6 +1441,7 @@ function fitHeightToContent() {
 function disposeRenderManager() {
   renderManager?.dispose()
   renderManager = null
+  renderedPageNumbers.value = new Set()
 }
 
 function createRenderManager() {
@@ -971,22 +1451,53 @@ function createRenderManager() {
     getHost: (pageNumber) => pageRefs.get(pageNumber),
     getScrollRoot: () => pagesScrollRef.value,
     onRenderError: (message) => {
-      loadError.value = message
+      if (!pageCanvases.value.length) loadError.value = message
     },
     onPlaceholderHeight: (pageNumber, placeholderHeight) => {
       const index = pageCanvases.value.findIndex((page) => page.pageNumber === pageNumber)
       if (index < 0) return
       const prev = pageCanvases.value[index]
       if (Math.abs((prev.placeholderHeight || 0) - placeholderHeight) < 1) return
+      capturePdfScrollAnchor()
       pageCanvases.value[index] = { ...prev, placeholderHeight }
-      scheduleRestoreZoomCenter()
+      if (pendingZoomCenter) scheduleRestoreZoomCenter()
+      else scheduleRestorePdfScrollAnchor()
       if (blockPdfRegionAnnotations.value.length > 0) {
         overlayLayoutTick.value += 1
       }
     },
+    onPageRendered: (pageNumber) => {
+      const next = new Set(renderedPageNumbers.value)
+      next.add(pageNumber)
+      renderedPageNumbers.value = next
+      if (pageNumber === restoredReadingPosition.value?.pageNumber) {
+        void restoreLastPdfReadingPosition(loadGeneration)
+      }
+    },
+    onPageEvicted: (pageNumber) => {
+      if (!renderedPageNumbers.value.has(pageNumber)) return
+      const next = new Set(renderedPageNumbers.value)
+      next.delete(pageNumber)
+      renderedPageNumbers.value = next
+    },
   })
   renderManager.setRange(resolvedStartPage, resolvedEndPage)
   renderManager.setZoomScale(zoomScale.value)
+}
+
+async function primePdfPagePlaceholders(generation: number) {
+  const manager = renderManager
+  if (!manager) return
+  try {
+    await manager.primePlaceholderSizes(
+      pageCanvases.value.map((page) => page.pageNumber),
+    )
+  } finally {
+    if (generation !== loadGeneration || manager !== renderManager) return
+    await nextTick()
+    capturePdfScrollAnchor()
+    scheduleRestorePdfScrollAnchor()
+  }
 }
 
 function captureZoomCenter() {
@@ -1007,6 +1518,7 @@ function restoreZoomCenter() {
   if (!root || !anchor) return
   root.scrollLeft = Math.max(0, anchor.xRatio * root.scrollWidth - root.clientWidth / 2)
   root.scrollTop = Math.max(0, anchor.yRatio * root.scrollHeight - root.clientHeight / 2)
+  scheduleCurrentPdfPageSync()
 }
 
 function scheduleRestoreZoomCenter() {
@@ -1057,6 +1569,14 @@ function flushZoomDelta() {
   applyZoomScale(zoomScale.value + delta)
 }
 
+function scrollPdfPagesWithWheel(event: WheelEvent) {
+  if (!pdfWheelScrollActive.value || event.ctrlKey) return
+  const root = pagesScrollRef.value
+  if (!root || root.scrollHeight <= root.clientHeight) return
+  event.preventDefault()
+  root.scrollBy({ left: event.shiftKey ? event.deltaY : 0, top: event.deltaY, behavior: 'auto' })
+}
+
 function onPdfBlockWheel(event: WheelEvent) {
   if (!pdfWheelScrollActive.value) return
   if (!event.ctrlKey) return
@@ -1105,11 +1625,13 @@ function onDocumentPointerDownForPdfWheel(event: PointerEvent) {
 function bindWheelListener() {
   unbindWheelListener()
   wheelTarget = pdfBlockRef.value
+  wheelTarget?.addEventListener('wheel', scrollPdfPagesWithWheel, { passive: false })
   wheelTarget?.addEventListener('wheel', onPdfBlockWheel, { passive: false })
   document.addEventListener('pointerdown', onDocumentPointerDownForPdfWheel, true)
 }
 
 function unbindWheelListener() {
+  wheelTarget?.removeEventListener('wheel', scrollPdfPagesWithWheel)
   wheelTarget?.removeEventListener('wheel', onPdfBlockWheel)
   wheelTarget = null
   document.removeEventListener('pointerdown', onDocumentPointerDownForPdfWheel, true)
@@ -1136,10 +1658,11 @@ function setupObserver() {
 
   resizeObserver = new ResizeObserver(() => {
     if (suppressPdfResizeObserver) return
-    const firstPage = pageCanvases.value[0]?.pageNumber
-    if (firstPage != null) {
-      renderManager?.handleResize(firstPage)
+    const resizePage = pageCanvases.value[0]?.pageNumber
+    if (resizePage != null) {
+      renderManager?.handleResize(resizePage)
     }
+    scheduleCurrentPdfPageSync()
   })
 
   pageRefs.forEach((el, pageNumber) => {
@@ -1160,6 +1683,10 @@ async function schedulePageRendering() {
   }
   createRenderManager()
   setupObserver()
+  const firstPage = pageCanvases.value[0]?.pageNumber
+  if (firstPage != null) renderManager?.requestRender(firstPage)
+  requestSavedPdfPageRender()
+  void primePdfPagePlaceholders(loadGeneration)
 }
 
 async function loadDocument() {
@@ -1178,9 +1705,21 @@ async function loadDocument() {
   disposeRenderManager()
   pageCanvases.value = []
   sidebarNodes.value = []
+  baseSidebarNodes.value = []
   sidebarSource.value = 'pages'
+  baseSidebarSource.value = 'pages'
   activeNodeId.value = null
   pageRefs.clear()
+  currentPageNumber.value = startPage.value
+  pageJumpDraft.value = String(startPage.value)
+  pageJumpError.value = ''
+  scrollAnchor = null
+  readingPositionReady = false
+  if (readingPositionWriteTimer) {
+    clearTimeout(readingPositionWriteTimer)
+    readingPositionWriteTimer = null
+  }
+  restoredReadingPosition.value = null
 
   try {
     if (!docRef.value || boundUrl !== fileUrl.value) {
@@ -1196,6 +1735,13 @@ async function loadDocument() {
     const normalized = resolvePageRange(viewMode.value, startPage.value, endPage.value, doc.numPages)
     resolvedStartPage = normalized.startPage
     resolvedEndPage = normalized.endPage
+    restoredReadingPosition.value = loadPdfReadingPosition(blockId.value, fileId.value)
+    if (restoredReadingPosition.value && (
+      restoredReadingPosition.value.pageNumber < resolvedStartPage
+      || restoredReadingPosition.value.pageNumber > resolvedEndPage
+    )) {
+      restoredReadingPosition.value = null
+    }
 
     if (
       viewMode.value === 'full'
@@ -1238,17 +1784,23 @@ async function loadDocument() {
 
     const pages: Array<{ pageNumber: number; placeholderHeight: number }> = []
     for (let pageNumber = normalized.startPage; pageNumber <= normalized.endPage; pageNumber += 1) {
-      pages.push({ pageNumber, placeholderHeight: 120 })
+      pages.push({ pageNumber, placeholderHeight: initialPagePlaceholderHeight })
     }
     pageCanvases.value = pages
-
-    const sidebar = await buildPdfSidebarTree(doc, normalized.startPage, normalized.endPage, {
-      viewMode: viewMode.value,
-    })
+    await nextTick()
     if (generation !== loadGeneration) return
-    sidebarNodes.value = sidebar.nodes
-    sidebarSource.value = sidebar.source
-    resetSidebarExpandState(sidebar.nodes)
+    await restoreLastPdfReadingPosition(generation)
+    if (!restoredReadingPosition.value) readingPositionReady = true
+    void buildPdfSidebarTree(doc, normalized.startPage, normalized.endPage, {
+      viewMode: viewMode.value,
+    }).then((sidebar) => {
+      if (generation !== loadGeneration) return
+      baseSidebarNodes.value = sidebar.nodes
+      baseSidebarSource.value = sidebar.source
+      refreshSidebarFromBookmarks()
+    }).catch(() => {
+      // Page rendering can proceed while an unavailable PDF outline stays empty.
+    })
   } catch (error) {
     loadError.value = error instanceof Error ? error.message : 'PDF 加载失败'
     pageCanvases.value = []
@@ -1261,6 +1813,7 @@ async function loadDocument() {
   }
   await schedulePageRendering()
   await bindPdfScrollListener()
+  scheduleCurrentPdfPageSync()
 }
 
 onMounted(() => {
@@ -1300,11 +1853,16 @@ watch([viewMode, startPage, endPage], () => {
   void loadDocument()
 })
 
+watch(customBookmarks, () => {
+  refreshSidebarFromBookmarks()
+})
+
 watch(sidebarOpen, () => {
   void nextTick().then(() => {
     renderManager?.dispose()
     createRenderManager()
     setupObserver()
+    scheduleCurrentPdfPageSync()
   })
 })
 
@@ -1323,6 +1881,7 @@ async function bindPdfScrollListener() {
 }
 
 onBeforeUnmount(() => {
+  persistPdfReadingPosition()
   if (sidebarResizeLayoutRafId) {
     cancelAnimationFrame(sidebarResizeLayoutRafId)
     sidebarResizeLayoutRafId = 0
@@ -1336,6 +1895,10 @@ onBeforeUnmount(() => {
   if (zoomCenterRestoreRaf) {
     cancelAnimationFrame(zoomCenterRestoreRaf)
     zoomCenterRestoreRaf = 0
+  }
+  if (currentPageSyncRaf) {
+    cancelAnimationFrame(currentPageSyncRaf)
+    currentPageSyncRaf = 0
   }
   if (zoomNoteSettleTimer) {
     clearTimeout(zoomNoteSettleTimer)
@@ -1379,9 +1942,100 @@ onBeforeUnmount(() => {
       @title-change="onChromeTitleChange"
     >
       <template #header-meta>
-        <span class="pdf-excerpt-block__meta" :title="metaLabel">
+        <span
+          class="pdf-excerpt-block__meta"
+          :title="metaLabel"
+          data-node-view-no-drag
+        >
           {{ metaLabel }}
         </span>
+      </template>
+
+      <template #toolbar-center>
+        <nav
+          v-show="showZoomBadge"
+          class="pdf-excerpt-block__page-navigation"
+          aria-label="PDF 页码导航"
+          data-node-view-no-drag
+          @mousedown.stop
+        >
+          <div class="pdf-excerpt-block__page-navigation-row">
+            <button
+              type="button"
+              class="pdf-excerpt-block__page-navigation-step"
+              aria-label="上一页"
+              title="上一页"
+              :disabled="currentPageNumber <= pageNavigationStart"
+              @click.stop="jumpToAdjacentPdfPage(-1)"
+            >
+              ‹
+            </button>
+            <span class="pdf-excerpt-block__page-navigation-status" aria-live="polite">
+              当前
+              <strong class="pdf-excerpt-block__page-navigation-current">
+                {{ currentPageNumber }}
+              </strong>
+              <span class="pdf-excerpt-block__page-navigation-total">
+                / {{ pageNavigationTotal }}
+              </span>
+            </span>
+            <span class="pdf-excerpt-block__page-navigation-jump">
+              <input
+                ref="pageJumpInputRef"
+                v-model="pageJumpDraft"
+                class="pdf-excerpt-block__page-navigation-input"
+                type="text"
+                inputmode="numeric"
+                pattern="[0-9]*"
+                :aria-label="`跳转到 PDF 页码，范围 ${pageNavigationStart}–${pageNavigationEnd}`"
+                :aria-invalid="Boolean(pageJumpError)"
+                :aria-describedby="pageJumpErrorId"
+                @focus="onPageJumpFocus"
+                @blur="onPageJumpBlur"
+                @input="onPageJumpInput"
+                @keydown.enter.prevent="jumpToCurrentPdfPage"
+                @keydown.esc.prevent="onPageJumpEscape"
+              />
+            </span>
+            <button
+              type="button"
+              class="pdf-excerpt-block__page-navigation-step"
+              aria-label="下一页"
+              title="下一页"
+              :disabled="currentPageNumber >= pageNavigationEnd"
+              @click.stop="jumpToAdjacentPdfPage(1)"
+            >
+              ›
+            </button>
+            <button
+              type="button"
+              class="pdf-excerpt-block__page-navigation-go"
+              :title="`跳转到输入的第 ${pageNavigationStart}–${pageNavigationEnd} 页`"
+              @click.stop="jumpToCurrentPdfPage"
+            >
+              跳转
+            </button>
+          </div>
+          <span
+            v-if="pageJumpError"
+            :id="pageJumpErrorId"
+            class="pdf-excerpt-block__page-navigation-error"
+            role="alert"
+          >
+            {{ pageJumpError }}
+          </span>
+        </nav>
+      </template>
+
+      <template #toolbar>
+        <div
+          v-show="showZoomBadge"
+          class="pdf-excerpt-block__zoom-badge"
+          :aria-label="`PDF 缩放 ${zoomLabel}`"
+          data-node-view-no-drag
+        >
+          {{ zoomLabel }}
+        </div>
         <button
           type="button"
           class="pdf-excerpt-block__edit-source"
@@ -1390,6 +2044,16 @@ onBeforeUnmount(() => {
           @click.stop="handleEditSource"
         >
           更改来源
+        </button>
+        <button
+          type="button"
+          class="pdf-excerpt-block__edit-source"
+          data-node-view-no-drag
+          title="添加当前 PDF 书签"
+          @mousedown.stop
+          @click.stop="openBookmarkEditorFromChrome"
+        >
+          添加书签
         </button>
         <button
           type="button"
@@ -1457,8 +2121,19 @@ onBeforeUnmount(() => {
             >
               <div class="pdf-excerpt-block__sidebar-header">
                 <span class="pdf-excerpt-block__sidebar-title">{{ sidebarTitle }}</span>
-                <div v-if="sidebarHasNestedNodes" class="pdf-excerpt-block__sidebar-actions">
+                <div class="pdf-excerpt-block__sidebar-actions">
                   <button
+                    type="button"
+                    class="pdf-excerpt-block__sidebar-action pdf-excerpt-block__sidebar-action--primary"
+                    data-node-view-no-drag
+                    title="添加当前 PDF 书签"
+                    @mousedown.stop
+                    @click.stop="addBookmarkAtCurrentPage"
+                  >
+                    添加书签
+                  </button>
+                  <button
+                    v-if="sidebarHasNestedNodes"
                     type="button"
                     class="pdf-excerpt-block__sidebar-action"
                     data-node-view-no-drag
@@ -1469,6 +2144,7 @@ onBeforeUnmount(() => {
                     全部展开
                   </button>
                   <button
+                    v-if="sidebarHasNestedNodes"
                     type="button"
                     class="pdf-excerpt-block__sidebar-action"
                     data-node-view-no-drag
@@ -1494,6 +2170,9 @@ onBeforeUnmount(() => {
                   :expanded-node-ids="sidebarExpand.expanded.value"
                   @navigate="navigateSidebar"
                   @toggle-expand="sidebarExpand.toggle"
+                  @rename-bookmark="renameBookmark"
+                  @delete-bookmark="deleteBookmark"
+                  @reorder-bookmarks="reorderBookmarks"
                 />
               </nav>
               <p v-else-if="sidebarEmptyHint" class="pdf-excerpt-block__sidebar-empty">
@@ -1539,13 +2218,6 @@ onBeforeUnmount(() => {
           </div>
           <div class="pdf-excerpt-block__main">
             <div
-              v-show="showZoomBadge"
-              class="pdf-excerpt-block__zoom-badge"
-              aria-live="polite"
-            >
-              {{ zoomLabel }}
-            </div>
-            <div
               ref="pagesScrollRef"
               class="pdf-excerpt-block__pages"
               :class="{
@@ -1554,13 +2226,18 @@ onBeforeUnmount(() => {
                 'pdf-excerpt-block__pages--wheel-active': pdfWheelScrollActive,
               }"
               @mousedown="onClipSelectMouseDown"
+              @scroll="onPagesScroll"
             >
               <p v-if="largeDocWarning" class="pdf-excerpt-block__warn">{{ largeDocWarning }}</p>
               <div
                 v-for="page in pageCanvases"
                 :key="page.pageNumber"
                 class="pdf-excerpt-block__page"
+                :class="{
+                  'pdf-excerpt-block__page--current': page.pageNumber === currentPageNumber,
+                }"
                 :data-page-number="page.pageNumber"
+                :aria-current="page.pageNumber === currentPageNumber ? 'page' : undefined"
               >
                 <div
                   class="pdf-excerpt-block__page-clip"
@@ -1658,9 +2335,14 @@ onBeforeUnmount(() => {
 
 .pdf-excerpt-block__meta {
   min-width: 0;
+  max-width: 36%;
+  flex: 1 1 auto;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  font-size: 11px;
+  font-weight: 400;
+  color: #64748b;
 }
 
 .pdf-excerpt-block__edit-source {
@@ -1827,6 +2509,8 @@ onBeforeUnmount(() => {
   display: flex;
   flex-shrink: 0;
   align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   gap: 2px;
 }
 
@@ -1845,6 +2529,15 @@ onBeforeUnmount(() => {
 .pdf-excerpt-block__sidebar-action:hover {
   background: #e2e8f0;
   color: #334155;
+}
+
+.pdf-excerpt-block__sidebar-action--primary {
+  color: #1d4ed8;
+}
+
+.pdf-excerpt-block__sidebar-action--primary:hover {
+  background: #dbeafe;
+  color: #1d4ed8;
 }
 
 .pdf-excerpt-block__sidebar-nav {
@@ -1880,8 +2573,10 @@ onBeforeUnmount(() => {
   flex: 1;
   min-width: 0;
   min-height: 0;
-  /* Locked until NodeView is clicked — wheel should scroll the page, not the PDF. */
-  overflow: hidden;
+  /* Keep the native vertical scrollbar in the layout before and after activation. */
+  overflow-x: hidden;
+  overflow-y: scroll;
+  scrollbar-gutter: stable;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -1892,22 +2587,15 @@ onBeforeUnmount(() => {
   background: transparent;
 }
 
-.pdf-excerpt-block__pages--wheel-active {
-  overflow: auto;
-}
-
 .pdf-excerpt-block--wheel-active {
   outline: 1px solid rgba(37, 99, 235, 0.35);
   outline-offset: -1px;
 }
 
 .pdf-excerpt-block__zoom-badge {
-  /* Overlay on the main pane (not inside the scrollport) so it stays visible while scrolling. */
-  position: absolute;
-  top: 8px;
-  right: 8px;
-  z-index: 12;
-  margin: 0;
+  position: relative;
+  flex-shrink: 0;
+  margin: 0 0 0 8px;
   padding: 4px 8px;
   border-radius: 6px;
   background: rgba(15, 23, 42, 0.78);
@@ -1917,6 +2605,117 @@ onBeforeUnmount(() => {
   line-height: 1.4;
   pointer-events: none;
   user-select: none;
+}
+
+.pdf-excerpt-block__page-navigation {
+  min-width: 0;
+  max-width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: #334155;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.4;
+  user-select: none;
+}
+
+.pdf-excerpt-block__page-navigation-row {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  height: 34px;
+}
+
+.pdf-excerpt-block__page-navigation-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+
+.pdf-excerpt-block__page-navigation-current {
+  min-width: 1ch;
+  color: #1d4ed8;
+  font-weight: 600;
+  text-align: right;
+}
+
+.pdf-excerpt-block__page-navigation-jump {
+  display: inline-flex;
+  align-items: center;
+}
+
+.pdf-excerpt-block__page-navigation-input {
+  width: 42px;
+  height: 24px;
+  box-sizing: border-box;
+  padding: 2px 4px;
+  border: 1px solid #cbd5e1;
+  border-radius: 4px;
+  background: #fff;
+  color: #0f172a;
+  font: inherit;
+  text-align: center;
+}
+
+.pdf-excerpt-block__page-navigation-input:focus {
+  border-color: #1677ff;
+  outline: 2px solid rgba(22, 119, 255, 0.18);
+  outline-offset: 0;
+}
+
+.pdf-excerpt-block__page-navigation-input[aria-invalid="true"] {
+  border-color: #dc2626;
+}
+
+.pdf-excerpt-block__page-navigation-total {
+  color: #64748b;
+}
+
+.pdf-excerpt-block__page-navigation-step,
+.pdf-excerpt-block__page-navigation-go {
+  height: 24px;
+  box-sizing: border-box;
+  padding: 0 6px;
+  border: 1px solid #cbd5e1;
+  border-radius: 4px;
+  background: #fff;
+  color: #475569;
+  font: inherit;
+  cursor: pointer;
+}
+
+.pdf-excerpt-block__page-navigation-step {
+  width: 24px;
+  padding: 0;
+  font-size: 17px;
+  line-height: 1;
+}
+
+.pdf-excerpt-block__page-navigation-step:hover:not(:disabled),
+.pdf-excerpt-block__page-navigation-go:hover {
+  border-color: #1677ff;
+  background: #eff6ff;
+  color: #1677ff;
+}
+
+.pdf-excerpt-block__page-navigation-step:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+.pdf-excerpt-block__page-navigation-go {
+  color: #1d4ed8;
+}
+
+.pdf-excerpt-block__page-navigation-error {
+  padding: 0 6px 5px;
+  color: #b91c1c;
+  font-size: 11px;
+  white-space: normal;
 }
 
 .pdf-excerpt-block__warn {
@@ -1975,6 +2774,10 @@ onBeforeUnmount(() => {
   margin-inline: auto;
 }
 
+.pdf-excerpt-block__page--current .pdf-excerpt-block__page-clip {
+  box-shadow: 0 0 0 2px rgba(22, 119, 255, 0.24);
+}
+
 .pdf-excerpt-block__page-clip {
   width: max-content;
   max-width: none;
@@ -1990,6 +2793,7 @@ onBeforeUnmount(() => {
   display: flex;
   justify-content: center;
   background: transparent;
+  position: relative;
 }
 
 .pdf-excerpt-block__page :deep(.pdf-excerpt-block__canvas) {
@@ -1998,6 +2802,7 @@ onBeforeUnmount(() => {
   margin: 0 auto;
   background: transparent;
 }
+
 </style>
 
 <style>
